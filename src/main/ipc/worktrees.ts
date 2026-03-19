@@ -3,7 +3,7 @@ import { join, basename } from 'path'
 import type { Store } from '../persistence'
 import type { Worktree, WorktreeMeta } from '../../shared/types'
 import { listWorktrees, addWorktree, removeWorktree } from '../git/worktree'
-import { getGitUsername, getDefaultBaseRef } from '../git/repo'
+import { getGitUsername, getDefaultBaseRef, getAvailableBranchName } from '../git/repo'
 import { getEffectiveHooks, loadHooks, runHook, hasHooksFile } from '../hooks'
 
 export function registerWorktreeHandlers(mainWindow: BrowserWindow, store: Store): void {
@@ -54,13 +54,16 @@ export function registerWorktreeHandlers(mainWindow: BrowserWindow, store: Store
         branchName = `${settings.branchPrefixCustom}/${args.name}`
       }
 
+      const requestedName = args.name
+      branchName = await getAvailableBranchName(repo.path, branchName)
+
       // Compute worktree path
       let worktreePath: string
       if (settings.nestWorkspaces) {
         const repoName = basename(repo.path).replace(/\.git$/, '')
-        worktreePath = join(settings.workspaceDir, repoName, args.name)
+        worktreePath = join(settings.workspaceDir, repoName, requestedName)
       } else {
-        worktreePath = join(settings.workspaceDir, args.name)
+        worktreePath = join(settings.workspaceDir, requestedName)
       }
 
       // Determine base branch
@@ -73,7 +76,12 @@ export function registerWorktreeHandlers(mainWindow: BrowserWindow, store: Store
       const created = gitWorktrees.find((gw) => gw.path === worktreePath)
       if (!created) throw new Error('Worktree created but not found in listing')
 
-      const worktree = mergeWorktree(repo.id, created, undefined)
+      const worktreeId = `${repo.id}::${worktreePath}`
+      const meta =
+        branchName === requestedName
+          ? undefined
+          : store.setWorktreeMeta(worktreeId, { displayName: requestedName })
+      const worktree = mergeWorktree(repo.id, created, meta)
 
       // Run setup hook asynchronously (don't block the UI)
       const hooks = getEffectiveHooks(repo)

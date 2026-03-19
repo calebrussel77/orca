@@ -245,3 +245,18 @@ async function hasGitRefAsync(path: string, ref: string): Promise<boolean> {
     return false
   }
 }
+
+export async function getAvailableBranchName(path: string, branchName: string): Promise<string> {
+  if (!(await hasGitRefAsync(path, `refs/heads/${branchName}`))) {
+    return branchName
+  }
+
+  let suffix = 1
+  while (true) {
+    const candidate = `${branchName}-${suffix}`
+    if (!(await hasGitRefAsync(path, `refs/heads/${candidate}`))) {
+      return candidate
+    }
+    suffix += 1
+  }
+}

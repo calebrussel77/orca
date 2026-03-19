@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useMemo, useRef } from 'react'
 import { useAppStore } from '@/store'
 import {
   Dialog,
@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/select'
 import RepoDotLabel from '@/components/repo/RepoDotLabel'
 import { parseGitHubIssueOrPRNumber } from '@/lib/github-links'
+import { SPACE_NAMES } from '@/constants/space-names'
 
 const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
   const activeModal = useAppStore((s) => s.activeModal)
@@ -27,6 +28,8 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
   const repos = useAppStore((s) => s.repos)
   const createWorktree = useAppStore((s) => s.createWorktree)
   const updateWorktreeMeta = useAppStore((s) => s.updateWorktreeMeta)
+  const activeRepoId = useAppStore((s) => s.activeRepoId)
+  const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
   const setActiveRepo = useAppStore((s) => s.setActiveRepo)
   const setActiveWorktree = useAppStore((s) => s.setActiveWorktree)
   const setActiveView = useAppStore((s) => s.setActiveView)
@@ -35,17 +38,29 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
   const setShowActiveOnly = useAppStore((s) => s.setShowActiveOnly)
   const setFilterRepoId = useAppStore((s) => s.setFilterRepoId)
   const revealWorktreeInSidebar = useAppStore((s) => s.revealWorktreeInSidebar)
+  const worktreesByRepo = useAppStore((s) => s.worktreesByRepo)
+  const settings = useAppStore((s) => s.settings)
 
   const [repoId, setRepoId] = useState<string>('')
   const [name, setName] = useState('')
   const [linkedIssue, setLinkedIssue] = useState('')
   const [comment, setComment] = useState('')
   const [creating, setCreating] = useState(false)
+  const nameInputRef = useRef<HTMLInputElement>(null)
+  const lastSuggestedNameRef = useRef('')
 
   const isOpen = activeModal === 'create-worktree'
   const preselectedRepoId =
     typeof modalData.preselectedRepoId === 'string' ? modalData.preselectedRepoId : ''
+  const activeWorktreeRepoId = useMemo(
+    () => findRepoIdForWorktree(activeWorktreeId, worktreesByRepo),
+    [activeWorktreeId, worktreesByRepo]
+  )
   const selectedRepo = repos.find((r) => r.id === repoId)
+  const suggestedName = useMemo(
+    () => getSuggestedSpaceName(repoId, worktreesByRepo, settings?.nestWorkspaces ?? false),
+    [repoId, worktreesByRepo, settings?.nestWorkspaces]
+  )
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -55,6 +70,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
         setName('')
         setLinkedIssue('')
         setComment('')
+        lastSuggestedNameRef.current = ''
       }
     },
     [closeModal]
@@ -111,7 +127,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
     handleOpenChange
   ])
 
-  // Auto-select first repo when opening
+  // Auto-select repo when opening.
   React.useEffect(() => {
     if (!isOpen || repos.length === 0) return
 
@@ -120,10 +136,37 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
       return
     }
 
+    if (activeWorktreeRepoId && repos.some((repo) => repo.id === activeWorktreeRepoId)) {
+      setRepoId(activeWorktreeRepoId)
+      return
+    }
+
+    if (activeRepoId && repos.some((repo) => repo.id === activeRepoId)) {
+      setRepoId(activeRepoId)
+      return
+    }
+
     if (!repoId) {
       setRepoId(repos[0].id)
     }
-  }, [isOpen, repos, repoId, preselectedRepoId])
+  }, [isOpen, repos, repoId, preselectedRepoId, activeWorktreeRepoId, activeRepoId])
+
+  React.useEffect(() => {
+    if (!isOpen || !repoId || !suggestedName) return
+
+    const shouldApplySuggestion = !name.trim() || name === lastSuggestedNameRef.current
+    if (!shouldApplySuggestion) return
+
+    setName(suggestedName)
+    lastSuggestedNameRef.current = suggestedName
+
+    requestAnimationFrame(() => {
+      const input = nameInputRef.current
+      if (!input) return
+      input.focus()
+      input.select()
+    })
+  }, [isOpen, repoId, suggestedName, name])
 
   // Safety guard: creating a worktree requires at least one repo.
   React.useEffect(() => {
@@ -172,6 +215,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
           <div className="space-y-1">
             <label className="text-[11px] font-medium text-muted-foreground">Name</label>
             <Input
+              ref={nameInputRef}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="feature/my-feature"
@@ -235,3 +279,66 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
 })
 
 export default AddWorktreeDialog
+
+function getSuggestedSpaceName(
+  repoId: string,
+  worktreesByRepo: Record<string, { path: string }[]>,
+  nestWorkspaces: boolean
+): string {
+  if (!repoId) return SPACE_NAMES[0]
+
+  const usedNames = new Set<string>()
+  const repoWorktrees = worktreesByRepo[repoId] ?? []
+
+  for (const worktree of repoWorktrees) {
+    usedNames.add(normalizeSpaceName(lastPathSegment(worktree.path)))
+  }
+
+  if (!nestWorkspaces) {
+    for (const worktrees of Object.values(worktreesByRepo)) {
+      for (const worktree of worktrees) {
+        usedNames.add(normalizeSpaceName(lastPathSegment(worktree.path)))
+      }
+    }
+  }
+
+  for (const candidate of SPACE_NAMES) {
+    if (!usedNames.has(normalizeSpaceName(candidate))) {
+      return candidate
+    }
+  }
+
+  let suffix = 2
+  while (true) {
+    for (const candidate of SPACE_NAMES) {
+      const numberedCandidate = `${candidate}-${suffix}`
+      if (!usedNames.has(normalizeSpaceName(numberedCandidate))) {
+        return numberedCandidate
+      }
+    }
+    suffix += 1
+  }
+}
+
+function lastPathSegment(path: string): string {
+  return path.replace(/\/+$/, '').split('/').pop() ?? path
+}
+
+function normalizeSpaceName(name: string): string {
+  return name.trim().toLowerCase()
+}
+
+function findRepoIdForWorktree(
+  worktreeId: string | null,
+  worktreesByRepo: Record<string, { id: string }[]>
+): string | null {
+  if (!worktreeId) return null
+
+  for (const [repoId, worktrees] of Object.entries(worktreesByRepo)) {
+    if (worktrees.some((worktree) => worktree.id === worktreeId)) {
+      return repoId
+    }
+  }
+
+  return null
+}
