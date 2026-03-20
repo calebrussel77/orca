@@ -35,6 +35,7 @@ import {
   resolvePaneStyleOptions,
   resolveEffectiveTerminalAppearance
 } from '@/lib/terminal-theme'
+import { TerminalLinkDetector } from '@/lib/terminal-link-detector'
 
 type PtyTransport = {
   connect: (options: {
@@ -363,6 +364,8 @@ export default function TerminalPane({
 }: TerminalPaneProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const resttyRef = useRef<Restty | null>(null)
+  const linkDetectorsRef = useRef<Map<number, TerminalLinkDetector>>(new Map())
+  const cellSizeRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 })
   const contextPaneIdRef = useRef<number | null>(null)
   const wasActiveRef = useRef(false)
   const expandedPaneIdRef = useRef<number | null>(null)
@@ -619,6 +622,11 @@ export default function TerminalPane({
           }
           restty.closePane(id)
         }
+
+        // Link detector for this pane
+        const linkDetector = new TerminalLinkDetector()
+        linkDetectorsRef.current.set(id, linkDetector)
+
         return {
           renderer: 'auto',
           fontSize: currentSettings?.terminalFontSize ?? 14,
@@ -632,7 +640,17 @@ export default function TerminalPane({
             onPtySpawn,
             onBell
           ) as never,
-          fontSources: buildTerminalFontSources(currentSettings?.terminalFontFamily ?? 'SF Mono')
+          fontSources: buildTerminalFontSources(currentSettings?.terminalFontFamily ?? 'SF Mono'),
+          callbacks: {
+            onGridSize: (cols: number, rows: number) => linkDetector.setGridSize(cols, rows),
+            onCellSize: (cellW: number, cellH: number) => {
+              cellSizeRef.current = { w: cellW, h: cellH }
+            }
+          },
+          beforeRenderOutput: (payload: { text: string; source: string }) => {
+            if (payload.source === 'pty') linkDetector.feed(payload.text)
+            return payload.text
+          }
         }
       },
       onPaneCreated: async (pane) => {
@@ -643,7 +661,9 @@ export default function TerminalPane({
         pane.canvas.focus({ preventScroll: true })
         queueResizeAll(true)
       },
-      onPaneClosed: () => {},
+      onPaneClosed: (pane) => {
+        linkDetectorsRef.current.delete(pane.id)
+      },
       onActivePaneChange: () => {
         if (shouldPersistLayout) persistLayoutSnapshot()
       },
@@ -687,6 +707,7 @@ export default function TerminalPane({
       restoreExpandedLayout()
       restty.destroy()
       resttyRef.current = null
+      linkDetectorsRef.current.clear()
       setTabPaneExpanded(tabId, false)
       setTabCanExpandPane(tabId, false)
     }
@@ -843,6 +864,95 @@ export default function TerminalPane({
 
     window.addEventListener('keydown', onKeyDown, { capture: true })
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [isActive])
+
+  // Ctrl+Click to open terminal links and Ctrl+hover for pointer cursor
+  useEffect(() => {
+    if (!isActive) return
+    const container = containerRef.current
+    if (!container) return
+
+    const resolveClickPane = (target: Node) => {
+      const restty = resttyRef.current
+      if (!restty) return null
+      return restty.getPanes().find((pane) => pane.container.contains(target)) ?? null
+    }
+
+    const getCellAtEvent = (e: MouseEvent, canvas: HTMLCanvasElement) => {
+      const { w, h } = cellSizeRef.current
+      if (!w || !h) return null
+      const rect = canvas.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+      return { col: Math.floor(x / w), row: Math.floor(y / h) }
+    }
+
+    const onPointerUp = (e: PointerEvent): void => {
+      if (e.button !== 0) return
+      if (!e.ctrlKey && !e.metaKey) return
+      if (!(e.target instanceof Node)) return
+
+      const pane = resolveClickPane(e.target)
+      if (!pane) return
+      const cell = getCellAtEvent(e, pane.canvas)
+      if (!cell) return
+
+      const detector = linkDetectorsRef.current.get(pane.id)
+      const url = detector?.getLinkAt(cell.row, cell.col)
+      if (url) {
+        e.preventDefault()
+        e.stopPropagation()
+        window.api.shell.openExternal(url)
+      }
+    }
+
+    const onPointerMove = (e: PointerEvent): void => {
+      if (!e.ctrlKey && !e.metaKey) {
+        // Restore cursor when Ctrl is released while moving
+        for (const canvas of container.querySelectorAll('canvas')) {
+          if ((canvas as HTMLCanvasElement).style.cursor === 'pointer') {
+            ;(canvas as HTMLCanvasElement).style.cursor = ''
+          }
+        }
+        return
+      }
+      if (!(e.target instanceof Node)) return
+
+      const pane = resolveClickPane(e.target)
+      if (!pane) return
+      const cell = getCellAtEvent(e, pane.canvas)
+      if (!cell) return
+
+      const detector = linkDetectorsRef.current.get(pane.id)
+      const hasLink = detector?.hasLinkAt(cell.row, cell.col) ?? false
+      pane.canvas.style.cursor = hasLink ? 'pointer' : ''
+    }
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        // Trigger a cursor check when Ctrl/Cmd is pressed
+        // (onPointerMove won't fire until the mouse moves)
+      }
+    }
+
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        for (const canvas of container.querySelectorAll('canvas')) {
+          if ((canvas as HTMLCanvasElement).style.cursor === 'pointer') {
+            ;(canvas as HTMLCanvasElement).style.cursor = ''
+          }
+        }
+      }
+    }
+
+    container.addEventListener('pointerup', onPointerUp, { capture: true })
+    container.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      container.removeEventListener('pointerup', onPointerUp, { capture: true })
+      container.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('keyup', onKeyUp)
+    }
   }, [isActive])
 
   const resolveMenuPane = () => {
