@@ -317,10 +317,30 @@ const WorktreeList = React.memo(function WorktreeList() {
     [openModal]
   )
 
+  const hasFilters = !!(searchQuery || showActiveOnly || filterRepoId)
+  const setSearchQuery = useAppStore((s) => s.setSearchQuery)
+  const setShowActiveOnly = useAppStore((s) => s.setShowActiveOnly)
+  const setFilterRepoId = useAppStore((s) => s.setFilterRepoId)
+
+  const clearFilters = useCallback(() => {
+    setSearchQuery('')
+    setShowActiveOnly(false)
+    setFilterRepoId(null)
+  }, [setSearchQuery, setShowActiveOnly, setFilterRepoId])
+
   if (worktrees.length === 0) {
     return (
-      <div className="flex-1 px-4 py-6 text-center text-[11px] text-muted-foreground">
-        No worktrees found
+      <div className="flex flex-col items-center gap-2 px-4 py-6 text-center text-[11px] text-muted-foreground">
+        <span>No worktrees found</span>
+        {hasFilters && (
+          <button
+            onClick={clearFilters}
+            className="inline-flex items-center gap-1.5 bg-secondary/70 border border-border/80 text-foreground font-medium text-[11px] px-2.5 py-1 rounded-md cursor-pointer hover:bg-accent transition-colors"
+          >
+            <CircleX className="size-3.5" />
+            Clear Filters
+          </button>
+        )}
       </div>
     )
   }

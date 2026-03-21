@@ -81,7 +81,7 @@ const WorktreeMetaDialog = React.memo(function WorktreeMetaDialog() {
 
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" onOpenAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle className="text-sm">
             {isLinkIssue ? 'Link GH Issue/PR' : 'Edit Comment'}
