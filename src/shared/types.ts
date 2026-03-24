@@ -1,5 +1,5 @@
 // ─── Repo ────────────────────────────────────────────────────────────
-export interface Repo {
+export type Repo = {
   id: string
   path: string
   displayName: string
@@ -11,7 +11,7 @@ export interface Repo {
 }
 
 // ─── Worktree (git-level) ────────────────────────────────────────────
-export interface GitWorktreeInfo {
+export type GitWorktreeInfo = {
   path: string
   head: string
   branch: string
@@ -19,7 +19,7 @@ export interface GitWorktreeInfo {
 }
 
 // ─── Worktree (app-level, enriched) ──────────────────────────────────
-export interface Worktree extends GitWorktreeInfo {
+export type Worktree = {
   id: string // `${repoId}::${path}`
   repoId: string
   displayName: string
@@ -29,10 +29,10 @@ export interface Worktree extends GitWorktreeInfo {
   isArchived: boolean
   isUnread: boolean
   sortOrder: number
-}
+} & GitWorktreeInfo
 
 // ─── Worktree metadata (persisted user-authored fields only) ─────────
-export interface WorktreeMeta {
+export type WorktreeMeta = {
   displayName: string
   comment: string
   linkedIssue: number | null
@@ -43,7 +43,7 @@ export interface WorktreeMeta {
 }
 
 // ─── Terminal Tab ────────────────────────────────────────────────────
-export interface TerminalTab {
+export type TerminalTab = {
   id: string
   ptyId: string | null
   worktreeId: string
@@ -52,6 +52,8 @@ export interface TerminalTab {
   color: string | null
   sortOrder: number
   createdAt: number
+  /** Bumped on shutdown so TerminalPane remounts with a fresh PTY. */
+  generation?: number
 }
 
 export type TerminalPaneSplitDirection = 'vertical' | 'horizontal'
@@ -70,13 +72,13 @@ export type TerminalPaneLayoutNode =
       ratio?: number
     }
 
-export interface TerminalLayoutSnapshot {
+export type TerminalLayoutSnapshot = {
   root: TerminalPaneLayoutNode | null
   activeLeafId: string | null
   expandedLeafId: string | null
 }
 
-export interface WorkspaceSessionState {
+export type WorkspaceSessionState = {
   activeRepoId: string | null
   activeWorktreeId: string | null
   activeTabId: string | null
@@ -89,7 +91,7 @@ export type PRState = 'open' | 'closed' | 'merged' | 'draft'
 export type IssueState = 'open' | 'closed'
 export type CheckStatus = 'pending' | 'success' | 'failure' | 'neutral'
 
-export interface PRInfo {
+export type PRInfo = {
   number: number
   title: string
   state: PRState
@@ -98,7 +100,7 @@ export interface PRInfo {
   updatedAt: string
 }
 
-export interface IssueInfo {
+export type IssueInfo = {
   number: number
   title: string
   state: IssueState
@@ -107,14 +109,14 @@ export interface IssueInfo {
 }
 
 // ─── Hooks (orca.yaml) ──────────────────────────────────────────────
-export interface OrcaHooks {
+export type OrcaHooks = {
   scripts: {
     setup?: string // Runs after worktree is created
     archive?: string // Runs before worktree is archived
   }
 }
 
-export interface RepoHookSettings {
+export type RepoHookSettings = {
   mode: 'auto' | 'override'
   scripts: {
     setup: string
@@ -133,7 +135,7 @@ export type UpdateStatus =
   | { state: 'error'; message: string; userInitiated?: boolean }
 
 // ─── Settings ────────────────────────────────────────────────────────
-export interface GlobalSettings {
+export type GlobalSettings = {
   workspaceDir: string
   nestWorkspaces: boolean
   branchPrefix: 'git-username' | 'custom' | 'none'
@@ -155,7 +157,7 @@ export interface GlobalSettings {
   terminalScrollbackBytes: number
 }
 
-export interface PersistedUIState {
+export type PersistedUIState = {
   lastActiveRepoId: string | null
   lastActiveWorktreeId: string | null
   sidebarWidth: number
@@ -166,7 +168,7 @@ export interface PersistedUIState {
 }
 
 // ─── Persistence shape ──────────────────────────────────────────────
-export interface PersistedState {
+export type PersistedState = {
   schemaVersion: number
   repos: Repo[]
   worktreeMeta: Record<string, WorktreeMeta>
@@ -180,7 +182,7 @@ export interface PersistedState {
 }
 
 // ─── Filesystem ─────────────────────────────────────────────
-export interface DirEntry {
+export type DirEntry = {
   name: string
   isDirectory: boolean
   isSymlink: boolean
@@ -190,14 +192,14 @@ export interface DirEntry {
 export type GitFileStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'copied'
 export type GitStagingArea = 'staged' | 'unstaged' | 'untracked'
 
-export interface GitStatusEntry {
+export type GitStatusEntry = {
   path: string
   status: GitFileStatus
   area: GitStagingArea
   oldPath?: string
 }
 
-export interface GitDiffResult {
+export type GitDiffResult = {
   originalContent: string
   modifiedContent: string
 }

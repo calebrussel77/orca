@@ -386,7 +386,7 @@ export default function Terminal(): React.JSX.Element | null {
               >
                 {worktreeTabs.map((tab) => (
                   <TerminalPane
-                    key={tab.id}
+                    key={`${tab.id}-${tab.generation ?? 0}`}
                     tabId={tab.id}
                     worktreeId={worktree.id}
                     cwd={worktree.path}

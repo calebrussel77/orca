@@ -235,6 +235,24 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       }
     })
 
+    // If the worktree has tabs but all PTYs are dead (e.g. after shutdown),
+    // bump generation so TerminalPanes remount with fresh PTY connections.
+    if (worktreeId) {
+      const tabs = get().tabsByWorktree[worktreeId] ?? []
+      const allDead = tabs.length > 0 && tabs.every((tab) => !tab.ptyId)
+      if (allDead) {
+        set((s) => ({
+          tabsByWorktree: {
+            ...s.tabsByWorktree,
+            [worktreeId]: (s.tabsByWorktree[worktreeId] ?? []).map((tab) => ({
+              ...tab,
+              generation: (tab.generation ?? 0) + 1
+            }))
+          }
+        }))
+      }
+    }
+
     // Refresh GitHub data (PR + issue status) when switching to a different worktree
     if (worktreeId && worktreeId !== prevActiveId) {
       get().refreshGitHubForWorktree(worktreeId)
