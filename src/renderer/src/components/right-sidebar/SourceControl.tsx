@@ -366,7 +366,6 @@ export default function SourceControl(): React.JSX.Element {
               >
                 PR #{prInfo.number}
               </a>
-              <span className="text-muted-foreground truncate">{prInfo.title}</span>
             </div>
           )}
         </div>
