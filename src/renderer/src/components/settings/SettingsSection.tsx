@@ -25,7 +25,17 @@ export function SettingsSection({
   }
 
   return (
-    <section id={id} data-settings-section={id} className={className ?? 'space-y-6 scroll-mt-6'}>
+    <section
+      id={id}
+      data-settings-section={id}
+      className={
+        // Why: these sections already contain many internal borders and cards, so a lone divider
+        // line gets lost in the visual noise. Giving each section its own padded surface creates a
+        // clear outer silhouette that still works when the inner content changes.
+        className ??
+        'scroll-mt-6 space-y-8 rounded-2xl border border-border/60 bg-card/35 px-6 py-6 shadow-sm'
+      }
+    >
       <div className="space-y-1">
         <h2 className="text-xl font-semibold">{title}</h2>
         <p className="text-sm text-muted-foreground">{description}</p>
