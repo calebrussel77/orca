@@ -39,49 +39,19 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: coding_harness
-    attributes:
-      label: Coding harness and version
-      description: Optional. Include the harness or host environment if relevant.
-      placeholder: Cursor 1.8.6, Claude Code 0.2.14, Codex CLI 0.34.0
-    validations:
-      required: false
-
   - type: textarea
-    id: reproduction_steps
+    id: details
     attributes:
-      label: Reproduction steps
-      description: List the smallest set of steps needed to reproduce the bug
+      label: Details
+      description: Describe the bug in your own words. Please include reproduction steps and anything else that seems relevant.
       placeholder: |
-        1. Open Orca
-        2. Connect to a repository
-        3. Run ...
-        4. Observe ...
+        What happened?
+
+        How can we reproduce it?
+        1. ...
+        2. ...
+        3. ...
+
+        Anything else that might help:
     validations:
       required: true
-
-  - type: textarea
-    id: expected_behavior
-    attributes:
-      label: Expected behavior
-      placeholder: Orca should continue normally and use the correct project settings.
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual_behavior
-    attributes:
-      label: Actual behavior
-      placeholder: Orca fails with ...
-    validations:
-      required: true
-
-  - type: textarea
-    id: logs
-    attributes:
-      label: Logs, screenshots, or additional context
-      description: Paste any relevant logs, stack traces, screenshots, or other context
-      render: shell
-    validations:
-      required: false
