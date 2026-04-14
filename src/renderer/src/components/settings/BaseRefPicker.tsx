@@ -94,7 +94,7 @@ export function BaseRefPicker({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-medium text-foreground">{effectiveBaseRef}</div>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {currentBaseRef
               ? 'Pinned for this repo'
               : `Following primary branch (${defaultBaseRef})`}
@@ -112,13 +112,13 @@ export function BaseRefPicker({
           value={baseRefQuery}
           onChange={(e) => setBaseRefQuery(e.target.value)}
           placeholder="Search branches by name..."
-          className="max-w-md"
+          className="max-w-md text-base md:text-base"
         />
-        <p className="text-xs text-muted-foreground">Type at least 2 characters.</p>
+        <p className="text-sm text-muted-foreground">Type at least 2 characters.</p>
       </div>
 
       {isSearchingBaseRefs ? (
-        <p className="text-xs text-muted-foreground">Searching branches...</p>
+        <p className="text-sm text-muted-foreground">Searching branches...</p>
       ) : null}
 
       {!isSearchingBaseRefs && baseRefQuery.trim().length >= 2 ? (
@@ -141,14 +141,14 @@ export function BaseRefPicker({
                 >
                   <span className="truncate">{ref}</span>
                   {effectiveBaseRef === ref ? (
-                    <span className="text-xs uppercase tracking-[0.18em]">Current</span>
+                    <span className="text-sm uppercase tracking-[0.18em]">Current</span>
                   ) : null}
                 </button>
               ))}
             </div>
           </ScrollArea>
         ) : (
-          <p className="text-xs text-muted-foreground">No matching branches found.</p>
+          <p className="text-sm text-muted-foreground">No matching branches found.</p>
         )
       ) : null}
     </div>

@@ -82,7 +82,7 @@ export function GitPane({
       >
         <div className="space-y-0.5">
           <Label>Refresh Local Base Ref</Label>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             When enabled, Orca updates your local <code>main</code> or <code>master</code> before
             creating a worktree. This helps AI tools and diffs compare your branch against the
             latest base branch. Orca only does this when it is safe.

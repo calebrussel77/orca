@@ -111,8 +111,8 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
   return (
     <section className="space-y-4">
       <div className="space-y-1">
-        <h2 className="text-sm font-semibold">Orca CLI</h2>
-        <p className="text-xs text-muted-foreground">
+        <h2 className="text-lg font-semibold">Orca CLI</h2>
+        <p className="text-sm text-muted-foreground">
           Use Orca from your terminal to open the app, manage worktrees, and interact with Orca
           terminals.
         </p>
@@ -122,7 +122,7 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
         <div className="flex items-center justify-between gap-4">
           <div className="space-y-0.5">
             <Label>Shell command</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               {loading
                 ? 'Checking CLI registration…'
                 : (status?.detail ?? getInstallDescription(currentPlatform))}
@@ -166,26 +166,26 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
         </div>
 
         {status?.commandPath ? (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Command path:{' '}
-            <code className="rounded bg-muted px-1 py-0.5 text-xs">{status.commandPath}</code>
+            <code className="rounded bg-muted px-1 py-0.5 text-sm">{status.commandPath}</code>
           </p>
         ) : null}
 
         {status?.state === 'stale' && status.currentTarget ? (
-          <p className="text-xs text-amber-600 dark:text-amber-400">
+          <p className="text-sm text-amber-600 dark:text-amber-400">
             Existing launcher target: <code>{status.currentTarget}</code>
           </p>
         ) : null}
 
         {status?.state === 'installed' && !status.pathConfigured && status.pathDirectory ? (
-          <p className="text-xs text-amber-600 dark:text-amber-400">
+          <p className="text-sm text-amber-600 dark:text-amber-400">
             {status.pathDirectory} is not currently visible on PATH for this shell.
           </p>
         ) : null}
 
         {!loading && !isSupported && status?.detail ? (
-          <p className="text-xs text-muted-foreground">{status.detail}</p>
+          <p className="text-sm text-muted-foreground">{status.detail}</p>
         ) : null}
 
         <div className="flex items-center gap-2">
@@ -206,16 +206,16 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
         <div className="border-t border-border/60 pt-3">
           <div className="space-y-0.5">
             <Label>Agent skill</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Install the Orca skill so agents know to use the{' '}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">orca</code> CLI.
+              <code className="rounded bg-muted px-1 py-0.5 text-sm">orca</code> CLI.
             </p>
           </div>
 
           <div className="mt-3 space-y-1">
-            <p className="text-xs text-muted-foreground">Install command</p>
+            <p className="text-sm text-muted-foreground">Install command</p>
             <div className="inline-flex max-w-full items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
-              <code className="overflow-x-auto whitespace-nowrap text-xs text-muted-foreground">
+              <code className="overflow-x-auto whitespace-nowrap text-sm text-muted-foreground">
                 {ORCA_SKILL_INSTALL_COMMAND}
               </code>
               <TooltipProvider delayDuration={250}>
@@ -253,9 +253,9 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
             </DialogDescription>
           </DialogHeader>
           {status?.commandPath ? (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Target path:{' '}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">{status.commandPath}</code>
+              <code className="rounded bg-muted px-1 py-0.5 text-sm">{status.commandPath}</code>
             </p>
           ) : null}
           <DialogFooter>

@@ -42,7 +42,7 @@ export function SettingsSidebar({
           variant="ghost"
           size="sm"
           onClick={onBack}
-          className="w-full justify-start gap-2 text-muted-foreground"
+          className="w-full justify-start gap-2 text-base text-muted-foreground"
         >
           <ArrowLeft className="size-4" />
           Back to app
@@ -56,12 +56,15 @@ export function SettingsSidebar({
             value={searchQuery}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder="Search settings"
-            className="pl-9"
+            className="pl-9 text-base md:text-base"
           />
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-sleek px-3 py-4">
+        {/* Why: The settings sidebar shares the same typographic hierarchy as the
+        content pane so application font scaling does not leave navigation chrome
+        looking smaller than the settings content on desktop. */}
         <div className="space-y-5">
           <div className="space-y-1">
             {generalSections.map((section) => {
@@ -81,7 +84,7 @@ export function SettingsSidebar({
                   <Icon className="mr-2 size-4" />
                   {section.title}
                   {section.badge ? (
-                    <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-sm font-medium uppercase tracking-wider text-muted-foreground">
                       {section.badge}
                     </span>
                   ) : null}
@@ -91,7 +94,7 @@ export function SettingsSidebar({
           </div>
 
           <div className="space-y-2">
-            <p className="px-3 text-sm font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="px-3 text-base font-medium uppercase tracking-[0.18em] text-muted-foreground">
               Repositories
             </p>
 
@@ -116,7 +119,7 @@ export function SettingsSidebar({
                       />
                       <span className="truncate">{section.title}</span>
                       {section.isRemote && (
-                        <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                        <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-sm text-muted-foreground">
                           <Globe className="size-3" />
                           SSH
                         </span>
@@ -126,7 +129,7 @@ export function SettingsSidebar({
                 })}
               </div>
             ) : (
-              <p className="px-3 text-sm text-muted-foreground">
+              <p className="px-3 text-base text-muted-foreground">
                 {hasRepos ? 'No matching repository settings.' : 'No repositories added yet.'}
               </p>
             )}

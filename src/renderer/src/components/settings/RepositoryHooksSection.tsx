@@ -101,7 +101,7 @@ function PolicyOptionGrid<P extends string>({
               {label}
             </span>
             <p
-              className={`mt-1 text-xs leading-4 ${active ? 'text-accent-foreground/80' : 'text-muted-foreground'}`}
+              className={`mt-1 text-sm leading-5 ${active ? 'text-accent-foreground/80' : 'text-muted-foreground'}`}
             >
               {description}
             </p>
@@ -121,7 +121,7 @@ function ExampleTemplateCard({
 }): React.JSX.Element {
   return (
     <div className="space-y-2">
-      <p className="text-xs tracking-[0.18em] text-muted-foreground">
+      <p className="text-sm tracking-[0.18em] text-muted-foreground">
         Example <code className="rounded bg-muted px-1 py-0.5">orca.yaml</code> template
       </p>
       <div className="relative rounded-lg border border-border/50 bg-background/70">
@@ -129,14 +129,14 @@ function ExampleTemplateCard({
           type="button"
           variant={copiedTemplate ? 'secondary' : 'ghost'}
           size="sm"
-          className={`absolute right-2 top-2 z-10 h-6 px-2 text-xs ${
+          className={`absolute right-2 top-2 z-10 h-8 px-3 text-sm ${
             copiedTemplate ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
           }`}
           onClick={onCopyTemplate}
         >
           {copiedTemplate ? 'Copied' : 'Copy'}
         </Button>
-        <pre className="overflow-x-auto whitespace-pre-wrap break-words p-3 pr-16 font-mono text-xs leading-5 text-muted-foreground">
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words p-3 pr-16 font-mono text-sm leading-6 text-muted-foreground">
           {EXAMPLE_TEMPLATE}
         </pre>
       </div>
@@ -240,8 +240,8 @@ export function RepositoryHooksSection({
   return (
     <section className="space-y-6">
       <div className="space-y-1">
-        <h2 className="text-sm font-semibold">Worktree Hooks</h2>
-        <p className="text-xs text-muted-foreground">
+        <h2 className="text-lg font-semibold">Worktree Hooks</h2>
+        <p className="text-sm text-muted-foreground">
           Orca prefers shared hooks from `orca.yaml` and still honors older repo-local hook scripts
           until you clear them.
         </p>
@@ -254,10 +254,10 @@ export function RepositoryHooksSection({
       >
         <div className={`space-y-3 rounded-xl border p-4 ${YAML_STATE_STYLES[yamlState].card}`}>
           <div className="space-y-1">
-            <p className={`text-sm font-medium ${YAML_STATE_STYLES[yamlState].title}`}>
+            <p className={`text-lg font-semibold ${YAML_STATE_STYLES[yamlState].title}`}>
               {YAML_STATE_STYLES[yamlState].heading}
             </p>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               {YAML_STATE_STYLES[yamlState].description}
             </p>
           </div>
@@ -265,11 +265,11 @@ export function RepositoryHooksSection({
           {yamlState === 'loaded' ? (
             <div className="space-y-2">
               <div className="rounded-lg border border-border/50 bg-background/70">
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-xs leading-5 text-foreground">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-sm leading-6 text-foreground">
                   {renderYamlScriptPreview(yamlHooks)}
                 </pre>
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 Edit `orca.yaml` in the repository if you need to change these shared commands.
               </p>
             </div>
@@ -296,7 +296,7 @@ export function RepositoryHooksSection({
                   </div>
 
                   <div className="space-y-3">
-                    <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                    <p className="text-sm uppercase tracking-[0.18em] text-muted-foreground">
                       Recommended fixes
                     </p>
                     <ol className="space-y-2.5 text-sm text-muted-foreground">
@@ -336,7 +336,7 @@ export function RepositoryHooksSection({
                 <h5 className="text-sm font-semibold text-amber-700 dark:text-amber-300">
                   Legacy Repo-Local Hooks
                 </h5>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-sm text-muted-foreground">
                   These older commands still run as a fallback when `orca.yaml` does not provide a
                   hook. Clear them after you migrate the behavior into `orca.yaml`.
                 </p>
@@ -352,10 +352,10 @@ export function RepositoryHooksSection({
                 className="space-y-2 rounded-xl border border-amber-500/20 bg-background/70 p-3"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-medium capitalize text-foreground">{hookName}</p>
-                  <span className="text-xs text-muted-foreground">Compatibility fallback</span>
+                  <p className="text-sm font-medium capitalize text-foreground">{hookName}</p>
+                  <span className="text-sm text-muted-foreground">Compatibility fallback</span>
                 </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-background p-3 font-mono text-xs leading-5 text-foreground">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-background p-3 font-mono text-sm leading-6 text-foreground">
                   {script}
                 </pre>
               </div>
@@ -371,8 +371,8 @@ export function RepositoryHooksSection({
       >
         <div className="space-y-3 rounded-2xl border border-border/50 bg-background/80 p-4 shadow-sm">
           <div className="space-y-1">
-            <h5 className="text-sm font-semibold">When to Run Setup</h5>
-            <p className="text-xs text-muted-foreground">
+            <h5 className="text-lg font-semibold">When to Run Setup</h5>
+            <p className="text-sm text-muted-foreground">
               Choose the default behavior when a setup command is available.
             </p>
           </div>
@@ -393,7 +393,7 @@ export function RepositoryHooksSection({
       >
         <div className="space-y-3 rounded-2xl border border-border/50 bg-background/80 p-4 shadow-sm">
           <div className="space-y-1">
-            <h5 className="text-sm font-semibold">Custom GitHub Issue Command</h5>
+            <h5 className="text-lg font-semibold">Custom GitHub Issue Command</h5>
           </div>
           <div className="space-y-2">
             <textarea
@@ -402,19 +402,19 @@ export function RepositoryHooksSection({
               onBlur={commitIssueCommand}
               placeholder='claude -p "Read issue #{{issue}} and write a design doc to docs/design-{{issue}}.md covering the approach, edge cases, and test plan." && codex exec "Review docs/design-{{issue}}.md for gaps, missing edge cases, or unclear requirements. Add feedback at the bottom."'
               rows={5}
-              className="w-full min-w-0 resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              className="w-full min-w-0 resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Use <code className="rounded bg-muted px-1 py-0.5">{'{{issue}}'}</code> for the issue
               number.
             </p>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Leave blank to use the repo default from{' '}
               <code className="rounded bg-muted px-1 py-0.5">orca.yaml</code>
               {hasSharedIssueCommand ? '.' : ' when one exists.'}
             </p>
             {issueCommandSaveError ? (
-              <p className="text-xs text-destructive">{issueCommandSaveError}</p>
+              <p className="text-sm text-destructive">{issueCommandSaveError}</p>
             ) : null}
           </div>
         </div>

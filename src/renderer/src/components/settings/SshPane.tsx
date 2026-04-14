@@ -193,25 +193,25 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       {/* Header row */}
       <div className="flex items-center justify-between gap-3">
         <div className="space-y-0.5">
-          <p className="text-sm font-medium">Targets</p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-lg font-semibold">Targets</p>
+          <p className="text-sm text-muted-foreground">
             Add a remote host to connect to it in Orca.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <Button
             variant="outline"
-            size="xs"
+            size="sm"
             onClick={() => void handleImport()}
             className="gap-1.5"
           >
-            <Upload className="size-3" />
+            <Upload className="size-4" />
             Import
           </Button>
           {!showForm ? (
             <Button
               variant="outline"
-              size="xs"
+              size="sm"
               onClick={() => {
                 setEditingId(null)
                 setForm(EMPTY_FORM)
@@ -219,7 +219,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
               }}
               className="gap-1.5"
             >
-              <Plus className="size-3" />
+              <Plus className="size-4" />
               Add Target
             </Button>
           ) : null}
@@ -228,7 +228,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
 
       {/* Target list */}
       {targets.length === 0 && !showForm ? (
-        <div className="flex items-center justify-center rounded-lg border border-dashed border-border/60 bg-card/30 px-4 py-5 text-sm text-muted-foreground">
+        <div className="flex items-center justify-center rounded-lg border border-dashed border-border/60 bg-card/30 px-4 py-5 text-base text-muted-foreground">
           No SSH targets configured.
         </div>
       ) : (

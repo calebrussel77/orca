@@ -766,17 +766,16 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             </div>
             <Button
               variant="outline"
-              size="xs"
+              size="sm"
               onClick={() =>
                 void runCodexAccountAction('adding', () => window.api.codexAccounts.add())
               }
               disabled={codexAction !== 'idle'}
-              className="gap-1.5"
             >
               {codexAction === 'adding' ? (
-                <Loader2 className="size-3 animate-spin" />
+                <Loader2 className="size-4 animate-spin" />
               ) : (
-                <Plus className="size-3" />
+                <Plus className="size-4" />
               )}
               Add Account
             </Button>
