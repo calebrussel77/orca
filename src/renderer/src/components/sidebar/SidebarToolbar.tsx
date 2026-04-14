@@ -273,12 +273,12 @@ const SidebarToolbar = React.memo(function SidebarToolbar() {
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
-              size="xs"
+              size="sm"
               onClick={() => openModal('add-repo')}
               className="gap-1.5 text-muted-foreground"
             >
-              <FolderPlus className="size-3.5" />
-              <span className="text-[11px]">Add Repo</span>
+              <FolderPlus className="size-4" />
+              <span className="text-sm">Add Repo</span>
             </Button>
           </TooltipTrigger>
           <TooltipContent side="top" sideOffset={4}>
@@ -290,11 +290,11 @@ const SidebarToolbar = React.memo(function SidebarToolbar() {
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 onClick={() => setFeedbackOpen(true)}
                 className="text-muted-foreground"
               >
-                <MessageSquareText className="size-3.5" />
+                <MessageSquareText className="size-4" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={4}>
@@ -305,11 +305,11 @@ const SidebarToolbar = React.memo(function SidebarToolbar() {
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 onClick={() => setActiveView('settings')}
                 className="text-muted-foreground"
               >
-                <Settings className="size-3.5" />
+                <Settings className="size-4" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={4}>

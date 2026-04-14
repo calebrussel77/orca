@@ -15,12 +15,12 @@ export function LinkedWorktreeItem({
       onClick={onOpen}
     >
       <div className="min-w-0">
-        <p className="text-sm font-medium text-foreground truncate">{worktree.displayName}</p>
+        <p className="text-base font-medium text-foreground truncate">{worktree.displayName}</p>
         {branchLabel !== worktree.displayName && (
-          <p className="text-xs text-muted-foreground truncate mt-0.5">{branchLabel}</p>
+          <p className="mt-0.5 truncate text-sm text-muted-foreground">{branchLabel}</p>
         )}
       </div>
-      <span className="shrink-0 text-xs font-medium text-muted-foreground group-hover:text-foreground transition-colors">
+      <span className="shrink-0 text-sm font-medium text-muted-foreground transition-colors group-hover:text-foreground">
         Open
       </span>
     </button>

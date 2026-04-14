@@ -70,11 +70,11 @@ const SearchBar = React.memo(function SearchBar() {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search..."
-          className="h-7 pl-7 pr-20 text-[11px] border-none bg-muted/50 shadow-none focus-visible:ring-1 focus-visible:ring-ring/30"
+          className="h-8 border-none bg-muted/50 pl-8 pr-24 text-sm shadow-none focus-visible:ring-1 focus-visible:ring-ring/30 md:text-sm"
         />
         <div className="absolute right-1 flex items-center gap-0.5">
           {searchQuery && (
-            <Button variant="ghost" size="icon-xs" onClick={handleClear} className="size-5">
+            <Button variant="ghost" size="icon-xs" onClick={handleClear} className="size-6">
               <X className="size-3" />
             </Button>
           )}
@@ -85,7 +85,7 @@ const SearchBar = React.memo(function SearchBar() {
                 size="icon-xs"
                 onClick={handleToggleActive}
                 className={cn(
-                  'relative size-5',
+                  'relative size-6',
                   showActiveOnly && 'bg-accent text-accent-foreground'
                 )}
               >
@@ -107,7 +107,7 @@ const SearchBar = React.memo(function SearchBar() {
                   size="sm"
                   type="button"
                   aria-label="Filter repositories"
-                  className="h-5 w-auto gap-1 border-none bg-transparent px-1 text-[10px] font-normal shadow-none hover:bg-accent/60 focus-visible:ring-0"
+                  className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-sm font-normal shadow-none hover:bg-accent/60 focus-visible:ring-0"
                 >
                   {repoTriggerLabel}
                 </Button>

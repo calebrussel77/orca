@@ -203,7 +203,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
         >
           {isDeleting && (
             <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/50 backdrop-blur-[1px]">
-              <div className="inline-flex items-center gap-1.5 rounded-full bg-background px-3 py-1 text-[11px] font-medium text-foreground shadow-sm border border-border/50">
+              <div className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background px-3 py-1 text-sm font-medium text-foreground shadow-sm">
                 <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" />
                 Deleting…
               </div>
@@ -220,7 +220,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
               aria-hidden="true"
               className="absolute -left-1 top-1/2 z-20 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded bg-zinc-500/85 text-white shadow-sm animate-in fade-in zoom-in-75 duration-150"
             >
-              <span className="relative block pt-px text-[9px] leading-none font-medium [font-variant-numeric:tabular-nums]">
+              <span className="relative block pt-px text-xs leading-none font-medium [font-variant-numeric:tabular-nums]">
                 {hintNumber}
               </span>
             </div>
@@ -264,7 +264,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
             {/* Header row: Title and Checks */}
             <div className="flex items-center justify-between min-w-0 gap-2">
               <div className="flex items-center gap-1.5 min-w-0">
-                <div className="text-[12px] font-semibold text-foreground truncate leading-tight">
+                <div className="text-base font-semibold text-foreground truncate leading-tight">
                   {worktree.displayName}
                 </div>
 
@@ -277,7 +277,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
                     <TooltipTrigger asChild>
                       <Badge
                         variant="outline"
-                        className="h-[16px] px-1.5 text-[10px] font-medium rounded shrink-0 leading-none text-muted-foreground border-muted-foreground/30 bg-muted-foreground/5"
+                        className="h-5 rounded px-1.5 text-xs font-medium leading-none shrink-0 text-muted-foreground border-muted-foreground/30 bg-muted-foreground/5"
                       >
                         primary
                       </Badge>
@@ -322,7 +322,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
                     className="size-1.5 rounded-full"
                     style={{ backgroundColor: repo.badgeColor }}
                   />
-                  <span className="text-[10px] font-semibold text-foreground truncate max-w-[6rem] leading-none lowercase">
+                  <span className="max-w-[6rem] truncate text-sm font-semibold leading-none text-foreground lowercase">
                     {repo.displayName}
                   </span>
                 </div>
@@ -348,12 +348,12 @@ const WorktreeCard = React.memo(function WorktreeCard({
               {isFolder ? (
                 <Badge
                   variant="secondary"
-                  className="h-[16px] px-1.5 text-[10px] font-medium rounded shrink-0 text-muted-foreground bg-accent border border-border dark:bg-accent/80 dark:border-border/50 leading-none"
+                  className="h-5 rounded px-1.5 text-xs font-medium leading-none shrink-0 text-muted-foreground bg-accent border border-border dark:bg-accent/80 dark:border-border/50"
                 >
                   {repo ? getRepoKindLabel(repo) : 'Folder'}
                 </Badge>
               ) : (
-                <span className="text-[11px] text-muted-foreground truncate leading-none">
+                <span className="truncate text-sm leading-none text-muted-foreground">
                   {branch}
                 </span>
               )}
@@ -365,7 +365,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
               {conflictOperation && conflictOperation !== 'unknown' && (
                 <Badge
                   variant="outline"
-                  className="h-[16px] px-1.5 text-[10px] font-medium rounded shrink-0 gap-1 text-amber-600 border-amber-500/30 bg-amber-500/5 dark:text-amber-400 dark:border-amber-400/30 dark:bg-amber-400/5 leading-none"
+                  className="h-5 rounded px-1.5 text-xs font-medium leading-none shrink-0 gap-1 text-amber-600 border-amber-500/30 bg-amber-500/5 dark:text-amber-400 dark:border-amber-400/30 dark:bg-amber-400/5"
                 >
                   <GitMerge className="size-2.5" />
                   {CONFLICT_OPERATION_LABELS[conflictOperation]}

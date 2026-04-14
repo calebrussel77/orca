@@ -63,7 +63,7 @@ export default function RepoCombobox({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="h-8 w-full justify-between px-3 text-xs font-normal"
+          className="h-9 w-full justify-between px-3 text-sm font-normal"
           data-repo-combobox-root="true"
         >
           {selectedRepo ? (
@@ -74,7 +74,7 @@ export default function RepoCombobox({
                 dotClassName="size-1.5"
               />
               {selectedRepo.connectionId && (
-                <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-muted px-1 py-0.5 text-[9px] font-medium leading-none text-muted-foreground">
+                <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-muted px-1 py-0.5 text-xs font-medium leading-none text-muted-foreground">
                   <Globe className="size-2.5" />
                   SSH
                 </span>
@@ -121,13 +121,13 @@ export default function RepoCombobox({
                       className="max-w-full"
                     />
                     {repo.connectionId && (
-                      <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-muted px-1 py-0.5 text-[9px] font-medium leading-none text-muted-foreground">
+                      <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-muted px-1 py-0.5 text-xs font-medium leading-none text-muted-foreground">
                         <Globe className="size-2.5" />
                         SSH
                       </span>
                     )}
                   </span>
-                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{repo.path}</p>
+                  <p className="mt-0.5 truncate text-sm text-muted-foreground">{repo.path}</p>
                 </div>
               </CommandItem>
             ))}

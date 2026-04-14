@@ -287,10 +287,10 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <div className="truncate text-[13px] font-semibold leading-none lowercase">
+                      <div className="truncate text-sm font-semibold leading-none lowercase">
                         {row.label}
                       </div>
-                      <div className="rounded-full bg-black/12 px-1.5 py-0.5 text-[9px] font-medium leading-none text-muted-foreground/90">
+                      <div className="rounded-full bg-black/12 px-1.5 py-0.5 text-xs font-medium leading-none text-muted-foreground/90">
                         {row.count}
                       </div>
                     </div>
@@ -642,12 +642,12 @@ const WorktreeList = React.memo(function WorktreeList() {
 
   if (worktrees.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 px-4 py-6 text-center text-[11px] text-muted-foreground">
+      <div className="flex flex-col items-center gap-2 px-4 py-6 text-center text-sm text-muted-foreground">
         <span>No worktrees found</span>
         {hasFilters && (
           <button
             onClick={clearFilters}
-            className="inline-flex items-center gap-1.5 bg-secondary/70 border border-border/80 text-foreground font-medium text-[11px] px-2.5 py-1 rounded-md cursor-pointer hover:bg-accent transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border/80 bg-secondary/70 px-2.5 py-1 text-sm font-medium text-foreground cursor-pointer transition-colors hover:bg-accent"
           >
             <CircleX className="size-3.5" />
             Clear Filters

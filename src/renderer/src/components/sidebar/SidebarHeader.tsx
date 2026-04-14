@@ -46,7 +46,7 @@ const SidebarHeader = React.memo(function SidebarHeader() {
 
   return (
     <div className="flex items-center justify-between px-4 pt-3 pb-1">
-      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground select-none">
+      <span className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground select-none">
         Workspaces
       </span>
       <div className="flex items-center gap-1.5 shrink-0">
@@ -56,11 +56,11 @@ const SidebarHeader = React.memo(function SidebarHeader() {
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
-                  size="icon-xs"
+                  size="icon-sm"
                   className="text-muted-foreground"
                   aria-label="View options"
                 >
-                  <SlidersHorizontal className="size-3.5" />
+                  <SlidersHorizontal className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
             </TooltipTrigger>
@@ -106,7 +106,7 @@ const SidebarHeader = React.memo(function SidebarHeader() {
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="icon-sm"
               onClick={() => {
                 if (!canCreateWorktree) {
                   return
@@ -116,7 +116,7 @@ const SidebarHeader = React.memo(function SidebarHeader() {
               aria-label="Add worktree"
               disabled={!canCreateWorktree}
             >
-              <Plus className="size-3.5" />
+              <Plus className="size-4" />
             </Button>
           </TooltipTrigger>
           <TooltipContent side="right" sideOffset={6}>

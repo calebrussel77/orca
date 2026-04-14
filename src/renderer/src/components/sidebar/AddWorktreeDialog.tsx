@@ -516,8 +516,8 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-md" onKeyDown={handleKeyDown}>
         <DialogHeader>
-          <DialogTitle className="text-sm">New Worktree</DialogTitle>
-          <DialogDescription className="text-xs">
+          <DialogTitle className="text-lg">New Worktree</DialogTitle>
+          <DialogDescription className="text-sm">
             Create a new git worktree on a fresh branch cut from the selected base ref.
           </DialogDescription>
         </DialogHeader>
@@ -525,27 +525,27 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
         <div className="space-y-3">
           {/* Repo selector */}
           <div className="space-y-1">
-            <label className="text-[11px] font-medium text-muted-foreground">Repository</label>
+            <label className="text-sm font-medium text-muted-foreground">Repository</label>
             <RepoCombobox repos={eligibleRepos} value={repoId} onValueChange={handleRepoChange} />
           </div>
 
           {/* Name */}
           <div className="space-y-1">
-            <label className="text-[11px] font-medium text-muted-foreground">Name</label>
+            <label className="text-sm font-medium text-muted-foreground">Name</label>
             <Input
               ref={nameInputRef}
               value={name}
               onChange={(e) => handleNameChange(e.target.value)}
               placeholder="feature/my-feature"
-              className="h-8 text-xs"
+              className="h-9 text-sm md:text-sm"
               autoFocus
             />
-            {createError && <p className="text-[10px] text-destructive">{createError}</p>}
+            {createError && <p className="text-sm text-destructive">{createError}</p>}
             {shouldWaitForSetupCheck ? (
-              <p className="text-[10px] text-muted-foreground">Checking setup configuration...</p>
+              <p className="text-sm text-muted-foreground">Checking setup configuration...</p>
             ) : null}
             {shouldWaitForIssueAutomationCheck ? (
-              <p className="text-[10px] text-muted-foreground">Checking GitHub issue command...</p>
+              <p className="text-sm text-muted-foreground">Checking GitHub issue command...</p>
             ) : null}
           </div>
 
@@ -557,13 +557,13 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
                   onClick={setupConfig.source === 'yaml' ? undefined : handleOpenSetupSettings}
                   className="group min-w-0 flex-1 rounded-md text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
                 >
-                  <div className="flex items-center gap-1 text-[11px] font-medium text-foreground">
+                  <div className="flex items-center gap-1 text-sm font-medium text-foreground">
                     <span>Setup</span>
                     {setupConfig.source !== 'yaml' && (
                       <ChevronRight className="size-3 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
                     )}
                   </div>
-                  <p className="text-[10px] text-muted-foreground">
+                  <p className="text-sm text-muted-foreground">
                     {setupConfig.source === 'yaml' ? (
                       <>
                         This repository uses{' '}
@@ -575,7 +575,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
                     )}
                   </p>
                 </button>
-                <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground">
+                <span className="rounded-full border border-border/60 px-2 py-0.5 text-xs text-muted-foreground">
                   {setupPolicy === 'ask'
                     ? 'Ask every time'
                     : setupPolicy === 'run-by-default'
@@ -585,17 +585,17 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
               </div>
 
               <div className="space-y-1 rounded-lg border border-border/50 bg-background/60 p-2">
-                <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                   {setupConfig.source === 'yaml' ? 'orca.yaml' : 'Command Preview'}
                 </p>
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-muted-foreground">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-sm leading-6 text-muted-foreground">
                   {summarizeSetupCommand(setupConfig.command)}
                 </pre>
               </div>
 
               {requiresExplicitSetupChoice ? (
                 <div className="space-y-2">
-                  <label className="text-[11px] font-medium text-muted-foreground">
+                  <label className="text-sm font-medium text-muted-foreground">
                     Run setup now?
                   </label>
                   <div className="grid grid-cols-2 gap-2">
@@ -609,7 +609,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
                         key={value}
                         type="button"
                         onClick={() => setSetupDecision(value)}
-                        className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
+                        className={`rounded-md border px-3 py-2 text-left text-sm transition-colors ${
                           setupDecision === value
                             ? 'border-foreground bg-accent text-accent-foreground'
                             : 'border-border/60 text-muted-foreground hover:text-foreground'
@@ -620,7 +620,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
                     ))}
                   </div>
                   {!setupDecision ? (
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-sm text-muted-foreground">
                       {shouldWaitForSetupCheck
                         ? 'Checking setup configuration...'
                         : 'Choose whether to run setup before creating this worktree.'}
@@ -628,7 +628,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
                   ) : null}
                 </div>
               ) : (
-                <label className="flex items-center gap-2 text-[11px] text-foreground">
+                <label className="flex items-center gap-2 text-sm text-foreground">
                   <input
                     type="checkbox"
                     checked={resolvedSetupDecision === 'run'}
@@ -642,20 +642,20 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
 
           {/* Link GH Issue */}
           <div className="space-y-1">
-            <label className="text-[11px] font-medium text-muted-foreground">
+            <label className="text-sm font-medium text-muted-foreground">
               Link GH Issue <span className="text-muted-foreground/50">(optional)</span>
             </label>
             <Input
               value={linkedIssue}
               onChange={(e) => setLinkedIssue(e.target.value)}
               placeholder="Issue # or GitHub URL"
-              className="h-8 text-xs"
+              className="h-9 text-sm md:text-sm"
             />
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Paste an issue URL, or enter a number.
             </p>
             {linkedIssue.trim() && parsedLinkedIssueNumber === null ? (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 Enter a valid GitHub issue number or URL to enable the GitHub issue command.
               </p>
             ) : null}
@@ -663,8 +663,8 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
 
           {canOfferIssueAutomation ? (
             <div className="space-y-2 rounded-xl border border-border/60 bg-muted/20 p-3">
-              <p className="text-[11px] font-medium text-foreground">GitHub Issue Command</p>
-              <label className="flex items-center gap-2 text-[11px] text-foreground">
+              <p className="text-sm font-medium text-foreground">GitHub Issue Command</p>
+              <label className="flex items-center gap-2 text-sm text-foreground">
                 <input
                   type="checkbox"
                   checked={runIssueAutomation}
@@ -681,7 +681,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
 
           {/* Comment */}
           <div className="space-y-1">
-            <label className="text-[11px] font-medium text-muted-foreground">
+            <label className="text-sm font-medium text-muted-foreground">
               Comment <span className="text-muted-foreground/50">(optional)</span>
             </label>
             <textarea
@@ -689,7 +689,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
               onChange={(e) => setComment(e.target.value)}
               placeholder="Notes about this worktree..."
               rows={2}
-              className="w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-2 text-xs shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 resize-none"
+              className="w-full min-w-0 resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
           </div>
         </div>
@@ -699,7 +699,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
             variant="outline"
             size="sm"
             onClick={() => handleOpenChange(false)}
-            className="text-xs"
+            className="text-sm"
           >
             Cancel
           </Button>
@@ -715,7 +715,7 @@ const AddWorktreeDialog = React.memo(function AddWorktreeDialog() {
               !selectedRepo ||
               (requiresExplicitSetupChoice && !setupDecision)
             }
-            className="text-xs"
+            className="text-sm"
           >
             {creating ? 'Creating...' : 'Create'}
           </Button>
