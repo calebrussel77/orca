@@ -45,8 +45,12 @@ const SidebarHeader = React.memo(function SidebarHeader() {
   const setSortBy = useAppStore((s) => s.setSortBy)
 
   return (
-    <div className="flex items-center justify-between px-4 pt-3 pb-1">
-      <span className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground select-none">
+    <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
+      <span className="inline-flex items-center gap-2 select-none font-mono text-[0.6875rem] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+        <span
+          aria-hidden="true"
+          className="size-1 rounded-full bg-foreground/55 ring-2 ring-foreground/10"
+        />
         Workspaces
       </span>
       <div className="flex items-center gap-1.5 shrink-0">

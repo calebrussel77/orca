@@ -270,7 +270,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
               >
                 <button
                   className={cn(
-                    'group mt-2 flex h-7 w-full items-center gap-1.5 px-1.5 text-left transition-all',
+                    'group mt-2 flex h-7 w-full items-center gap-1 px-1.5 text-left transition-all',
                     row.repo ? 'overflow-hidden' : row.tone
                   )}
                   onClick={() => toggleGroup(row.key)}
@@ -287,10 +287,10 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <div className="truncate text-sm font-semibold leading-none lowercase">
+                      <div className="truncate font-mono text-[0.6875rem] font-medium uppercase leading-none tracking-[0.12em] text-muted-foreground">
                         {row.label}
                       </div>
-                      <div className="rounded-full bg-black/12 px-1.5 py-0.5 text-xs font-medium leading-none text-muted-foreground/90">
+                      <div className="rounded-full bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.625rem] font-medium leading-none text-muted-foreground/90">
                         {row.count}
                       </div>
                     </div>

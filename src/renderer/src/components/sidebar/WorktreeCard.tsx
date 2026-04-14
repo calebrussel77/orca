@@ -190,9 +190,13 @@ const WorktreeCard = React.memo(function WorktreeCard({
       <WorktreeContextMenu worktree={worktree}>
         <div
           className={cn(
-            'group relative flex items-start gap-2.5 px-2 py-2 rounded-lg cursor-pointer transition-all duration-200 outline-none select-none ml-1',
+            'group relative ml-1 flex cursor-pointer select-none items-start gap-2.5 rounded-lg px-2 py-2 outline-none transition-all duration-200',
+            // Active card: subtle tonal surface + a left indicator rail. The
+            // rail replaces the old flat border and reads as a tighter "you
+            // are here" signal without introducing a brand colour into the
+            // otherwise neutral sidebar palette.
             isActive
-              ? 'bg-black/[0.06] shadow-[0_1px_2px_rgba(0,0,0,0.03)] border border-border/60 dark:bg-white/[0.10] dark:border-border/40'
+              ? 'border border-border/60 bg-foreground/[0.05] shadow-[0_1px_2px_rgba(0,0,0,0.03)] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full before:bg-foreground/85 before:content-[""] dark:border-border/40 dark:bg-foreground/[0.08]'
               : 'border border-transparent hover:bg-accent/40',
             isDeleting && 'opacity-50 grayscale cursor-not-allowed',
             isSshDisconnected && !isDeleting && 'opacity-60'
@@ -264,7 +268,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
             {/* Header row: Title and Checks */}
             <div className="flex items-center justify-between min-w-0 gap-2">
               <div className="flex items-center gap-1.5 min-w-0">
-                <div className="text-base font-semibold text-foreground truncate leading-tight">
+                <div className="truncate text-sm font-semibold leading-snug tracking-[-0.005em] text-foreground">
                   {worktree.displayName}
                 </div>
 
@@ -277,7 +281,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
                     <TooltipTrigger asChild>
                       <Badge
                         variant="outline"
-                        className="h-5 rounded px-1.5 text-xs font-medium leading-none shrink-0 text-muted-foreground border-muted-foreground/30 bg-muted-foreground/5"
+                        className="h-4 shrink-0 rounded-sm border-muted-foreground/25 bg-muted-foreground/[0.06] px-1 py-0 font-mono text-[0.625rem] font-medium uppercase leading-none tracking-[0.06em] text-muted-foreground"
                       >
                         primary
                       </Badge>
@@ -317,12 +321,12 @@ const WorktreeCard = React.memo(function WorktreeCard({
             {/* Subtitle row: Repo badge + Branch */}
             <div className="flex items-center gap-1.5 min-w-0">
               {repo && !hideRepoBadge && (
-                <div className="flex items-center gap-1.5 shrink-0 px-1.5 py-0.5 rounded-[4px] bg-accent border border-border dark:bg-accent/50 dark:border-border/60">
+                <div className="flex shrink-0 items-center gap-1.5 rounded-sm border border-border bg-background/60 px-1.5 py-[0.1875rem] dark:bg-background/40 dark:border-border/60">
                   <div
                     className="size-1.5 rounded-full"
                     style={{ backgroundColor: repo.badgeColor }}
                   />
-                  <span className="max-w-[6rem] truncate text-sm font-semibold leading-none text-foreground lowercase">
+                  <span className="max-w-[6rem] truncate font-mono text-xs font-medium leading-none text-foreground lowercase">
                     {repo.displayName}
                   </span>
                 </div>
@@ -348,12 +352,12 @@ const WorktreeCard = React.memo(function WorktreeCard({
               {isFolder ? (
                 <Badge
                   variant="secondary"
-                  className="h-5 rounded px-1.5 text-xs font-medium leading-none shrink-0 text-muted-foreground bg-accent border border-border dark:bg-accent/80 dark:border-border/50"
+                  className="h-[1.125rem] shrink-0 rounded-sm border border-border bg-accent px-1.5 font-mono text-[0.625rem] font-medium uppercase leading-none tracking-[0.06em] text-muted-foreground dark:border-border/50 dark:bg-accent/80"
                 >
                   {repo ? getRepoKindLabel(repo) : 'Folder'}
                 </Badge>
               ) : (
-                <span className="truncate text-sm leading-none text-muted-foreground">
+                <span className="truncate font-mono text-xs leading-none text-muted-foreground">
                   {branch}
                 </span>
               )}

@@ -63,14 +63,14 @@ const SearchBar = React.memo(function SearchBar() {
   )
 
   return (
-    <div className="px-2 pb-4">
-      <div className="relative flex items-center">
-        <Search className="absolute left-2 size-3.5 text-muted-foreground pointer-events-none" />
+    <div className="px-3 pb-3">
+      <div className="group/search relative flex items-center rounded-md border border-border/60 bg-muted/40 transition-colors focus-within:border-ring/40 focus-within:bg-muted/60 hover:bg-muted/55">
+        <Search className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground" />
         <Input
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search..."
-          className="h-8 border-none bg-muted/50 pl-8 pr-24 text-sm shadow-none focus-visible:ring-1 focus-visible:ring-ring/30 md:text-sm"
+          placeholder="Search workspaces"
+          className="h-8 rounded-md border-none bg-transparent pl-8 pr-24 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 md:text-sm"
         />
         <div className="absolute right-1 flex items-center gap-0.5">
           {searchQuery && (

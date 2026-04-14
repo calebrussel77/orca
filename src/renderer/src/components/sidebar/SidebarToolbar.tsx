@@ -268,24 +268,29 @@ const SidebarToolbar = React.memo(function SidebarToolbar() {
 
   return (
     <div className="mt-auto shrink-0">
-      <div className="flex items-center justify-between border-t border-sidebar-border px-2 py-1.5">
+      <div className="flex items-center justify-between gap-1 border-t border-sidebar-border px-2 py-1.5">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => openModal('add-repo')}
-              className="gap-1.5 text-muted-foreground"
+              // Why a subtle tonal surface instead of the default ghost: the
+              // toolbar is the primary creation affordance when the sidebar is
+              // empty, and a whisper of background weight separates it from
+              // the icon-only utility buttons that follow without introducing
+              // a brand colour into the neutral palette.
+              className="h-8 gap-1.5 rounded-md border border-transparent px-2.5 text-foreground hover:bg-accent/70 hover:border-border/50"
             >
-              <FolderPlus className="size-4" />
-              <span className="text-sm">Add Repo</span>
+              <FolderPlus className="size-[0.9375rem] text-foreground/80" />
+              <span className="text-sm font-medium">Add Repo</span>
             </Button>
           </TooltipTrigger>
           <TooltipContent side="top" sideOffset={4}>
             Open folder picker to add a repo
           </TooltipContent>
         </Tooltip>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
