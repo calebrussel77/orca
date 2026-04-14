@@ -225,8 +225,8 @@ export function ShortcutsPane(): React.JSX.Element {
     <div className="space-y-8">
       <section className="space-y-4">
         <div className="space-y-1">
-          <h2 className="text-sm font-semibold">Keyboard Shortcuts</h2>
-          <p className="text-xs text-muted-foreground">
+          <h2 className="text-lg font-semibold">Keyboard Shortcuts</h2>
+          <p className="text-sm text-muted-foreground">
             View common hotkeys used across the application. Shortcuts customization is not
             currently supported.
           </p>
@@ -237,7 +237,7 @@ export function ShortcutsPane(): React.JSX.Element {
             .filter((group) => matchesSettingsSearch(searchQuery, groupEntries[group.title] ?? []))
             .map((group) => (
               <div key={group.title} className="space-y-3">
-                <h3 className="border-b border-border/50 pb-2 text-sm font-medium text-muted-foreground">
+                <h3 className="border-b border-border/50 pb-2 text-base font-medium text-muted-foreground">
                   {group.title}
                 </h3>
                 <div className="grid gap-2">

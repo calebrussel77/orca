@@ -153,7 +153,7 @@ function SettingToggle({
           {icon}
           <Label>{label}</Label>
         </div>
-        <p className="text-xs text-muted-foreground">{description}</p>
+        <p className="text-sm text-muted-foreground">{description}</p>
       </div>
       <button
         role="switch"
