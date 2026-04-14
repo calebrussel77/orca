@@ -98,7 +98,7 @@ function GitHubStarButton({ hasRepos }: { hasRepos: boolean }): React.JSX.Elemen
   return (
     <button
       className={cn(
-        'inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-[13px] font-medium transition-all duration-300',
+        'inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm font-medium transition-all duration-300',
         state === 'loading' && 'pointer-events-none opacity-0',
         state === 'not-starred' &&
           'border-amber-400/30 text-amber-300/90 hover:border-amber-400/50 hover:bg-amber-400/[0.08] cursor-pointer',
@@ -260,7 +260,7 @@ export default function Landing(): React.JSX.Element {
                 <span className="text-sm text-muted-foreground">{shortcut.action}</span>
                 <ShortcutKeyCombo
                   keys={shortcut.keys}
-                  separatorClassName="mx-0.5 text-[10px] text-muted-foreground"
+                  separatorClassName="mx-0.5 text-xs text-muted-foreground"
                 />
               </div>
             ))}
