@@ -86,6 +86,12 @@ function getDefaultPiAgentDir(): string {
 
 function mirrorEntry(sourcePath: string, targetPath: string): void {
   const sourceStats = statSync(sourcePath)
+  // Why: PTY ids restart from 1 when Orca's main process reloads in dev.
+  // Clearing the overlay root is best-effort, but old mirrored entries can
+  // still be present briefly on Windows during hot reload or overlapping PTY
+  // teardown. Removing the destination first makes the mirror idempotent
+  // instead of crashing with EEXIST when a stale junction/file is encountered.
+  rmSync(targetPath, { recursive: true, force: true })
 
   if (process.platform === 'win32') {
     if (sourceStats.isDirectory()) {
@@ -106,8 +112,16 @@ function mirrorEntry(sourcePath: string, targetPath: string): void {
 }
 
 export class PiTitlebarExtensionService {
-  private getOverlayDir(ptyId: string): string {
+  private getLegacyOverlayDir(ptyId: string): string {
     return join(app.getPath('userData'), PI_OVERLAY_DIR_NAME, ptyId)
+  }
+
+  private getOverlayDir(ptyId: string): string {
+    // Why: PTY ids are process-local counters, so `1` can exist in both the
+    // old and newly reloaded Electron main process during `pnpm dev`. Prefix
+    // overlays with the process id to avoid cross-process collisions that
+    // otherwise surface as EEXIST junction creation errors on Windows.
+    return join(app.getPath('userData'), PI_OVERLAY_DIR_NAME, `${process.pid}-${ptyId}`)
   }
 
   private mirrorAgentDir(sourceAgentDir: string, overlayDir: string): void {
@@ -142,6 +156,7 @@ export class PiTitlebarExtensionService {
     const sourceAgentDir = existingAgentDir || getDefaultPiAgentDir()
     const overlayDir = this.getOverlayDir(ptyId)
 
+    rmSync(this.getLegacyOverlayDir(ptyId), { recursive: true, force: true })
     rmSync(overlayDir, { recursive: true, force: true })
     mkdirSync(overlayDir, { recursive: true })
     this.mirrorAgentDir(sourceAgentDir, overlayDir)
@@ -160,6 +175,7 @@ export class PiTitlebarExtensionService {
   }
 
   clearPty(ptyId: string): void {
+    rmSync(this.getLegacyOverlayDir(ptyId), { recursive: true, force: true })
     rmSync(this.getOverlayDir(ptyId), { recursive: true, force: true })
   }
 }
