@@ -10,6 +10,7 @@ const {
   registerWorktreeHandlersMock,
   registerPtyHandlersMock,
   setupAutoUpdaterMock,
+  getUpdateReleaseInfoMock,
   sessionFromPartitionMock,
   browserManagerUnregisterAllMock,
   browserManagerNotifyPermissionDeniedMock,
@@ -24,6 +25,7 @@ const {
   registerWorktreeHandlersMock: vi.fn(),
   registerPtyHandlersMock: vi.fn(),
   setupAutoUpdaterMock: vi.fn(),
+  getUpdateReleaseInfoMock: vi.fn(),
   sessionFromPartitionMock: vi.fn(),
   browserManagerUnregisterAllMock: vi.fn(),
   browserManagerNotifyPermissionDeniedMock: vi.fn(),
@@ -67,6 +69,7 @@ vi.mock('../browser/browser-manager', () => ({
 vi.mock('../updater', () => ({
   checkForUpdates: vi.fn(),
   getUpdateStatus: vi.fn(),
+  getUpdateReleaseInfo: getUpdateReleaseInfoMock,
   quitAndInstall: vi.fn(),
   dismissNudge: vi.fn(),
   setupAutoUpdater: setupAutoUpdaterMock
@@ -85,6 +88,7 @@ describe('attachMainWindowServices', () => {
     registerWorktreeHandlersMock.mockReset()
     registerPtyHandlersMock.mockReset()
     setupAutoUpdaterMock.mockReset()
+    getUpdateReleaseInfoMock.mockReset()
     sessionFromPartitionMock.mockReset()
     browserManagerUnregisterAllMock.mockReset()
     browserManagerNotifyPermissionDeniedMock.mockReset()

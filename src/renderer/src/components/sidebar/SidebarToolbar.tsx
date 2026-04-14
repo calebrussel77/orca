@@ -14,8 +14,9 @@ import {
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import type { GitHubViewer } from '../../../../shared/types'
+import { DEFAULT_GITHUB_RELEASE_INFO } from '../../../../shared/github-release'
 
-const GITHUB_ISSUES_URL = 'https://github.com/stablyai/orca/issues/'
+const GITHUB_ISSUES_URL = `${DEFAULT_GITHUB_RELEASE_INFO.issuesUrl}/`
 const DISCORD_URL = 'https://discord.gg/fzjDKHxv8Q'
 const X_URL = 'https://x.com/orca_build'
 const FEEDBACK_API_URL = 'https://api.onorca.dev/v1/feedback'

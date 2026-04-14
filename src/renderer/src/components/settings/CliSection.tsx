@@ -13,13 +13,13 @@ import {
 } from '../ui/dialog'
 import { Label } from '../ui/label'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
+import { buildSkillInstallCommand, DEFAULT_GITHUB_RELEASE_INFO } from '../../../../shared/github-release'
 
 type CliSectionProps = {
   currentPlatform: string
 }
 
-const ORCA_SKILL_INSTALL_COMMAND =
-  'npx skills add https://github.com/stablyai/orca --skill orca-cli'
+const ORCA_SKILL_INSTALL_COMMAND = buildSkillInstallCommand(DEFAULT_GITHUB_RELEASE_INFO)
 
 function getRevealLabel(platform: string): string {
   if (platform === 'darwin') {

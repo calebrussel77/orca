@@ -8,13 +8,12 @@ import { Button } from './ui/button'
 import { Progress } from './ui/progress'
 import { AlertCircle, Check, Loader2, X } from 'lucide-react'
 import type { ChangelogData } from '../../../shared/types'
+import { buildReleaseTagUrl, DEFAULT_GITHUB_RELEASE_INFO } from '../../../shared/github-release'
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function releaseUrlForVersion(version: string | null): string {
-  return version
-    ? `https://github.com/stablyai/orca/releases/tag/v${version}`
-    : 'https://github.com/stablyai/orca/releases/latest'
+  return buildReleaseTagUrl(version, DEFAULT_GITHUB_RELEASE_INFO)
 }
 
 function isAnimatedGif(url: string | undefined): boolean {

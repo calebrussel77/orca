@@ -19,8 +19,9 @@ import {
   mapPRState,
   deriveCheckStatus
 } from './mappers'
+import { DEFAULT_GITHUB_RELEASE_INFO } from '../../shared/github-release'
 
-const ORCA_REPO = 'stablyai/orca'
+const ORCA_REPO = DEFAULT_GITHUB_RELEASE_INFO.slug
 
 /**
  * Check if the authenticated user has starred the Orca repo.

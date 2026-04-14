@@ -11,6 +11,7 @@ import {
 } from './updater-mac-install'
 import { compareVersions } from './updater-fallback'
 import { fetchChangelog } from './updater-changelog'
+import { buildReleaseTagUrl, type GitHubReleaseInfo } from '../shared/github-release'
 
 type UpdaterHandlerContext = {
   clearAvailableUpdateContext: () => void
@@ -28,6 +29,7 @@ type UpdaterHandlerContext = {
   setAvailableReleaseUrl: (releaseUrl: string | null) => void
   setAvailableVersion: (version: string | null) => void
   setUserInitiatedCheck: (value: boolean) => void
+  getReleaseInfo: () => GitHubReleaseInfo
 }
 
 export function registerAutoUpdaterHandlers({
@@ -45,7 +47,8 @@ export function registerAutoUpdaterHandlers({
   scheduleAutomaticUpdateCheck,
   setAvailableReleaseUrl,
   setAvailableVersion,
-  setUserInitiatedCheck
+  setUserInitiatedCheck,
+  getReleaseInfo
 }: UpdaterHandlerContext): void {
   // On macOS, electron-updater's MacUpdater downloads the ZIP from GitHub,
   // then serves it to Squirrel.Mac via a localhost proxy. The electron-updater
@@ -127,13 +130,18 @@ export function registerAutoUpdaterHandlers({
       // set without a matching 'available' broadcast, or a completed-check
       // timestamp persisted for a check that never showed a result.
       setAvailableVersion(info.version)
-      setAvailableReleaseUrl(null)
+      setAvailableReleaseUrl(buildReleaseTagUrl(info.version, getReleaseInfo()))
       recordCompletedUpdateCheck()
       if (!wasUserInitiated) {
         scheduleAutomaticUpdateCheck(24 * 60 * 60 * 1000)
       }
 
-      sendStatus({ state: 'available', version: info.version, changelog })
+      sendStatus({
+        state: 'available',
+        version: info.version,
+        releaseUrl: buildReleaseTagUrl(info.version, getReleaseInfo()),
+        changelog
+      })
     })()
   })
 

@@ -1,3 +1,5 @@
+import { DEFAULT_GITHUB_RELEASE_INFO } from '../../../../shared/github-release'
+
 export function TerminalErrorToast({
   error,
   onDismiss
@@ -30,7 +32,7 @@ export function TerminalErrorToast({
           {'\n'}
           If this persists, please{' '}
           <a
-            href="https://github.com/stablyai/orca/issues"
+            href={DEFAULT_GITHUB_RELEASE_INFO.issuesUrl}
             style={{ color: '#fca5a5', textDecoration: 'underline' }}
           >
             file an issue

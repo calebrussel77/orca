@@ -261,6 +261,10 @@ describe('updater', () => {
     setupAutoUpdater(mainWindow as never)
 
     expect(autoUpdaterMock.setFeedURL).toHaveBeenCalledTimes(1)
+    expect(autoUpdaterMock.setFeedURL).toHaveBeenCalledWith({
+      provider: 'generic',
+      url: 'https://github.com/calebrussel77/orca/releases/latest/download'
+    })
     expect(autoUpdaterMock.on).toHaveBeenCalled()
     expect(fetchNudgeMock).toHaveBeenCalledTimes(1)
     expect(autoUpdaterMock.setFeedURL.mock.invocationCallOrder[0]).toBeLessThan(
@@ -358,6 +362,7 @@ describe('updater', () => {
     expect(sendMock).toHaveBeenCalledWith('updater:status', {
       state: 'available',
       version: '1.0.61',
+      releaseUrl: 'https://github.com/calebrussel77/orca/releases/tag/v1.0.61',
       changelog: null
     })
 
@@ -394,6 +399,7 @@ describe('updater', () => {
     expect(sendMock).toHaveBeenCalledWith('updater:status', {
       state: 'available',
       version: '1.0.61',
+      releaseUrl: 'https://github.com/calebrussel77/orca/releases/tag/v1.0.61',
       changelog: null,
       activeNudgeId: 'campaign-1'
     })
@@ -413,6 +419,7 @@ describe('updater', () => {
     expect(sendMock).toHaveBeenCalledWith('updater:status', {
       state: 'available',
       version: '1.0.62',
+      releaseUrl: 'https://github.com/calebrussel77/orca/releases/tag/v1.0.62',
       changelog: null
     })
     expect(sendMock).not.toHaveBeenCalledWith(
@@ -444,6 +451,7 @@ describe('updater', () => {
     expect(sendMock).toHaveBeenCalledWith('updater:status', {
       state: 'available',
       version: '1.0.61',
+      releaseUrl: 'https://github.com/calebrussel77/orca/releases/tag/v1.0.61',
       changelog: null,
       activeNudgeId: 'campaign-1'
     })

@@ -12,6 +12,8 @@ import {
 import { registerAutoUpdaterHandlers } from './updater-events'
 import { compareVersions, isBenignCheckFailure, statusesEqual } from './updater-fallback'
 import { fetchNudge, shouldApplyNudge } from './updater-nudge'
+import { resolveGitHubReleaseInfo } from './github-release-info'
+import { DEFAULT_GITHUB_RELEASE_INFO, type GitHubReleaseInfo } from '../shared/github-release'
 
 const AUTO_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 const AUTO_UPDATE_RETRY_INTERVAL_MS = 60 * 60 * 1000
@@ -36,6 +38,7 @@ let activeUpdateNudgeId: string | null = null
 let awaitingNudgeCheckOutcome = false
 let nudgeCheckInFlight = false
 let lastNudgeCheckAt = 0
+let githubReleaseInfo: GitHubReleaseInfo = DEFAULT_GITHUB_RELEASE_INFO
 
 let _getPendingUpdateNudgeId: (() => string | null) | null = null
 let _getDismissedUpdateNudgeId: (() => string | null) | null = null
@@ -229,6 +232,10 @@ export function getUpdateStatus(): UpdateStatus {
   return currentStatus
 }
 
+export function getUpdateReleaseInfo(): GitHubReleaseInfo {
+  return githubReleaseInfo
+}
+
 function scheduleAutomaticUpdateCheck(delayMs: number): void {
   if (autoUpdateCheckTimer) {
     clearTimeout(autoUpdateCheckTimer)
@@ -412,6 +419,7 @@ export function setupAutoUpdater(
     return
   }
 
+  githubReleaseInfo = resolveGitHubReleaseInfo()
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
 
@@ -422,7 +430,7 @@ export function setupAutoUpdater(
   // excludes RC/prerelease versions without client-side filtering.
   autoUpdater.setFeedURL({
     provider: 'generic',
-    url: 'https://github.com/stablyai/orca/releases/latest/download'
+    url: githubReleaseInfo.latestDownloadUrl
   })
 
   if (autoUpdaterInitialized) {
@@ -451,7 +459,8 @@ export function setupAutoUpdater(
     },
     setUserInitiatedCheck: (value) => {
       userInitiatedCheck = value
-    }
+    },
+    getReleaseInfo: () => githubReleaseInfo
   })
 
   void checkForUpdateNudge()

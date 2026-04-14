@@ -78,6 +78,7 @@ import type {
   CodexUsageSessionRow,
   CodexUsageSummary
 } from '../../shared/codex-usage-types'
+import type { GitHubReleaseInfo } from '../../shared/github-release'
 
 export type BrowserApi = {
   registerGuest: (args: {
@@ -360,6 +361,7 @@ export type PreloadApi = {
   }
   updater: {
     getVersion: () => Promise<string>
+    getReleaseInfo: () => Promise<GitHubReleaseInfo>
     getStatus: () => Promise<UpdateStatus>
     check: () => Promise<void>
     download: () => Promise<void>

@@ -15,6 +15,7 @@ import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import {
   checkForUpdatesFromMenu,
   downloadUpdate,
+  getUpdateReleaseInfo,
   getUpdateStatus,
   quitAndInstall,
   setupAutoUpdater,
@@ -223,6 +224,7 @@ export function registerClipboardHandlers(): void {
 export function registerUpdaterHandlers(_store: Store): void {
   ipcMain.removeHandler('updater:getStatus')
   ipcMain.removeHandler('updater:getVersion')
+  ipcMain.removeHandler('updater:getReleaseInfo')
   ipcMain.removeHandler('updater:check')
   ipcMain.removeHandler('updater:download')
   ipcMain.removeHandler('updater:quitAndInstall')
@@ -230,6 +232,7 @@ export function registerUpdaterHandlers(_store: Store): void {
 
   ipcMain.handle('updater:getStatus', () => getUpdateStatus())
   ipcMain.handle('updater:getVersion', () => app.getVersion())
+  ipcMain.handle('updater:getReleaseInfo', () => getUpdateReleaseInfo())
   ipcMain.handle('updater:check', () => checkForUpdatesFromMenu())
   ipcMain.handle('updater:download', () => downloadUpdate())
   ipcMain.handle('updater:quitAndInstall', () => quitAndInstall())
