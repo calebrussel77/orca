@@ -144,7 +144,7 @@ export function TerminalPane({
             placeholder="SF Mono"
             className="max-w-sm"
           />
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Enter any installed font family or CSS stack. Orca uses it for terminal and code
             surfaces when available on this machine.
           </p>

@@ -480,7 +480,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                     : ''}
                 </span>
                 {defaultProfile.source.importedAt ? (
-                  <span className="truncate text-[11px] text-muted-foreground">
+                  <span className="truncate text-xs text-muted-foreground">
                     {new Date(defaultProfile.source.importedAt).toLocaleDateString(undefined, {
                       month: 'short',
                       day: 'numeric',
@@ -516,7 +516,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-sm font-medium">{profile.label}</span>
-                    <span className="truncate text-[11px] text-muted-foreground">
+                    <span className="truncate text-xs text-muted-foreground">
                       {profile.source
                         ? `Imported from ${profile.source.browserFamily}${profile.source.profileName ? ` (${profile.source.profileName})` : ''}`
                         : 'Unused session'}
@@ -809,13 +809,13 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                     {codexAccounts.activeAccountId === null ? (
                       <Badge
                         variant="outline"
-                        className="h-4 shrink-0 rounded px-1.5 text-[10px] font-medium leading-none text-foreground/80"
+                        className="h-4 shrink-0 rounded px-1.5 text-xs font-medium leading-none text-foreground/80"
                       >
                         Active
                       </Badge>
                     ) : null}
                   </div>
-                  <span className="truncate text-[11px] text-muted-foreground">
+                  <span className="truncate text-xs text-muted-foreground">
                     Use your current system Codex login.
                   </span>
                 </div>
@@ -849,13 +849,13 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                           {isActive ? (
                             <Badge
                               variant="outline"
-                              className="h-4 shrink-0 rounded px-1.5 text-[10px] font-medium leading-none text-foreground/80"
+                              className="h-4 shrink-0 rounded px-1.5 text-xs font-medium leading-none text-foreground/80"
                             >
                               Active
                             </Badge>
                           ) : null}
                         </div>
-                        <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground max-sm:flex-wrap">
+                        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground max-sm:flex-wrap">
                           {account.workspaceLabel ? (
                             <span className="truncate">{account.workspaceLabel}</span>
                           ) : null}

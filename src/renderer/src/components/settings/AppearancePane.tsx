@@ -137,7 +137,7 @@ export function AppearancePane({
               placeholder="Geist"
               className="max-w-sm"
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Enter any installed font family or CSS stack. Orca falls back gracefully if the font
               is unavailable on this machine.
             </p>
@@ -151,8 +151,8 @@ export function AppearancePane({
           <h3 className="text-sm font-semibold">UI Zoom</h3>
           <p className="text-xs text-muted-foreground">
             Scale the entire application interface. Use{' '}
-            <kbd className="rounded border px-1 py-0.5 text-[10px]">{zoomInLabel}</kbd> /{' '}
-            <kbd className="rounded border px-1 py-0.5 text-[10px]">{zoomOutLabel}</kbd> when not in
+            <kbd className="rounded border px-1 py-0.5 text-xs">{zoomInLabel}</kbd> /{' '}
+            <kbd className="rounded border px-1 py-0.5 text-xs">{zoomOutLabel}</kbd> when not in
             a terminal pane.
           </p>
         </div>

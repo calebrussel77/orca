@@ -79,7 +79,7 @@ export function SshTargetCard({
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium">{target.label}</span>
           <span className={`size-2 shrink-0 rounded-full ${statusColor(status)}`} />
-          <span className="text-[11px] text-muted-foreground">{STATUS_LABELS[status]}</span>
+          <span className="text-xs text-muted-foreground">{STATUS_LABELS[status]}</span>
         </div>
         <p className="truncate text-xs text-muted-foreground">
           {target.username}@{target.host}:{target.port}

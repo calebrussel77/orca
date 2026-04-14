@@ -88,7 +88,7 @@ export function SshTargetForm({
             onChange={(e) => onFormChange((f) => ({ ...f, identityFile: e.target.value }))}
             placeholder="~/.ssh/id_ed25519 (leave empty for SSH agent)"
           />
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Optional. SSH agent is used by default.
           </p>
         </div>
@@ -99,7 +99,7 @@ export function SshTargetForm({
             onChange={(e) => onFormChange((f) => ({ ...f, proxyCommand: e.target.value }))}
             placeholder="e.g. cloudflared access ssh --hostname %h"
           />
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Optional. Used for tunneling (e.g. Cloudflare Access, ProxyCommand).
           </p>
         </div>
@@ -110,7 +110,7 @@ export function SshTargetForm({
             onChange={(e) => onFormChange((f) => ({ ...f, jumpHost: e.target.value }))}
             placeholder="bastion.example.com"
           />
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Optional. Equivalent to ProxyJump / ssh -J.
           </p>
         </div>

@@ -59,10 +59,10 @@ export function TerminalThemePreview({
         >
           <div className="flex min-h-[220px]">
             <div
-              className="flex-1 p-3 font-mono text-[12px] leading-6"
+              className="flex-1 p-3 font-mono text-xs leading-6"
               style={{ backgroundColor: background, color: foreground, opacity: activePaneOpacity }}
             >
-              <div className="flex items-center gap-2 text-[11px] opacity-70">
+              <div className="flex items-center gap-2 text-xs opacity-70">
                 <span className="size-2 rounded-full bg-emerald-500" />
                 <span>orca preview</span>
               </div>
@@ -90,7 +90,7 @@ export function TerminalThemePreview({
               style={{ width: `${dividerThicknessPx}px`, backgroundColor: appearance.dividerColor }}
             />
             <div
-              className="w-[38%] p-3 font-mono text-[12px] leading-6"
+              className="w-[38%] p-3 font-mono text-xs leading-6"
               style={{
                 backgroundColor: background,
                 color: foreground,

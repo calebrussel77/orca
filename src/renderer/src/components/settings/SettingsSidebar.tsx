@@ -81,7 +81,7 @@ export function SettingsSidebar({
                   <Icon className="mr-2 size-4" />
                   {section.title}
                   {section.badge ? (
-                    <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                    <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       {section.badge}
                     </span>
                   ) : null}
@@ -91,7 +91,7 @@ export function SettingsSidebar({
           </div>
 
           <div className="space-y-2">
-            <p className="px-3 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="px-3 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
               Repositories
             </p>
 
@@ -116,7 +116,7 @@ export function SettingsSidebar({
                       />
                       <span className="truncate">{section.title}</span>
                       {section.isRemote && (
-                        <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+                        <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
                           <Globe className="size-3" />
                           SSH
                         </span>

@@ -168,7 +168,7 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
         {status?.commandPath ? (
           <p className="text-xs text-muted-foreground">
             Command path:{' '}
-            <code className="rounded bg-muted px-1 py-0.5 text-[11px]">{status.commandPath}</code>
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">{status.commandPath}</code>
           </p>
         ) : null}
 
@@ -208,14 +208,14 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
             <Label>Agent skill</Label>
             <p className="text-xs text-muted-foreground">
               Install the Orca skill so agents know to use the{' '}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">orca</code> CLI.
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">orca</code> CLI.
             </p>
           </div>
 
           <div className="mt-3 space-y-1">
             <p className="text-xs text-muted-foreground">Install command</p>
             <div className="inline-flex max-w-full items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
-              <code className="overflow-x-auto whitespace-nowrap text-[11px] text-muted-foreground">
+              <code className="overflow-x-auto whitespace-nowrap text-xs text-muted-foreground">
                 {ORCA_SKILL_INSTALL_COMMAND}
               </code>
               <TooltipProvider delayDuration={250}>
@@ -255,7 +255,7 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
           {status?.commandPath ? (
             <p className="text-xs text-muted-foreground">
               Target path:{' '}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">{status.commandPath}</code>
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">{status.commandPath}</code>
             </p>
           ) : null}
           <DialogFooter>

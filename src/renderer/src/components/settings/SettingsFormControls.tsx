@@ -89,7 +89,7 @@ export function ThemePicker({
               >
                 <span className="truncate">{theme}</span>
                 {selectedTheme === theme ? (
-                  <span className="ml-3 shrink-0 text-[11px] uppercase tracking-[0.16em]">
+                  <span className="ml-3 shrink-0 text-xs uppercase tracking-[0.16em]">
                     Current
                   </span>
                 ) : null}
@@ -200,7 +200,7 @@ export function NumberField({
         />
         {suffix ? <span className="text-xs text-muted-foreground">{suffix}</span> : null}
       </div>
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         Current: {value}
         {defaultValue !== undefined ? ` · Default: ${defaultValue}` : ''}
       </p>

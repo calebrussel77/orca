@@ -363,6 +363,10 @@ function App(): React.JSX.Element {
     // the root variable lets Orca scale regular app text without also forcing
     // Monaco/xterm/markdown surfaces to share that same sizing.
     root.style.setProperty('--app-font-size', `${settings.appFontSize}px`)
+    // Why: Settings copy and most app UI text use Tailwind rem utilities
+    // (`text-sm`, `text-xs`, etc.). Setting html.fontSize directly guarantees
+    // those utilities recompute from the chosen app font size immediately.
+    root.style.fontSize = `${settings.appFontSize}px`
     root.style.setProperty('--app-font-family', buildAppFontFamily(settings.appFontFamily))
     root.style.setProperty('--font-sans', buildAppFontFamily(settings.appFontFamily))
     root.style.setProperty('--code-font-size', `${settings.terminalFontSize}px`)

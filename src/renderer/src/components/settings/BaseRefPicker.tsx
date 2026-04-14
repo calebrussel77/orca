@@ -141,7 +141,7 @@ export function BaseRefPicker({
                 >
                   <span className="truncate">{ref}</span>
                   {effectiveBaseRef === ref ? (
-                    <span className="text-[10px] uppercase tracking-[0.18em]">Current</span>
+                    <span className="text-xs uppercase tracking-[0.18em]">Current</span>
                   ) : null}
                 </button>
               ))}

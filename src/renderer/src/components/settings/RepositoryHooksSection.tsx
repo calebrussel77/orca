@@ -101,7 +101,7 @@ function PolicyOptionGrid<P extends string>({
               {label}
             </span>
             <p
-              className={`mt-1 text-[11px] leading-4 ${active ? 'text-accent-foreground/80' : 'text-muted-foreground'}`}
+              className={`mt-1 text-xs leading-4 ${active ? 'text-accent-foreground/80' : 'text-muted-foreground'}`}
             >
               {description}
             </p>
@@ -121,7 +121,7 @@ function ExampleTemplateCard({
 }): React.JSX.Element {
   return (
     <div className="space-y-2">
-      <p className="text-[10px] tracking-[0.18em] text-muted-foreground">
+      <p className="text-xs tracking-[0.18em] text-muted-foreground">
         Example <code className="rounded bg-muted px-1 py-0.5">orca.yaml</code> template
       </p>
       <div className="relative rounded-lg border border-border/50 bg-background/70">
@@ -129,14 +129,14 @@ function ExampleTemplateCard({
           type="button"
           variant={copiedTemplate ? 'secondary' : 'ghost'}
           size="sm"
-          className={`absolute right-2 top-2 z-10 h-6 px-2 text-[11px] ${
+          className={`absolute right-2 top-2 z-10 h-6 px-2 text-xs ${
             copiedTemplate ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
           }`}
           onClick={onCopyTemplate}
         >
           {copiedTemplate ? 'Copied' : 'Copy'}
         </Button>
-        <pre className="overflow-x-auto whitespace-pre-wrap break-words p-3 pr-16 font-mono text-[11px] leading-5 text-muted-foreground">
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words p-3 pr-16 font-mono text-xs leading-5 text-muted-foreground">
           {EXAMPLE_TEMPLATE}
         </pre>
       </div>
@@ -265,7 +265,7 @@ export function RepositoryHooksSection({
           {yamlState === 'loaded' ? (
             <div className="space-y-2">
               <div className="rounded-lg border border-border/50 bg-background/70">
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-5 text-foreground">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-xs leading-5 text-foreground">
                   {renderYamlScriptPreview(yamlHooks)}
                 </pre>
               </div>
@@ -296,13 +296,13 @@ export function RepositoryHooksSection({
                   </div>
 
                   <div className="space-y-3">
-                    <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                    <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                       Recommended fixes
                     </p>
                     <ol className="space-y-2.5 text-sm text-muted-foreground">
                       {PARSE_ERROR_FIXES.map((fix, index) => (
                         <li key={fix} className="flex items-start gap-3">
-                          <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-foreground">
+                          <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-foreground">
                             {index + 1}
                           </span>
                           <span className="leading-6">{fix}</span>
@@ -353,9 +353,9 @@ export function RepositoryHooksSection({
               >
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-medium capitalize text-foreground">{hookName}</p>
-                  <span className="text-[10px] text-muted-foreground">Compatibility fallback</span>
+                  <span className="text-xs text-muted-foreground">Compatibility fallback</span>
                 </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-background p-3 font-mono text-[11px] leading-5 text-foreground">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-background p-3 font-mono text-xs leading-5 text-foreground">
                   {script}
                 </pre>
               </div>
