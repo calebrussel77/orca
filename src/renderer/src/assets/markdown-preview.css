@@ -4,6 +4,7 @@
   position: relative;
   padding: 24px 32px;
   font-size: inherit;
+  font-family: var(--code-font-family, var(--font-mono, monospace));
   line-height: 1.7;
 }
 

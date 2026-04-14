@@ -13,6 +13,7 @@ import { getConnectionId } from '@/lib/connection-context'
 import { scrollTopCache, cursorPositionCache, setWithLRU } from '@/lib/scroll-cache'
 import '@/lib/monaco-setup'
 import { computeEditorFontSize } from '@/lib/editor-font-zoom'
+import { buildCodeFontFamily } from '@/lib/font-family'
 
 import { useContextualCopySetup } from './useContextualCopySetup'
 import { computeMonacoRevealRange } from './monaco-reveal-range'
@@ -65,6 +66,7 @@ export default function MonacoEditor({
     settings?.terminalFontSize ?? 13,
     editorFontZoomLevel
   )
+  const editorFontFamily = buildCodeFontFamily(settings?.terminalFontFamily ?? '')
 
   // Gutter context menu state
   const [gutterMenuOpen, setGutterMenuOpen] = useState(false)
@@ -264,9 +266,9 @@ export default function MonacoEditor({
     }
     editorRef.current.updateOptions({
       fontSize: editorFontSize,
-      fontFamily: settings.terminalFontFamily || 'monospace'
+      fontFamily: editorFontFamily
     })
-  }, [editorFontSize, settings])
+  }, [editorFontFamily, editorFontSize, settings])
 
   useEffect(() => {
     const handler = (event: Event): void => {
@@ -319,7 +321,7 @@ export default function MonacoEditor({
           scrollBeyondLastLine: false,
           wordWrap: 'on',
           fontSize: editorFontSize,
-          fontFamily: settings?.terminalFontFamily || 'monospace',
+          fontFamily: editorFontFamily,
           lineNumbers: 'on',
           renderLineHighlight: 'line',
           automaticLayout: true,

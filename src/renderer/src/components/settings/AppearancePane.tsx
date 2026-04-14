@@ -1,10 +1,12 @@
 import type { GlobalSettings } from '../../../../shared/types'
+import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Separator } from '../ui/separator'
 import { UIZoomControl } from './UIZoomControl'
 import { SearchableSetting } from './SearchableSetting'
 import { matchesSettingsSearch, type SettingsSearchEntry } from './settings-search'
 import { useAppStore } from '../../store'
+import { NumberField } from './SettingsFormControls'
 
 type AppearancePaneProps = {
   settings: GlobalSettings
@@ -17,6 +19,16 @@ export const APPEARANCE_PANE_SEARCH_ENTRIES: SettingsSearchEntry[] = [
     title: 'Theme',
     description: 'Choose how Orca looks in the app window.',
     keywords: ['dark', 'light', 'system']
+  },
+  {
+    title: 'Application Font Size',
+    description: 'Scale the standard Orca interface text without changing code or terminal surfaces.',
+    keywords: ['typography', 'font', 'size', 'app', 'ui', 'text']
+  },
+  {
+    title: 'Application Font Family',
+    description: 'Use a custom font family for Orca interface text when that font exists locally.',
+    keywords: ['typography', 'font', 'family', 'app', 'ui', 'text']
   },
   {
     title: 'UI Zoom',
@@ -45,9 +57,10 @@ export function AppearancePane({
   const zoomInLabel = isMac ? '⌘+' : 'Ctrl +'
   const zoomOutLabel = isMac ? '⌘-' : 'Ctrl -'
   const themeEntries = APPEARANCE_PANE_SEARCH_ENTRIES.slice(0, 1)
-  const zoomEntries = APPEARANCE_PANE_SEARCH_ENTRIES.slice(1, 2)
-  const layoutEntries = APPEARANCE_PANE_SEARCH_ENTRIES.slice(2, 3)
-  const titlebarEntries = APPEARANCE_PANE_SEARCH_ENTRIES.slice(3)
+  const typographyEntries = APPEARANCE_PANE_SEARCH_ENTRIES.slice(1, 3)
+  const zoomEntries = APPEARANCE_PANE_SEARCH_ENTRIES.slice(3, 4)
+  const layoutEntries = APPEARANCE_PANE_SEARCH_ENTRIES.slice(4, 5)
+  const titlebarEntries = APPEARANCE_PANE_SEARCH_ENTRIES.slice(5)
 
   const visibleSections = [
     matchesSettingsSearch(searchQuery, themeEntries) ? (
@@ -81,6 +94,55 @@ export function AppearancePane({
             ))}
           </div>
         </SearchableSetting>
+      </section>
+    ) : null,
+    matchesSettingsSearch(searchQuery, typographyEntries) ? (
+      <section key="typography" className="space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold">Application Typography</h3>
+          <p className="text-xs text-muted-foreground">
+            Customize the normal Orca interface text separately from terminal and code views.
+          </p>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <SearchableSetting
+            title="Application Font Size"
+            description="Scale the standard Orca interface text without changing code or terminal surfaces."
+            keywords={['typography', 'font', 'size', 'app', 'ui', 'text']}
+          >
+            <NumberField
+              label="Application Font Size"
+              description="Scale the standard Orca interface text without changing code or terminal surfaces."
+              value={settings.appFontSize}
+              defaultValue={16}
+              min={12}
+              max={22}
+              step={1}
+              suffix="px"
+              onChange={(value) => updateSettings({ appFontSize: value })}
+            />
+          </SearchableSetting>
+
+          <SearchableSetting
+            title="Application Font Family"
+            description="Use a custom font family for Orca interface text when that font exists locally."
+            keywords={['typography', 'font', 'family', 'app', 'ui', 'text']}
+            className="space-y-2"
+          >
+            <Label>Application Font Family</Label>
+            <Input
+              value={settings.appFontFamily}
+              onChange={(event) => updateSettings({ appFontFamily: event.target.value })}
+              placeholder="Geist"
+              className="max-w-sm"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Enter any installed font family or CSS stack. Orca falls back gracefully if the font
+              is unavailable on this machine.
+            </p>
+          </SearchableSetting>
+        </div>
       </section>
     ) : null,
     matchesSettingsSearch(searchQuery, zoomEntries) ? (

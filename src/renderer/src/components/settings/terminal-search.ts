@@ -3,13 +3,13 @@ import type { SettingsSearchEntry } from './settings-search'
 export const TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   {
     title: 'Font Size',
-    description: 'Default terminal font size for new panes and live updates.',
-    keywords: ['terminal', 'typography', 'text size']
+    description: 'Shared font size for terminal panes, diff views, and code/file previews.',
+    keywords: ['terminal', 'typography', 'text size', 'code', 'diff', 'preview', 'editor']
   },
   {
     title: 'Font Family',
-    description: 'Default terminal font family for new panes and live updates.',
-    keywords: ['terminal', 'typography', 'font']
+    description: 'Shared font family for terminal panes, diff views, and code/file previews.',
+    keywords: ['terminal', 'typography', 'font', 'code', 'diff', 'preview', 'editor']
   },
   {
     title: 'Font Weight',

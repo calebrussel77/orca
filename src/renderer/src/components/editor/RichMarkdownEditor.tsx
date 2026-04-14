@@ -48,6 +48,7 @@ export default function RichMarkdownEditor({
   onSave
 }: RichMarkdownEditorProps): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const settings = useAppStore((s) => s.settings)
   const editorFontZoomLevel = useAppStore((s) => s.editorFontZoomLevel)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null)
@@ -465,7 +466,12 @@ export default function RichMarkdownEditor({
     <div
       ref={rootRef}
       className="rich-markdown-editor-shell"
-      style={{ '--editor-font-zoom-level': editorFontZoomLevel } as React.CSSProperties}
+      style={
+        {
+          '--editor-font-zoom-level': editorFontZoomLevel,
+          '--code-font-size': `${settings?.terminalFontSize ?? 14}px`
+        } as React.CSSProperties
+      }
     >
       <RichMarkdownToolbar
         editor={editor}

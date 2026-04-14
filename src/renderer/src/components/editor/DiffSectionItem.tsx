@@ -7,6 +7,7 @@ import { joinPath } from '@/lib/path'
 import { detectLanguage } from '@/lib/language-detect'
 import { useAppStore } from '@/store'
 import { computeEditorFontSize } from '@/lib/editor-font-zoom'
+import { buildCodeFontFamily } from '@/lib/font-family'
 import type { GitDiffResult } from '../../../../shared/types'
 
 const ImageDiffViewer = lazy(() => import('./ImageDiffViewer'))
@@ -113,6 +114,7 @@ export function DiffSectionItem({
     settings?.terminalFontSize ?? 13,
     editorFontZoomLevel
   )
+  const editorFontFamily = buildCodeFontFamily(settings?.terminalFontFamily ?? '')
 
   const lineStats = useMemo(
     () =>
@@ -287,7 +289,7 @@ export function DiffSectionItem({
                 minimap: { enabled: false },
                 scrollBeyondLastLine: false,
                 fontSize: editorFontSize,
-                fontFamily: settings?.terminalFontFamily || 'monospace',
+                fontFamily: editorFontFamily,
                 lineNumbers: 'on',
                 automaticLayout: true,
                 renderOverviewRuler: false,

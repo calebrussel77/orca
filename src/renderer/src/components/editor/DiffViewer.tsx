@@ -6,6 +6,7 @@ import { diffViewStateCache, setWithLRU } from '@/lib/scroll-cache'
 import '@/lib/monaco-setup'
 import { computeEditorFontSize } from '@/lib/editor-font-zoom'
 import { useContextualCopySetup } from './useContextualCopySetup'
+import { buildCodeFontFamily } from '@/lib/font-family'
 
 type DiffViewerProps = {
   modelKey: string
@@ -38,6 +39,7 @@ export default function DiffViewer({
     settings?.terminalFontSize ?? 13,
     editorFontZoomLevel
   )
+  const editorFontFamily = buildCodeFontFamily(settings?.terminalFontFamily ?? '')
   const isDark =
     settings?.theme === 'dark' ||
     (settings?.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -132,7 +134,7 @@ export default function DiffViewer({
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
             fontSize: editorFontSize,
-            fontFamily: settings?.terminalFontFamily || 'monospace',
+            fontFamily: editorFontFamily,
             lineNumbers: 'on',
             automaticLayout: true,
             renderOverviewRuler: true,

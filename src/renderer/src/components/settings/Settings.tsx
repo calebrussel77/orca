@@ -15,7 +15,7 @@ import { getRepoKindLabel, isFolderRepo } from '../../../../shared/repo-kind'
 import { useAppStore } from '../../store'
 import { useSystemPrefersDark } from '@/components/terminal-pane/use-system-prefers-dark'
 import { isWindowsUserAgent } from '@/components/terminal-pane/pane-helpers'
-import { SCROLLBACK_PRESETS_MB, getFallbackTerminalFonts } from './SettingsConstants'
+import { SCROLLBACK_PRESETS_MB } from './SettingsConstants'
 import { GeneralPane, GENERAL_PANE_SEARCH_ENTRIES } from './GeneralPane'
 import { AppearancePane, APPEARANCE_PANE_SEARCH_ENTRIES } from './AppearancePane'
 import { ShortcutsPane, SHORTCUTS_PANE_SEARCH_ENTRIES } from './ShortcutsPane'
@@ -88,12 +88,8 @@ function Settings(): React.JSX.Element {
   )
   const [scrollbackMode, setScrollbackMode] = useState<'preset' | 'custom'>('preset')
   const [prevScrollbackBytes, setPrevScrollbackBytes] = useState(settings?.terminalScrollbackBytes)
-  const [terminalFontSuggestions, setTerminalFontSuggestions] = useState<string[]>(
-    getFallbackTerminalFonts()
-  )
   const [activeSectionId, setActiveSectionId] = useState('general')
   const contentScrollRef = useRef<HTMLDivElement | null>(null)
-  const terminalFontsLoadedRef = useRef(false)
   const pendingNavSectionRef = useRef<string | null>(null)
   const pendingScrollTargetRef = useRef<string | null>(null)
 
@@ -123,33 +119,6 @@ function Settings(): React.JSX.Element {
     pendingScrollTargetRef.current = settingsNavigationTarget.sectionId ?? paneSectionId
     clearSettingsTarget()
   }, [clearSettingsTarget, settingsNavigationTarget])
-
-  useEffect(() => {
-    if (terminalFontsLoadedRef.current) {
-      return
-    }
-
-    let stale = false
-
-    const loadFontSuggestions = async (): Promise<void> => {
-      try {
-        const fonts = await window.api.settings.listFonts()
-        if (stale || fonts.length === 0) {
-          return
-        }
-        terminalFontsLoadedRef.current = true
-        setTerminalFontSuggestions((prev) => Array.from(new Set([...fonts, ...prev])).slice(0, 320))
-      } catch {
-        // Fall back to curated cross-platform suggestions.
-      }
-    }
-
-    void loadFontSuggestions()
-
-    return () => {
-      stale = true
-    }
-  }, [])
 
   // Why: only recompute scrollback mode when the byte value actually changes,
   // not on every unrelated settings mutation.
@@ -461,7 +430,6 @@ function Settings(): React.JSX.Element {
                     settings={settings}
                     updateSettings={updateSettings}
                     systemPrefersDark={systemPrefersDark}
-                    terminalFontSuggestions={terminalFontSuggestions}
                     scrollbackMode={scrollbackMode}
                     setScrollbackMode={setScrollbackMode}
                   />

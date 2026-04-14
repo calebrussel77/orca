@@ -21,7 +21,7 @@ import {
   resolveEffectiveTerminalAppearance,
   resolvePaneStyleOptions
 } from '@/lib/terminal-theme'
-import { NumberField, FontAutocomplete } from './SettingsFormControls'
+import { NumberField } from './SettingsFormControls'
 import { SCROLLBACK_PRESETS_MB } from './SettingsConstants'
 import { SearchableSetting } from './SearchableSetting'
 import { matchesSettingsSearch } from './settings-search'
@@ -42,7 +42,6 @@ type TerminalPaneProps = {
   settings: GlobalSettings
   updateSettings: (updates: Partial<GlobalSettings>) => void
   systemPrefersDark: boolean
-  terminalFontSuggestions: string[]
   scrollbackMode: 'preset' | 'custom'
   setScrollbackMode: (mode: 'preset' | 'custom') => void
 }
@@ -51,7 +50,6 @@ export function TerminalPane({
   settings,
   updateSettings,
   systemPrefersDark,
-  terminalFontSuggestions,
   scrollbackMode,
   setScrollbackMode
 }: TerminalPaneProps): React.JSX.Element {
@@ -80,16 +78,16 @@ export function TerminalPane({
     matchesSettingsSearch(searchQuery, TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES) ? (
       <section key="typography" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Typography</h3>
+          <h3 className="text-sm font-semibold">Code & Terminal Typography</h3>
           <p className="text-xs text-muted-foreground">
-            Default terminal typography for new panes and live updates.
+            Shared typography for terminal panes, Monaco editors, diff views, and file previews.
           </p>
         </div>
 
         <SearchableSetting
           title="Font Size"
-          description="Default terminal font size for new panes and live updates."
-          keywords={['terminal', 'typography', 'text size']}
+          description="Shared font size for terminal panes, diff views, and code/file previews."
+          keywords={['terminal', 'typography', 'text size', 'code', 'diff', 'preview', 'editor']}
           className="space-y-2"
         >
           <Label>Font Size</Label>
@@ -135,22 +133,27 @@ export function TerminalPane({
 
         <SearchableSetting
           title="Font Family"
-          description="Default terminal font family for new panes and live updates."
-          keywords={['terminal', 'typography', 'font']}
+          description="Shared font family for terminal panes, diff views, and code/file previews."
+          keywords={['terminal', 'typography', 'font', 'code', 'diff', 'preview', 'editor']}
           className="space-y-2"
         >
           <Label>Font Family</Label>
-          <FontAutocomplete
+          <Input
             value={settings.terminalFontFamily}
-            suggestions={terminalFontSuggestions}
-            onChange={(value) => updateSettings({ terminalFontFamily: value })}
+            onChange={(event) => updateSettings({ terminalFontFamily: event.target.value })}
+            placeholder="SF Mono"
+            className="max-w-sm"
           />
+          <p className="text-[11px] text-muted-foreground">
+            Enter any installed font family or CSS stack. Orca uses it for terminal and code
+            surfaces when available on this machine.
+          </p>
         </SearchableSetting>
 
         <SearchableSetting
           title="Font Weight"
           description="Controls the terminal text font weight."
-          keywords={['terminal', 'typography', 'weight']}
+          keywords={['terminal', 'typography', 'weight', 'code']}
         >
           <NumberField
             label="Font Weight"
