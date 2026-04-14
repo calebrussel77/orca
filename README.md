@@ -73,7 +73,7 @@ Orca supports any CLI agent (_not just this list_).
 ## Install
 
 - **[Download from GitHub Releases](https://github.com/calebrussel77/orca/releases)**
-- CI publishes platform installers and update manifests for this fork on every tagged release.
+- CI publishes Windows and Linux installers plus update manifests for this fork on every tagged release.
 
 ---
 
@@ -127,8 +127,7 @@ npx skills add https://github.com/calebrussel77/orca --skill orca-cli
 This fork now ships directly from GitHub Releases.
 
 - Run the **`Cut Release`** GitHub Actions workflow to bump the version, create the release commit, and push the matching `v*` tag.
-- The pushed tag triggers **`.github/workflows/release.yml`**, which builds and publishes release assets for every platform:
-- macOS: `.dmg` and `.zip`
+- The pushed tag triggers **`.github/workflows/release.yml`**, which builds and publishes release assets for this fork:
 - Windows: `.exe`
 - Linux: `.AppImage` and `.deb`
 - Update metadata: `latest*.yml` and blockmaps used by in-app auto-update
@@ -137,13 +136,7 @@ The desktop app's **Check for Updates** button now checks this fork's GitHub Rel
 
 ### Required GitHub Actions secrets
 
-Windows and Linux builds can publish with the default `GITHUB_TOKEN`. macOS release signing and notarization also require:
-
-- `MAC_CERTS`
-- `MAC_CERTS_PASSWORD`
-- `APPLE_ID`
-- `APPLE_APP_SPECIFIC_PASSWORD`
-- `APPLE_TEAM_ID`
+Windows and Linux builds can publish with the default `GITHUB_TOKEN`. No Apple signing or notarization secrets are required while this fork only releases Windows and Linux builds.
 
 ### Fork configuration
 
