@@ -25,9 +25,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
-            platform: mac
-            release_command: ORCA_MAC_RELEASE=1 pnpm exec electron-builder --config config/electron-builder.config.cjs --mac --publish always
           - os: windows-latest
             platform: win
             release_command: pnpm exec electron-builder --config config/electron-builder.config.cjs --win --publish always
@@ -57,16 +54,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify macOS signing environment
-        if: matrix.platform == 'mac'
-        run: node config/scripts/verify-macos-release-env.mjs
-        env:
-          CSC_LINK: ${{ secrets.MAC_CERTS }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
       - name: Build app
         run: pnpm build:release
         env:
@@ -77,19 +64,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ORCA_RELEASE_REPOSITORY: ${{ github.repository }}
-          CSC_LINK: ${{ secrets.MAC_CERTS }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
         with:
           name: orca-${{ matrix.platform }}-${{ github.ref_name }}
           path: |
-            dist/*.dmg
-            dist/*.zip
             dist/*.exe
             dist/*.AppImage
             dist/*.deb
