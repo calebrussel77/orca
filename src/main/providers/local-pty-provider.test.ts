@@ -38,8 +38,14 @@ describe('LocalPtyProvider', () => {
   }
   let exitCb: ((info: { exitCode: number }) => void) | undefined
   let origShell: string | undefined
+  let originalPlatform: string
 
   beforeEach(() => {
+    originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', {
+      configurable: true,
+      value: 'darwin'
+    })
     origShell = process.env.SHELL
     process.env.SHELL = '/bin/zsh'
 
@@ -67,6 +73,10 @@ describe('LocalPtyProvider', () => {
   })
 
   afterEach(() => {
+    Object.defineProperty(process, 'platform', {
+      configurable: true,
+      value: originalPlatform
+    })
     if (origShell === undefined) {
       delete process.env.SHELL
     } else {
@@ -252,6 +262,72 @@ describe('LocalPtyProvider', () => {
           delete process.env.SHELL
         } else {
           process.env.SHELL = originalShell
+        }
+      }
+    })
+
+    it('prefers PowerShell on Windows even when COMSPEC is cmd.exe', async () => {
+      const originalPlatform = process.platform
+      const originalComspec = process.env.COMSPEC
+      const originalPath = process.env.PATH
+      try {
+        Object.defineProperty(process, 'platform', {
+          configurable: true,
+          value: 'win32'
+        })
+        process.env.COMSPEC = 'C:\\Windows\\System32\\cmd.exe'
+        process.env.PATH = ''
+        existsSyncMock.mockReturnValue(false)
+
+        expect(await provider.getDefaultShell()).toBe('powershell.exe')
+      } finally {
+        Object.defineProperty(process, 'platform', {
+          configurable: true,
+          value: originalPlatform
+        })
+        if (originalComspec === undefined) {
+          delete process.env.COMSPEC
+        } else {
+          process.env.COMSPEC = originalComspec
+        }
+        if (originalPath === undefined) {
+          delete process.env.PATH
+        } else {
+          process.env.PATH = originalPath
+        }
+      }
+    })
+
+    it('prefers pwsh.exe on Windows when PowerShell 7 is available on PATH', async () => {
+      const originalPlatform = process.platform
+      const originalComspec = process.env.COMSPEC
+      const originalPath = process.env.PATH
+      try {
+        Object.defineProperty(process, 'platform', {
+          configurable: true,
+          value: 'win32'
+        })
+        process.env.COMSPEC = 'C:\\Windows\\System32\\cmd.exe'
+        process.env.PATH = 'C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32'
+        existsSyncMock.mockImplementation((targetPath: string) => {
+          return targetPath === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+        })
+
+        expect(await provider.getDefaultShell()).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe')
+      } finally {
+        Object.defineProperty(process, 'platform', {
+          configurable: true,
+          value: originalPlatform
+        })
+        if (originalComspec === undefined) {
+          delete process.env.COMSPEC
+        } else {
+          process.env.COMSPEC = originalComspec
+        }
+        if (originalPath === undefined) {
+          delete process.env.PATH
+        } else {
+          process.env.PATH = originalPath
         }
       }
     })

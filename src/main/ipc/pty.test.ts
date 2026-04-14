@@ -291,10 +291,12 @@ describe('registerPtyHandlers', () => {
   describe('Windows UTF-8 code page', () => {
     let originalPlatform: string
     let originalComspec: string | undefined
+    let originalPath: string | undefined
 
     beforeEach(() => {
       originalPlatform = process.platform
       originalComspec = process.env.COMSPEC
+      originalPath = process.env.PATH
       Object.defineProperty(process, 'platform', {
         configurable: true,
         value: 'win32'
@@ -312,30 +314,23 @@ describe('registerPtyHandlers', () => {
       } else {
         process.env.COMSPEC = originalComspec
       }
+      if (originalPath === undefined) {
+        delete process.env.PATH
+      } else {
+        process.env.PATH = originalPath
+      }
       delete process.env.PYTHONUTF8
     })
 
-    it('passes chcp 65001 to cmd.exe for UTF-8 console output', () => {
+    it('defaults to powershell.exe even when COMSPEC points to cmd.exe', async () => {
       process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      process.env.PATH = ''
 
       registerPtyHandlers(mainWindow as never)
-      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+      await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       expect(spawnMock).toHaveBeenCalledWith(
-        'C:\\Windows\\system32\\cmd.exe',
-        ['/K', 'chcp 65001 > nul'],
-        expect.any(Object)
-      )
-    })
-
-    it('sets Console encoding for powershell.exe', () => {
-      process.env.COMSPEC = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-
-      registerPtyHandlers(mainWindow as never)
-      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
-
-      expect(spawnMock).toHaveBeenCalledWith(
-        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        'powershell.exe',
         [
           '-NoExit',
           '-Command',
@@ -345,11 +340,17 @@ describe('registerPtyHandlers', () => {
       )
     })
 
-    it('sets Console encoding for pwsh.exe', () => {
-      process.env.COMSPEC = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+    it('prefers pwsh.exe when PowerShell 7 is available on PATH', async () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      process.env.PATH = 'C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32'
+      existsSyncMock.mockImplementation(
+        (targetPath: string) =>
+          targetPath === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' ||
+          targetPath === 'C:\\Users\\test'
+      )
 
       registerPtyHandlers(mainWindow as never)
-      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+      await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       expect(spawnMock).toHaveBeenCalledWith(
         'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
@@ -362,38 +363,103 @@ describe('registerPtyHandlers', () => {
       )
     })
 
-    it('sets PYTHONUTF8=1 in the spawn environment on Windows', () => {
-      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+    it('sets Console encoding for powershell.exe', async () => {
+      process.env.COMSPEC = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+      process.env.PATH = ''
 
       registerPtyHandlers(mainWindow as never)
-      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+      await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        [
+          '-NoExit',
+          '-Command',
+          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+        ],
+        expect.any(Object)
+      )
+    })
+
+    it('sets Console encoding for pwsh.exe', async () => {
+      process.env.COMSPEC = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+      process.env.PATH = ''
+
+      registerPtyHandlers(mainWindow as never)
+      await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+        [
+          '-NoExit',
+          '-Command',
+          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+        ],
+        expect.any(Object)
+      )
+    })
+
+    it('uses an explicitly requested shell on Windows', async () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      process.env.PATH = ''
+
+      registerPtyHandlers(mainWindow as never)
+      await handlers.get('pty:spawn')!(null, {
+        cols: 80,
+        rows: 24,
+        env: { SHELL: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }
+      })
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+        [
+          '-NoExit',
+          '-Command',
+          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+        ],
+        expect.any(Object)
+      )
+    })
+
+    it('sets PYTHONUTF8=1 in the spawn environment on Windows', async () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      process.env.PATH = ''
+
+      registerPtyHandlers(mainWindow as never)
+      await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       const spawnCall = spawnMock.mock.calls.at(-1)!
       const env = spawnCall[2].env as Record<string, string>
       expect(env.PYTHONUTF8).toBe('1')
     })
 
-    it('does not override an existing PYTHONUTF8 value', () => {
+    it('does not override an existing PYTHONUTF8 value', async () => {
       process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
       process.env.PYTHONUTF8 = '0'
+      process.env.PATH = ''
 
       registerPtyHandlers(mainWindow as never)
-      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+      await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       const spawnCall = spawnMock.mock.calls.at(-1)!
       const env = spawnCall[2].env as Record<string, string>
       expect(env.PYTHONUTF8).toBe('0')
     })
 
-    it('passes no encoding args for unrecognized shells', () => {
+    it('defaults to powershell.exe when COMSPEC points to another shell', async () => {
       process.env.COMSPEC = 'C:\\Program Files\\Git\\bin\\bash.exe'
+      process.env.PATH = ''
 
       registerPtyHandlers(mainWindow as never)
-      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+      await handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       expect(spawnMock).toHaveBeenCalledWith(
-        'C:\\Program Files\\Git\\bin\\bash.exe',
-        [],
+        'powershell.exe',
+        [
+          '-NoExit',
+          '-Command',
+          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+        ],
         expect.any(Object)
       )
     })
@@ -554,6 +620,7 @@ describe('registerPtyHandlers', () => {
   })
 
   it('falls back to a system shell when SHELL points to a missing binary', async () => {
+    const originalPlatform = process.platform
     const originalShell = process.env.SHELL
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -562,6 +629,10 @@ describe('registerPtyHandlers', () => {
     )
 
     try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'darwin'
+      })
       process.env.SHELL = '/opt/homebrew/bin/bash'
 
       registerPtyHandlers(mainWindow as never)
@@ -582,6 +653,10 @@ describe('registerPtyHandlers', () => {
         expect.stringContaining('Primary shell "/opt/homebrew/bin/bash" failed')
       )
     } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: originalPlatform
+      })
       warnSpy.mockRestore()
       if (originalShell === undefined) {
         delete process.env.SHELL
@@ -592,6 +667,7 @@ describe('registerPtyHandlers', () => {
   })
 
   it('falls back when SHELL points to a non-executable binary', async () => {
+    const originalPlatform = process.platform
     const originalShell = process.env.SHELL
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -602,6 +678,10 @@ describe('registerPtyHandlers', () => {
     })
 
     try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'darwin'
+      })
       process.env.SHELL = '/opt/homebrew/bin/bash'
 
       registerPtyHandlers(mainWindow as never)
@@ -621,6 +701,10 @@ describe('registerPtyHandlers', () => {
         expect.stringContaining('Shell "/opt/homebrew/bin/bash" is not executable')
       )
     } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: originalPlatform
+      })
       warnSpy.mockRestore()
       if (originalShell === undefined) {
         delete process.env.SHELL
@@ -631,6 +715,7 @@ describe('registerPtyHandlers', () => {
   })
 
   it('prefers args.env.SHELL and normalizes the child env after fallback', async () => {
+    const originalPlatform = process.platform
     const originalShell = process.env.SHELL
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -639,6 +724,10 @@ describe('registerPtyHandlers', () => {
     )
 
     try {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: 'darwin'
+      })
       process.env.SHELL = '/bin/bash'
 
       registerPtyHandlers(mainWindow as never)
@@ -662,6 +751,10 @@ describe('registerPtyHandlers', () => {
         expect.stringContaining('Primary shell "/opt/homebrew/bin/bash" failed')
       )
     } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: originalPlatform
+      })
       warnSpy.mockRestore()
       if (originalShell === undefined) {
         delete process.env.SHELL

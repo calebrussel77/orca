@@ -2,7 +2,7 @@
 ~70 lines of scanner/promise wiring to spawn(). Splitting the method would scatter
 tightly coupled PTY lifecycle logic (scan → ready → write → exit cleanup) across
 files without a cleaner ownership seam. */
-import { basename, win32 as pathWin32 } from 'path'
+import { basename, join, win32 as pathWin32 } from 'path'
 import { existsSync } from 'fs'
 import * as pty from 'node-pty'
 import { parseWslPath } from '../wsl'
@@ -42,6 +42,36 @@ type ExitCallback = (payload: { id: string; code: number }) => void
 
 const dataListeners = new Set<DataCallback>()
 const exitListeners = new Set<ExitCallback>()
+
+function resolveDefaultWindowsShell(explicitShell?: string): string {
+  if (explicitShell?.trim()) {
+    return explicitShell.trim()
+  }
+
+  const pathEnv = process.env.PATH ?? process.env.Path ?? ''
+  for (const directory of pathEnv.split(';').map((entry) => entry.trim()).filter(Boolean)) {
+    const pwshCandidate = join(directory, 'pwsh.exe')
+    if (existsSync(pwshCandidate)) {
+      // Why: PowerShell 7 loads the user's modern pwsh profile where prompt
+      // customizations like oh-my-posh typically live. Prefer it over the
+      // legacy Windows PowerShell host so Orca terminals match the user's
+      // normal terminal experience on Windows.
+      return pwshCandidate
+    }
+  }
+
+  const comspec = process.env.COMSPEC?.trim()
+  const comspecBasename = comspec ? pathWin32.basename(comspec).toLowerCase() : ''
+  if (comspecBasename === 'powershell.exe' || comspecBasename === 'pwsh.exe') {
+    return comspec!
+  }
+
+  // Why: COMSPEC commonly points at cmd.exe on Windows, but Orca's "new
+  // terminal" flows should land in PowerShell by default so sidebar/project
+  // activation and the "+" button open the richer shell experience users
+  // expect, unless a shell was explicitly requested for this PTY.
+  return 'powershell.exe'
+}
 
 function disposePtyListeners(id: string): void {
   const disposables = ptyDisposables.get(id)
@@ -115,7 +145,7 @@ export class LocalPtyProvider implements IPtyProvider {
       effectiveCwd = process.env.USERPROFILE || process.env.HOMEPATH || 'C:\\'
       validationCwd = cwd
     } else if (process.platform === 'win32') {
-      shellPath = process.env.COMSPEC || 'powershell.exe'
+      shellPath = resolveDefaultWindowsShell(args.env?.SHELL)
       // Why: use path.win32.basename so backslash-separated Windows paths
       // are parsed correctly even when tests mock process.platform on Linux CI.
       const shellBasename = pathWin32.basename(shellPath).toLowerCase()
@@ -405,17 +435,28 @@ export class LocalPtyProvider implements IPtyProvider {
 
   async getDefaultShell(): Promise<string> {
     if (process.platform === 'win32') {
-      return process.env.COMSPEC || 'powershell.exe'
+      return resolveDefaultWindowsShell()
     }
     return process.env.SHELL || '/bin/zsh'
   }
 
   async getProfiles(): Promise<{ name: string; path: string }[]> {
     if (process.platform === 'win32') {
-      return [
-        { name: 'PowerShell', path: 'powershell.exe' },
-        { name: 'Command Prompt', path: 'cmd.exe' }
-      ]
+      const defaultShell = resolveDefaultWindowsShell()
+      const defaultShellBasename = pathWin32.basename(defaultShell).toLowerCase()
+      const profiles =
+        defaultShellBasename === 'pwsh.exe'
+          ? [
+              { name: 'PowerShell 7', path: defaultShell },
+              { name: 'Windows PowerShell', path: 'powershell.exe' },
+              { name: 'Command Prompt', path: 'cmd.exe' }
+            ]
+          : [
+              { name: 'PowerShell', path: 'powershell.exe' },
+              { name: 'Command Prompt', path: 'cmd.exe' }
+            ]
+
+      return profiles
     }
     const shells = ['/bin/zsh', '/bin/bash', '/bin/sh']
     return shells.filter((s) => existsSync(s)).map((s) => ({ name: basename(s), path: s }))
