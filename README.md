@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://onOrca.dev"><img src="resources/build/icon.png" alt="Orca" width="128" /></a>
+  <a href="https://github.com/calebrussel77/orca"><img src="resources/build/icon.png" alt="Orca" width="128" /></a>
 </p>
 
 <h1 align="center">Orca</h1>
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="https://onOrca.dev"><strong>Download at onOrca.dev</strong></a>
+  <a href="https://github.com/calebrussel77/orca/releases"><strong>Download from GitHub Releases</strong></a>
 </p>
 
 <p align="center">
@@ -72,8 +72,8 @@ Orca supports any CLI agent (_not just this list_).
 
 ## Install
 
-- **[Download from onOrca.dev](https://onOrca.dev)**
-- Or download the latest binaries via the **[GitHub Releases page](https://github.com/stablyai/orca/releases)**.
+- **[Download from GitHub Releases](https://github.com/calebrussel77/orca/releases)**
+- CI publishes platform installers and update manifests for this fork on every tagged release.
 
 ---
 
@@ -108,7 +108,7 @@ Orca ships with a built-in browser right inside your worktree. Preview your app 
 Let your AI agent control your IDE. Use AI to add repos to your IDE, spin up worktrees, and update the current worktree's comment with meaningful progress checkpoints directly from the terminal. Ships with the Orca IDE (install under Settings).
 
 ```bash
-npx skills add https://github.com/stablyai/orca --skill orca-cli
+npx skills add https://github.com/calebrussel77/orca --skill orca-cli
 ```
 
 ---
@@ -117,8 +117,39 @@ npx skills add https://github.com/stablyai/orca --skill orca-cli
 
 - **Discord:** Join the community on **[Discord](https://discord.gg/fzjDKHxv8Q)**.
 - **Twitter / X:** Follow **[@orca_build](https://x.com/orca_build)** for updates and announcements.
-- **Feedback &amp; Ideas:** We ship fast. Missing something? [Request a new feature](https://github.com/stablyai/orca/issues).
+- **Feedback &amp; Ideas:** We ship fast. Missing something? [Request a new feature](https://github.com/calebrussel77/orca/issues).
 - **Show Support:** Star this repo to follow along with our daily ships.
+
+---
+
+## Releases &amp; Auto-Updates
+
+This fork now ships directly from GitHub Releases.
+
+- Run the **`Cut Release`** GitHub Actions workflow to bump the version, create the release commit, and push the matching `v*` tag.
+- The pushed tag triggers **`.github/workflows/release.yml`**, which builds and publishes release assets for every platform:
+- macOS: `.dmg` and `.zip`
+- Windows: `.exe`
+- Linux: `.AppImage` and `.deb`
+- Update metadata: `latest*.yml` and blockmaps used by in-app auto-update
+
+The desktop app's **Check for Updates** button now checks this fork's GitHub Releases feed, prompts when a newer version exists, downloads the correct installer/update package, and offers restart/install once the update is staged.
+
+### Required GitHub Actions secrets
+
+Windows and Linux builds can publish with the default `GITHUB_TOKEN`. macOS release signing and notarization also require:
+
+- `MAC_CERTS`
+- `MAC_CERTS_PASSWORD`
+- `APPLE_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+- `APPLE_TEAM_ID`
+
+### Fork configuration
+
+- Release publishing is resolved from this repo's GitHub slug (`calebrussel77/orca`).
+- `electron-builder` publishes installers and update manifests to this fork's releases.
+- In-app updater links, manual download fallbacks, issue links, and the Orca CLI skill install command all point to this fork.
 
 ---
 
