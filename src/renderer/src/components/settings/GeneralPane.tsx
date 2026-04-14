@@ -245,8 +245,8 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_WORKSPACE_SEARCH_ENTRIES) ? (
       <section key="workspace" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Workspace</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Workspace</h3>
+          <p className="text-sm text-muted-foreground">
             Configure where new worktrees are created.
           </p>
         </div>
@@ -262,7 +262,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             <Input
               value={settings.workspaceDir}
               onChange={(e) => updateSettings({ workspaceDir: e.target.value })}
-              className="flex-1 text-xs"
+              className="flex-1 text-sm"
             />
             <Button
               variant="outline"
@@ -274,7 +274,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
               Browse
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Root directory where worktree folders are created.
           </p>
         </SearchableSetting>
@@ -287,7 +287,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
         >
           <div className="space-y-0.5">
             <Label>Nest Workspaces</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Create worktrees inside a repo-named subfolder.
             </p>
           </div>
@@ -315,8 +315,8 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_BROWSER_SEARCH_ENTRIES) ? (
       <section key="browser" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Browser</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Browser</h3>
+          <p className="text-sm text-muted-foreground">
             Control how Orca handles links and browser workspace defaults.
           </p>
         </div>
@@ -329,7 +329,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
         >
           <div className="min-w-0 shrink space-y-0.5">
             <Label>Default Home Page</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               URL opened when creating a new browser tab. Leave empty to open a blank tab.
             </p>
           </div>
@@ -357,9 +357,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
               spellCheck={false}
               autoCapitalize="none"
               autoCorrect="off"
-              className="h-7 w-52 text-xs"
+              className="h-8 w-52 text-sm"
             />
-            <Button type="submit" size="sm" variant="outline" className="h-7 text-xs">
+            <Button type="submit" size="sm" variant="outline" className="h-8 text-sm">
               Save
             </Button>
           </form>
@@ -373,7 +373,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
         >
           <div className="space-y-0.5">
             <Label>Terminal Link Routing</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Cmd/Ctrl+click opens terminal links in Orca. Shift+Cmd/Ctrl+click opens the same link
               in your system browser.
             </p>
@@ -413,7 +413,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           <div className="flex items-center justify-between gap-3">
             <div className="space-y-0.5">
               <Label>Session &amp; Cookies</Label>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 Import cookies from your system browser to reuse existing logins inside Orca.
               </p>
             </div>
@@ -480,7 +480,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                     : ''}
                 </span>
                 {defaultProfile.source.importedAt ? (
-                  <span className="truncate text-xs text-muted-foreground">
+                  <span className="truncate text-sm text-muted-foreground">
                     {new Date(defaultProfile.source.importedAt).toLocaleDateString(undefined, {
                       month: 'short',
                       day: 'numeric',
@@ -516,7 +516,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-sm font-medium">{profile.label}</span>
-                    <span className="truncate text-xs text-muted-foreground">
+                    <span className="truncate text-sm text-muted-foreground">
                       {profile.source
                         ? `Imported from ${profile.source.browserFamily}${profile.source.profileName ? ` (${profile.source.profileName})` : ''}`
                         : 'Unused session'}
@@ -548,8 +548,8 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_EDITOR_SEARCH_ENTRIES) ? (
       <section key="editor" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Editor</h3>
-          <p className="text-xs text-muted-foreground">Configure how Orca persists file edits.</p>
+          <h3 className="text-lg font-semibold">Editor</h3>
+          <p className="text-sm text-muted-foreground">Configure how Orca persists file edits.</p>
         </div>
 
         <SearchableSetting
@@ -560,7 +560,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
         >
           <div className="space-y-0.5">
             <Label>Auto Save Files</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Save editor and editable diff changes automatically after a short pause.
             </p>
           </div>
@@ -592,7 +592,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
         >
           <div className="space-y-0.5">
             <Label>Auto Save Delay</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               How long Orca waits after your last edit before saving automatically. First launch
               defaults to {DEFAULT_EDITOR_AUTO_SAVE_DELAY_MS} ms.
             </p>
@@ -613,7 +613,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
               }}
               className="number-input-clean w-28 text-right tabular-nums"
             />
-            <span className="text-xs text-muted-foreground">ms</span>
+            <span className="text-sm text-muted-foreground">ms</span>
           </div>
         </SearchableSetting>
 
@@ -625,7 +625,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
         >
           <div className="space-y-0.5">
             <Label>Default Diff View</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Preferred presentation format for showing git diffs by default.
             </p>
           </div>
@@ -656,8 +656,8 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_CACHE_TIMER_SEARCH_ENTRIES) ? (
       <section key="cache-timer" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Prompt Cache Timer</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Prompt Cache Timer</h3>
+          <p className="text-sm text-muted-foreground">
             Claude caches your conversation to reduce costs. When idle too long the cache expires
             and the next message resends full context at higher cost. This shows a countdown so you
             know when to resume.
@@ -675,7 +675,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
               <Timer className="size-4" />
               <Label>Cache Timer</Label>
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Show a countdown in the sidebar after a Claude agent becomes idle.
             </p>
           </div>
@@ -714,7 +714,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           >
             <div className="space-y-0.5">
               <Label>Timer Duration</Label>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 Match this to your provider&apos;s cache TTL. The default is 5 minutes.
               </p>
             </div>
@@ -737,11 +737,11 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_CODEX_ACCOUNTS_SEARCH_ENTRIES) ? (
       <section key="codex-accounts" id="general-codex-accounts" className="space-y-4 scroll-mt-6">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Codex Accounts</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Codex Accounts</h3>
+          <p className="text-sm text-muted-foreground">
             Add and switch between Codex accounts in Orca.
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Each account keeps its own local sign-in context in Orca. Account auth stays on this
             device.
           </p>
@@ -760,7 +760,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           <div className="flex items-center justify-between gap-3">
             <div className="space-y-0.5">
               <Label>Accounts</Label>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 Add a Codex account to use it in Orca.
               </p>
             </div>
@@ -783,7 +783,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           </div>
 
           {codexAccounts.accounts.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+            <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
               No managed Codex accounts yet. Orca will use your system default Codex login until you
               add one here.
             </div>
@@ -815,7 +815,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                       </Badge>
                     ) : null}
                   </div>
-                  <span className="truncate text-xs text-muted-foreground">
+                  <span className="truncate text-sm text-muted-foreground">
                     Use your current system Codex login.
                   </span>
                 </div>
@@ -855,7 +855,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                             </Badge>
                           ) : null}
                         </div>
-                        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground max-sm:flex-wrap">
+                        <div className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground max-sm:flex-wrap">
                           {account.workspaceLabel ? (
                             <span className="truncate">{account.workspaceLabel}</span>
                           ) : null}
@@ -921,8 +921,8 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_UPDATE_SEARCH_ENTRIES) ? (
       <section key="updates" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Updates</h3>
-          <p className="text-xs text-muted-foreground">Current version: {appVersion ?? '…'}</p>
+          <h3 className="text-lg font-semibold">Updates</h3>
+          <p className="text-sm text-muted-foreground">Current version: {appVersion ?? '…'}</p>
         </div>
 
         <SearchableSetting
@@ -971,7 +971,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             ) : null}
           </div>
 
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {updateStatus.state === 'idle' && 'Updates are checked automatically on launch.'}
             {updateStatus.state === 'checking' && 'Checking for updates...'}
             {updateStatus.state === 'available' && (

@@ -47,7 +47,7 @@ export function SettingsSection({
             </span>
           ) : null}
         </h2>
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <p className="text-base text-muted-foreground">{description}</p>
       </div>
       {children}
     </section>

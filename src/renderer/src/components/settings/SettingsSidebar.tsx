@@ -72,7 +72,7 @@ export function SettingsSidebar({
                 <button
                   key={section.id}
                   onClick={() => onSelectSection(section.id)}
-                  className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                  className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-base transition-colors ${
                     isActive
                       ? 'bg-accent font-medium text-accent-foreground'
                       : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
@@ -91,7 +91,7 @@ export function SettingsSidebar({
           </div>
 
           <div className="space-y-2">
-            <p className="px-3 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="px-3 text-sm font-medium uppercase tracking-[0.18em] text-muted-foreground">
               Repositories
             </p>
 
@@ -104,7 +104,7 @@ export function SettingsSidebar({
                     <button
                       key={section.id}
                       onClick={() => onSelectSection(section.id)}
-                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-base transition-colors ${
                         isActive
                           ? 'bg-accent font-medium text-accent-foreground'
                           : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
@@ -126,7 +126,7 @@ export function SettingsSidebar({
                 })}
               </div>
             ) : (
-              <p className="px-3 text-xs text-muted-foreground">
+              <p className="px-3 text-sm text-muted-foreground">
                 {hasRepos ? 'No matching repository settings.' : 'No repositories added yet.'}
               </p>
             )}

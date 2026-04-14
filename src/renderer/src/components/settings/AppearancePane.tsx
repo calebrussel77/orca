@@ -66,8 +66,8 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, themeEntries) ? (
       <section key="theme" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Theme</h3>
-          <p className="text-xs text-muted-foreground">Choose how Orca looks in the app window.</p>
+          <h3 className="text-lg font-semibold">Theme</h3>
+          <p className="text-sm text-muted-foreground">Choose how Orca looks in the app window.</p>
         </div>
 
         <SearchableSetting
@@ -99,8 +99,8 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, typographyEntries) ? (
       <section key="typography" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Application Typography</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Application Typography</h3>
+          <p className="text-sm text-muted-foreground">
             Customize the normal Orca interface text separately from terminal and code views.
           </p>
         </div>
@@ -137,7 +137,7 @@ export function AppearancePane({
               placeholder="Geist"
               className="max-w-sm"
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Enter any installed font family or CSS stack. Orca falls back gracefully if the font
               is unavailable on this machine.
             </p>
@@ -148,11 +148,11 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, zoomEntries) ? (
       <section key="zoom" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">UI Zoom</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">UI Zoom</h3>
+          <p className="text-sm text-muted-foreground">
             Scale the entire application interface. Use{' '}
-            <kbd className="rounded border px-1 py-0.5 text-xs">{zoomInLabel}</kbd> /{' '}
-            <kbd className="rounded border px-1 py-0.5 text-xs">{zoomOutLabel}</kbd> when not in
+            <kbd className="rounded border px-1 py-0.5 text-sm">{zoomInLabel}</kbd> /{' '}
+            <kbd className="rounded border px-1 py-0.5 text-sm">{zoomOutLabel}</kbd> when not in
             a terminal pane.
           </p>
         </div>
@@ -169,8 +169,8 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, layoutEntries) ? (
       <section key="layout" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Layout</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Layout</h3>
+          <p className="text-sm text-muted-foreground">
             Default layout when creating new worktrees.
           </p>
         </div>
@@ -183,7 +183,7 @@ export function AppearancePane({
         >
           <div className="space-y-0.5">
             <Label>Open Right Sidebar by Default</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Automatically expand the file explorer panel when creating a new worktree.
             </p>
           </div>
@@ -211,8 +211,8 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, titlebarEntries) ? (
       <section key="titlebar" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Titlebar</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Titlebar</h3>
+          <p className="text-sm text-muted-foreground">
             Control what appears in the application titlebar.
           </p>
         </div>
@@ -225,7 +225,7 @@ export function AppearancePane({
         >
           <div className="space-y-0.5">
             <Label>Titlebar Agent Activity</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Show the number of active agents in the titlebar.
             </p>
           </div>

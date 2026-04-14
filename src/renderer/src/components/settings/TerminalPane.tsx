@@ -78,8 +78,8 @@ export function TerminalPane({
     matchesSettingsSearch(searchQuery, TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES) ? (
       <section key="typography" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Code & Terminal Typography</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Code & Terminal Typography</h3>
+          <p className="text-sm text-muted-foreground">
             Shared typography for terminal panes, Monaco editors, diff views, and file previews.
           </p>
         </div>
@@ -127,7 +127,7 @@ export function TerminalPane({
             >
               <Plus className="size-3" />
             </Button>
-            <span className="text-xs text-muted-foreground">px</span>
+            <span className="text-sm text-muted-foreground">px</span>
           </div>
         </SearchableSetting>
 
@@ -144,7 +144,7 @@ export function TerminalPane({
             placeholder="SF Mono"
             className="max-w-sm"
           />
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Enter any installed font family or CSS stack. Orca uses it for terminal and code
             surfaces when available on this machine.
           </p>
@@ -176,8 +176,8 @@ export function TerminalPane({
     matchesSettingsSearch(searchQuery, TERMINAL_CURSOR_SEARCH_ENTRIES) ? (
       <section key="cursor" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Cursor</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Cursor</h3>
+          <p className="text-sm text-muted-foreground">
             Default cursor appearance for Orca terminal panes.
           </p>
         </div>
@@ -215,7 +215,7 @@ export function TerminalPane({
           >
             <div className="space-y-0.5">
               <Label>Blinking Cursor</Label>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 Uses the blinking variant of the selected cursor shape.
               </p>
             </div>
@@ -246,8 +246,8 @@ export function TerminalPane({
       matchesSettingsSearch(searchQuery, TERMINAL_RIGHT_CLICK_TO_PASTE_SEARCH_ENTRY)) ? (
       <section key="pane-styling" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Pane Styling</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Pane Styling</h3>
+          <p className="text-sm text-muted-foreground">
             Control inactive pane dimming, divider thickness, mouse behavior, and transition timing.
           </p>
         </div>
@@ -310,7 +310,7 @@ export function TerminalPane({
             >
               <div className="space-y-0.5">
                 <Label>Right-click to paste</Label>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-sm text-muted-foreground">
                   On Windows, right-click pastes the clipboard into the terminal. Use
                   Ctrl+right-click to open the context menu.
                 </p>
@@ -344,7 +344,7 @@ export function TerminalPane({
         >
           <div className="space-y-0.5">
             <Label>Focus Follows Mouse</Label>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Hovering a terminal pane activates it without needing to click. Mirrors Ghostty&apos;s
               focus-follows-mouse setting. Selections and window switching stay safe.
             </p>
@@ -396,8 +396,8 @@ export function TerminalPane({
     matchesSettingsSearch(searchQuery, TERMINAL_ADVANCED_SEARCH_ENTRIES) ? (
       <section key="advanced" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold">Advanced</h3>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-lg font-semibold">Advanced</h3>
+          <p className="text-sm text-muted-foreground">
             Scrollback is bounded for stability. This setting applies to new terminal panes.
           </p>
         </div>
@@ -434,13 +434,13 @@ export function TerminalPane({
               <ToggleGroupItem
                 key={preset}
                 value={`${preset}`}
-                className="h-8 px-3 text-xs"
+                className="h-8 px-3 text-sm"
                 aria-label={`${preset} megabytes`}
               >
                 {preset} MB
               </ToggleGroupItem>
             ))}
-            <ToggleGroupItem value="custom" className="h-8 px-3 text-xs" aria-label="Custom">
+            <ToggleGroupItem value="custom" className="h-8 px-3 text-sm" aria-label="Custom">
               Custom
             </ToggleGroupItem>
           </ToggleGroup>

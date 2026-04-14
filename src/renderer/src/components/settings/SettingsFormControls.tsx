@@ -58,7 +58,7 @@ export function ThemePicker({
     <div className="space-y-3">
       <div className="space-y-1">
         <Label>{label}</Label>
-        <p className="text-xs text-muted-foreground">{description}</p>
+        <p className="text-sm text-muted-foreground">{description}</p>
       </div>
       <Input
         value={query}
@@ -66,7 +66,7 @@ export function ThemePicker({
         placeholder="Search builtin themes"
       />
       <div className="rounded-lg border border-border/50">
-        <div className="flex items-center justify-between border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between border-b border-border/50 px-3 py-2 text-sm text-muted-foreground">
           <span>Selected: {selectedTheme}</span>
           <span>
             Showing {filteredThemes.length}
@@ -81,7 +81,7 @@ export function ThemePicker({
               <button
                 key={theme}
                 onClick={() => onSelectTheme(theme)}
-                className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-base transition-colors ${
                   selectedTheme === theme
                     ? 'bg-accent font-medium text-accent-foreground'
                     : 'hover:bg-muted/60'
@@ -96,7 +96,7 @@ export function ThemePicker({
               </button>
             ))}
             {filteredThemes.length === 0 ? (
-              <div className="px-3 py-6 text-sm text-muted-foreground">No themes found.</div>
+              <div className="px-3 py-6 text-base text-muted-foreground">No themes found.</div>
             ) : null}
           </div>
         </ScrollArea>
@@ -118,7 +118,7 @@ export function ColorField({
     <div className="space-y-2">
       <div className="space-y-1">
         <Label>{label}</Label>
-        <p className="text-xs text-muted-foreground">{description}</p>
+        <p className="text-sm text-muted-foreground">{description}</p>
       </div>
       <div className="flex items-center gap-3">
         <input
@@ -131,7 +131,7 @@ export function ColorField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={fallback}
-          className="max-w-xs text-xs"
+          className="max-w-xs text-sm"
         />
       </div>
     </div>
@@ -180,7 +180,7 @@ export function NumberField({
     <div className="space-y-2">
       <div className="space-y-1">
         <Label>{label}</Label>
-        <p className="text-xs text-muted-foreground">{description}</p>
+        <p className="text-sm text-muted-foreground">{description}</p>
       </div>
       <div className="flex items-center gap-3">
         <Input
@@ -198,9 +198,9 @@ export function NumberField({
           }}
           className="number-input-clean w-28 tabular-nums"
         />
-        {suffix ? <span className="text-xs text-muted-foreground">{suffix}</span> : null}
+        {suffix ? <span className="text-sm text-muted-foreground">{suffix}</span> : null}
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-sm text-muted-foreground">
         Current: {value}
         {defaultValue !== undefined ? ` · Default: ${defaultValue}` : ''}
       </p>
