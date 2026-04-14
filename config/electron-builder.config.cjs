@@ -1,4 +1,6 @@
 const isMacRelease = process.env.ORCA_MAC_RELEASE === '1'
+const { resolveGitHubReleaseRepo } = require('./github-release.config.cjs')
+const githubReleaseRepo = resolveGitHubReleaseRepo()
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
@@ -99,8 +101,8 @@ module.exports = {
   npmRebuild: true,
   publish: {
     provider: 'github',
-    owner: 'stablyai',
-    repo: 'orca',
+    owner: githubReleaseRepo.owner,
+    repo: githubReleaseRepo.repo,
     releaseType: 'release'
   }
 }

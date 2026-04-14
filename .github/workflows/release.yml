@@ -69,16 +69,33 @@ jobs:
 
       - name: Build app
         run: pnpm build:release
+        env:
+          ORCA_RELEASE_REPOSITORY: ${{ github.repository }}
 
       - name: Publish release artifacts
         run: ${{ matrix.release_command }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORCA_RELEASE_REPOSITORY: ${{ github.repository }}
           CSC_LINK: ${{ secrets.MAC_CERTS }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-${{ matrix.platform }}-${{ github.ref_name }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest*.yml
+            dist/*.blockmap
+          if-no-files-found: warn
 
   publish-release:
     needs: release

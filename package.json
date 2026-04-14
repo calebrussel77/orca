@@ -2,8 +2,12 @@
   "name": "orca",
   "version": "1.1.30",
   "description": "An Electron application with React and TypeScript",
-  "homepage": "https://github.com/stablyai/orca",
+  "homepage": "https://github.com/calebrussel77/orca",
   "author": "stablyai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calebrussel77/orca.git"
+  },
   "bin": {
     "orca": "./out/cli/index.js"
   },
