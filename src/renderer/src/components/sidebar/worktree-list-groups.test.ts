@@ -24,6 +24,7 @@ const worktree: Worktree = {
   comment: '',
   isUnread: false,
   displayName: 'feature/super-critical',
+  sidebarOrder: -1,
   sortOrder: 0,
   lastActivityAt: 0
 }

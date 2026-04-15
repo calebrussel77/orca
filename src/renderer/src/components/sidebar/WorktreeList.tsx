@@ -1,6 +1,20 @@
 /* eslint-disable max-lines */
 import React, { useMemo, useCallback, useRef, useState, useEffect, useLayoutEffect } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy
+} from '@dnd-kit/sortable'
 import { ChevronDown, CircleX, Plus } from 'lucide-react'
 import { useAppStore } from '@/store'
 import WorktreeCard from './WorktreeCard'
@@ -44,6 +58,65 @@ function getWorktreeOptionId(worktreeId: string): string {
   return `worktree-list-option-${encodeURIComponent(worktreeId)}`
 }
 
+type SortableWorktreeRowProps = {
+  row: Extract<Row, { type: 'item' }>
+  index: number
+  top: number
+  activeWorktreeId: string | null
+  groupBy: 'none' | 'repo' | 'pr-status'
+  hintByWorktreeId: Map<string, number> | null
+  canReorder: boolean
+  measureElement: (element: HTMLElement | null) => void
+}
+
+const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
+  row,
+  index,
+  top,
+  activeWorktreeId,
+  groupBy,
+  hintByWorktreeId,
+  canReorder,
+  measureElement
+}: SortableWorktreeRowProps) {
+  const { setNodeRef, listeners, transform, transition, isDragging } = useSortable({
+    id: row.worktree.id,
+    disabled: !canReorder
+  })
+
+  const translateX = transform?.x ?? 0
+  const translateY = transform?.y ?? 0
+
+  return (
+    <div
+      ref={(node) => {
+        setNodeRef(node)
+        measureElement(node)
+      }}
+      id={getWorktreeOptionId(row.worktree.id)}
+      role="option"
+      aria-selected={activeWorktreeId === row.worktree.id}
+      data-index={index}
+      className={cn('absolute left-0 right-0', canReorder && 'cursor-grab active:cursor-grabbing')}
+      style={{
+        transform: `translate3d(${translateX}px, ${top + translateY}px, 0)`,
+        transition,
+        zIndex: isDragging ? 20 : undefined,
+        opacity: isDragging ? 0.92 : 1
+      }}
+      {...(canReorder ? listeners : {})}
+    >
+      <WorktreeCard
+        worktree={row.worktree}
+        repo={row.repo}
+        isActive={activeWorktreeId === row.worktree.id}
+        hideRepoBadge={groupBy === 'repo'}
+        hintNumber={hintByWorktreeId?.get(row.worktree.id)}
+      />
+    </div>
+  )
+})
+
 type VirtualizedWorktreeViewportProps = {
   rows: Row[]
   activeWorktreeId: string | null
@@ -59,6 +132,9 @@ type VirtualizedWorktreeViewportProps = {
   worktrees: Worktree[]
   repoMap: Map<string, Repo>
   prCache: Record<string, unknown> | null
+  sortableIds: string[]
+  canReorder: boolean
+  onReorder: (orderedIds: string[]) => void
 }
 
 const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewport({
@@ -75,9 +151,17 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   clearPendingRevealWorktreeId,
   worktrees,
   repoMap,
-  prCache
+  prCache,
+  sortableIds,
+  canReorder,
+  onReorder
 }: VirtualizedWorktreeViewportProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 }
+    })
+  )
   const activeWorktreeRowIndex = useMemo(
     () => rows.findIndex((row) => row.type === 'item' && row.worktree.id === activeWorktreeId),
     [rows, activeWorktreeId]
@@ -239,128 +323,147 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
       ? getWorktreeOptionId(activeWorktreeId)
       : undefined
 
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      if (!canReorder) {
+        return
+      }
+
+      const { active, over } = event
+      if (!over || active.id === over.id) {
+        return
+      }
+
+      const oldIndex = sortableIds.indexOf(active.id as string)
+      const newIndex = sortableIds.indexOf(over.id as string)
+      if (oldIndex === -1 || newIndex === -1) {
+        return
+      }
+
+      onReorder(arrayMove(sortableIds, oldIndex, newIndex))
+    },
+    [canReorder, sortableIds, onReorder]
+  )
+
   return (
-    <div
-      ref={scrollRef}
-      tabIndex={0}
-      role="listbox"
-      aria-label="Worktrees"
-      aria-orientation="vertical"
-      aria-activedescendant={activeDescendantId}
-      onKeyDown={handleContainerKeyDown}
-      className="flex-1 overflow-auto pl-1 pr-2 scroll-smooth outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset pt-px [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-    >
-      <div
-        role="presentation"
-        className="relative w-full"
-        style={{ height: `${virtualizer.getTotalSize()}px` }}
-      >
-        {virtualItems.map((vItem) => {
-          const row = rows[vItem.index]
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
+        <div
+          ref={scrollRef}
+          tabIndex={0}
+          role="listbox"
+          aria-label="Worktrees"
+          aria-orientation="vertical"
+          aria-activedescendant={activeDescendantId}
+          onKeyDown={handleContainerKeyDown}
+          className="flex-1 overflow-auto pl-1 pr-2 scroll-smooth outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset pt-px [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          <div
+            role="presentation"
+            className="relative w-full"
+            style={{ height: `${virtualizer.getTotalSize()}px` }}
+          >
+            {virtualItems.map((vItem) => {
+              const row = rows[vItem.index]
 
-          if (row.type === 'header') {
-            return (
-              <div
-                key={vItem.key}
-                role="presentation"
-                data-index={vItem.index}
-                ref={virtualizer.measureElement}
-                className="absolute left-0 right-0"
-                style={{ transform: `translateY(${vItem.start}px)` }}
-              >
-                <button
-                  className={cn(
-                    'group mt-2 flex h-7 w-full items-center gap-1 px-1.5 text-left transition-all',
-                    row.repo ? 'overflow-hidden' : row.tone
-                  )}
-                  onClick={() => toggleGroup(row.key)}
-                >
+              if (row.type === 'header') {
+                return (
                   <div
-                    className={cn(
-                      'flex size-4 shrink-0 items-center justify-center rounded-[4px]',
-                      row.repo ? 'text-foreground' : ''
-                    )}
-                    style={row.repo ? { color: row.repo.badgeColor } : undefined}
+                    key={vItem.key}
+                    role="presentation"
+                    data-index={vItem.index}
+                    ref={virtualizer.measureElement}
+                    className="absolute left-0 right-0"
+                    style={{ transform: `translateY(${vItem.start}px)` }}
                   >
-                    <row.icon className="size-3" />
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <div className="truncate font-mono text-[0.6875rem] font-medium uppercase leading-none tracking-[0.12em] text-muted-foreground">
-                        {row.label}
-                      </div>
-                      <div className="rounded-full bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.625rem] font-medium leading-none text-muted-foreground/90">
-                        {row.count}
-                      </div>
-                    </div>
-                  </div>
-
-                  {row.repo ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          className="mr-0.5 size-5 shrink-0 rounded-md text-muted-foreground hover:bg-accent/70 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-                          aria-label={`Create worktree for ${row.label}`}
-                          onClick={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            if (row.repo && isGitRepoKind(row.repo)) {
-                              handleCreateForRepo(row.repo.id)
-                            }
-                          }}
-                          disabled={row.repo ? !isGitRepoKind(row.repo) : false}
-                        >
-                          <Plus className="size-3" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom" sideOffset={6}>
-                        {row.repo && !isGitRepoKind(row.repo)
-                          ? `${row.label} is opened as a folder`
-                          : `Create worktree for ${row.label}`}
-                      </TooltipContent>
-                    </Tooltip>
-                  ) : null}
-
-                  <div className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <ChevronDown
+                    <button
                       className={cn(
-                        'size-3.5 transition-transform',
-                        collapsedGroups.has(row.key) && '-rotate-90'
+                        'group mt-2 flex h-7 w-full items-center gap-1 px-1.5 text-left transition-all',
+                        row.repo ? 'overflow-hidden' : row.tone
                       )}
-                    />
-                  </div>
-                </button>
-              </div>
-            )
-          }
+                      onClick={() => toggleGroup(row.key)}
+                    >
+                      <div
+                        className={cn(
+                          'flex size-4 shrink-0 items-center justify-center rounded-[4px]',
+                          row.repo ? 'text-foreground' : ''
+                        )}
+                        style={row.repo ? { color: row.repo.badgeColor } : undefined}
+                      >
+                        <row.icon className="size-3" />
+                      </div>
 
-          return (
-            <div
-              key={vItem.key}
-              id={getWorktreeOptionId(row.worktree.id)}
-              role="option"
-              aria-selected={activeWorktreeId === row.worktree.id}
-              data-index={vItem.index}
-              ref={virtualizer.measureElement}
-              className="absolute left-0 right-0"
-              style={{ transform: `translateY(${vItem.start}px)` }}
-            >
-              <WorktreeCard
-                worktree={row.worktree}
-                repo={row.repo}
-                isActive={activeWorktreeId === row.worktree.id}
-                hideRepoBadge={groupBy === 'repo'}
-                hintNumber={hintByWorktreeId?.get(row.worktree.id)}
-              />
-            </div>
-          )
-        })}
-      </div>
-    </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <div className="truncate font-mono text-[0.6875rem] font-medium uppercase leading-none tracking-[0.12em] text-muted-foreground">
+                            {row.label}
+                          </div>
+                          <div className="rounded-full bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.625rem] font-medium leading-none text-muted-foreground/90">
+                            {row.count}
+                          </div>
+                        </div>
+                      </div>
+
+                      {row.repo ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-xs"
+                              className="mr-0.5 size-5 shrink-0 rounded-md text-muted-foreground hover:bg-accent/70 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                              aria-label={`Create worktree for ${row.label}`}
+                              onClick={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                if (row.repo && isGitRepoKind(row.repo)) {
+                                  handleCreateForRepo(row.repo.id)
+                                }
+                              }}
+                              disabled={row.repo ? !isGitRepoKind(row.repo) : false}
+                            >
+                              <Plus className="size-3" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" sideOffset={6}>
+                            {row.repo && !isGitRepoKind(row.repo)
+                              ? `${row.label} is opened as a folder`
+                              : `Create worktree for ${row.label}`}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : null}
+
+                      <div className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <ChevronDown
+                          className={cn(
+                            'size-3.5 transition-transform',
+                            collapsedGroups.has(row.key) && '-rotate-90'
+                          )}
+                        />
+                      </div>
+                    </button>
+                  </div>
+                )
+              }
+
+              return (
+                <SortableWorktreeRow
+                  key={vItem.key}
+                  row={row}
+                  index={vItem.index}
+                  top={vItem.start}
+                  activeWorktreeId={activeWorktreeId}
+                  groupBy={groupBy}
+                  hintByWorktreeId={hintByWorktreeId}
+                  canReorder={canReorder}
+                  measureElement={virtualizer.measureElement}
+                />
+              )
+            })}
+          </div>
+        </div>
+      </SortableContext>
+    </DndContext>
   )
 })
 
@@ -373,12 +476,14 @@ const WorktreeList = React.memo(function WorktreeList() {
   const searchQuery = useAppStore((s) => s.searchQuery)
   const groupBy = useAppStore((s) => s.groupBy)
   const sortBy = useAppStore((s) => s.sortBy)
+  const setSortBy = useAppStore((s) => s.setSortBy)
   const showActiveOnly = useAppStore((s) => s.showActiveOnly)
   const filterRepoIds = useAppStore((s) => s.filterRepoIds)
   const openModal = useAppStore((s) => s.openModal)
   const activeModal = useAppStore((s) => s.activeModal)
   const pendingRevealWorktreeId = useAppStore((s) => s.pendingRevealWorktreeId)
   const clearPendingRevealWorktreeId = useAppStore((s) => s.clearPendingRevealWorktreeId)
+  const reorderSidebarWorktrees = useAppStore((s) => s.reorderSidebarWorktrees)
 
   // Read tabsByWorktree when needed for filtering or sorting
   const needsTabs = showActiveOnly || sortBy === 'recent'
@@ -588,7 +693,7 @@ const WorktreeList = React.memo(function WorktreeList() {
     () => buildRows(groupBy, worktrees, repoMap, prCache, collapsedGroups),
     [groupBy, worktrees, repoMap, prCache, collapsedGroups]
   )
-  const viewportResetKey = `${groupBy}:${rows.length}`
+  const viewportResetKey = `${groupBy}:${sortBy}:${rows.length}`
 
   // Why: derive the rendered item order from the post-buildRows() row list,
   // not the flat `worktrees` array, because grouping (groupBy: 'repo' or
@@ -630,6 +735,25 @@ const WorktreeList = React.memo(function WorktreeList() {
   )
 
   const hasFilters = !!(searchQuery || showActiveOnly || filterRepoIds.length)
+  const sortableIds = useMemo(
+    () => renderedWorktrees.map((worktree) => worktree.id),
+    [renderedWorktrees]
+  )
+  const canReorder =
+    activeModal === 'none' && groupBy === 'none' && !hasFilters && sortableIds.length > 1
+  const handleReorder = useCallback(
+    (orderedIds: string[]) => {
+      if (orderedIds.length < 2) {
+        return
+      }
+      // Why: drag-and-drop expresses explicit user intent about sidebar order.
+      // Switching into manual sort preserves that ordering instead of letting
+      // name/recent/repo immediately rearrange the same cards after drop.
+      setSortBy('manual')
+      reorderSidebarWorktrees(orderedIds)
+    },
+    [setSortBy, reorderSidebarWorktrees]
+  )
   const setSearchQuery = useAppStore((s) => s.setSearchQuery)
   const setShowActiveOnly = useAppStore((s) => s.setShowActiveOnly)
   const setFilterRepoIds = useAppStore((s) => s.setFilterRepoIds)
@@ -674,6 +798,9 @@ const WorktreeList = React.memo(function WorktreeList() {
       worktrees={worktrees}
       repoMap={repoMap}
       prCache={prCache}
+      sortableIds={sortableIds}
+      canReorder={canReorder}
+      onReorder={handleReorder}
     />
   )
 })

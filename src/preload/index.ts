@@ -233,6 +233,9 @@ const api = {
       updates: Record<string, unknown>
     }): Promise<unknown> => ipcRenderer.invoke('worktrees:updateMeta', args),
 
+    persistSidebarOrder: (args: { orderedIds: string[] }): Promise<void> =>
+      ipcRenderer.invoke('worktrees:persistSidebarOrder', args),
+
     persistSortOrder: (args: { orderedIds: string[] }): Promise<void> =>
       ipcRenderer.invoke('worktrees:persistSortOrder', args),
 

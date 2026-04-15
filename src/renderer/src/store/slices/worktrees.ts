@@ -5,6 +5,7 @@ import type { Worktree, WorkspaceVisibleTabType } from '../../../../shared/types
 import {
   findWorktreeById,
   applyWorktreeUpdates,
+  applySidebarOrder,
   getRepoIdFromWorktreeId,
   type WorktreeSlice
 } from './worktree-helpers'
@@ -31,6 +32,7 @@ function areWorktreesEqual(current: Worktree[] | undefined, next: Worktree[]): b
       worktree.linkedPR === candidate.linkedPR &&
       worktree.isArchived === candidate.isArchived &&
       worktree.isUnread === candidate.isUnread &&
+      worktree.sidebarOrder === candidate.sidebarOrder &&
       worktree.sortOrder === candidate.sortOrder &&
       worktree.lastActivityAt === candidate.lastActivityAt
     )
@@ -296,6 +298,21 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       console.error('Failed to update worktree meta:', err)
       void get().fetchWorktrees(getRepoIdFromWorktreeId(worktreeId))
     }
+  },
+
+  reorderSidebarWorktrees: (orderedIds) => {
+    set((s) => {
+      const nextWorktrees = applySidebarOrder(s.worktreesByRepo, orderedIds)
+      return nextWorktrees === s.worktreesByRepo
+        ? {}
+        : { worktreesByRepo: nextWorktrees, sortEpoch: s.sortEpoch + 1 }
+    })
+
+    void window.api.worktrees.persistSidebarOrder({ orderedIds }).catch((err) => {
+      console.error('Failed to persist sidebar order:', err)
+      const repoIds = new Set(orderedIds.map((id) => getRepoIdFromWorktreeId(id)))
+      void Promise.all([...repoIds].map((repoId) => get().fetchWorktrees(repoId)))
+    })
   },
 
   markWorktreeUnread: (worktreeId) => {

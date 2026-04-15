@@ -56,7 +56,7 @@ export type UISlice = {
   setSearchQuery: (q: string) => void
   groupBy: 'none' | 'repo' | 'pr-status'
   setGroupBy: (g: UISlice['groupBy']) => void
-  sortBy: 'name' | 'recent' | 'repo'
+  sortBy: 'manual' | 'name' | 'recent' | 'repo'
   setSortBy: (s: UISlice['sortBy']) => void
   showActiveOnly: boolean
   setShowActiveOnly: (v: boolean) => void
@@ -119,7 +119,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   groupBy: 'none',
   setGroupBy: (g) => set({ groupBy: g }),
 
-  sortBy: 'name',
+  sortBy: 'manual',
   setSortBy: (s) => set({ sortBy: s }),
 
   showActiveOnly: false,

@@ -33,6 +33,7 @@ function makeWorktree(overrides: Partial<Worktree> = {}): Worktree {
     comment: overrides.comment ?? '',
     isUnread: overrides.isUnread ?? false,
     displayName: overrides.displayName ?? overrides.id ?? 'wt-1',
+    sidebarOrder: overrides.sidebarOrder ?? -1,
     sortOrder: overrides.sortOrder ?? 0,
     lastActivityAt: overrides.lastActivityAt ?? 0
   }

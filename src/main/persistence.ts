@@ -42,8 +42,8 @@ function getDataFile(): string {
   return _dataFile
 }
 
-function normalizeSortBy(sortBy: unknown): 'name' | 'recent' | 'repo' {
-  if (sortBy === 'recent' || sortBy === 'repo' || sortBy === 'name') {
+function normalizeSortBy(sortBy: unknown): 'manual' | 'name' | 'recent' | 'repo' {
+  if (sortBy === 'manual' || sortBy === 'recent' || sortBy === 'repo' || sortBy === 'name') {
     return sortBy
   }
   if (sortBy === 'smart') {
@@ -371,6 +371,7 @@ function getDefaultWorktreeMeta(): WorktreeMeta {
     linkedPR: null,
     isArchived: false,
     isUnread: false,
+    sidebarOrder: -1,
     sortOrder: Date.now(),
     lastActivityAt: 0
   }

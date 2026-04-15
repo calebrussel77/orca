@@ -40,6 +40,7 @@ export function registerWorktreeHandlers(mainWindow: BrowserWindow, store: Store
   ipcMain.removeHandler('worktrees:create')
   ipcMain.removeHandler('worktrees:remove')
   ipcMain.removeHandler('worktrees:updateMeta')
+  ipcMain.removeHandler('worktrees:persistSidebarOrder')
   ipcMain.removeHandler('worktrees:persistSortOrder')
   ipcMain.removeHandler('hooks:check')
   ipcMain.removeHandler('hooks:createIssueCommandRunner')
@@ -210,6 +211,19 @@ export function registerWorktreeHandlers(mainWindow: BrowserWindow, store: Store
       return meta
     }
   )
+
+  // Why: sidebar drag-and-drop updates many worktrees at once. Persisting the
+  // full order in one IPC keeps renderer latency low and avoids N updateMeta
+  // round-trips for what is conceptually one interaction.
+  ipcMain.handle('worktrees:persistSidebarOrder', (_event, args: { orderedIds: string[] }) => {
+    if (!Array.isArray(args?.orderedIds) || args.orderedIds.length === 0) {
+      return
+    }
+
+    for (let i = 0; i < args.orderedIds.length; i++) {
+      store.setWorktreeMeta(args.orderedIds[i], { sidebarOrder: i })
+    }
+  })
 
   // Why: the renderer continuously snapshots the computed sidebar order into
   // sortOrder so that it can be restored on cold start (when ephemeral signals

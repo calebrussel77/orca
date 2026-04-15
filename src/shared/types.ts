@@ -42,6 +42,7 @@ export type Worktree = {
   linkedPR: number | null
   isArchived: boolean
   isUnread: boolean
+  sidebarOrder: number
   sortOrder: number
   lastActivityAt: number
 } & GitWorktreeInfo
@@ -54,6 +55,7 @@ export type WorktreeMeta = {
   linkedPR: number | null
   isArchived: boolean
   isUnread: boolean
+  sidebarOrder: number
   sortOrder: number
   lastActivityAt: number
 }
@@ -533,7 +535,7 @@ export type PersistedUIState = {
   sidebarWidth: number
   rightSidebarWidth: number
   groupBy: 'none' | 'repo' | 'pr-status'
-  sortBy: 'name' | 'recent' | 'repo'
+  sortBy: 'manual' | 'name' | 'recent' | 'repo'
   showActiveOnly: boolean
   filterRepoIds: string[]
   uiZoomLevel: number

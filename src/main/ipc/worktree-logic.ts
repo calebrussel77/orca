@@ -161,6 +161,7 @@ export function mergeWorktree(
     linkedPR: meta?.linkedPR ?? null,
     isArchived: meta?.isArchived ?? false,
     isUnread: meta?.isUnread ?? false,
+    sidebarOrder: meta?.sidebarOrder ?? -1,
     sortOrder: meta?.sortOrder ?? 0,
     lastActivityAt: meta?.lastActivityAt ?? 0
   }

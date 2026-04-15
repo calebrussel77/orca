@@ -36,6 +36,7 @@ export type WorktreeSlice = {
   ) => Promise<{ ok: true } | { ok: false; error: string }>
   clearWorktreeDeleteState: (worktreeId: string) => void
   updateWorktreeMeta: (worktreeId: string, updates: Partial<WorktreeMeta>) => Promise<void>
+  reorderSidebarWorktrees: (orderedIds: string[]) => void
   markWorktreeUnread: (worktreeId: string) => void
   bumpWorktreeActivity: (worktreeId: string) => void
   setActiveWorktree: (worktreeId: string | null) => void
@@ -75,6 +76,37 @@ export function applyWorktreeUpdates(
       repoChanged = true
       changed = true
       return updatedWorktree
+    })
+
+    next[repoId] = repoChanged ? nextWorktrees : worktrees
+  }
+
+  return changed ? next : worktreesByRepo
+}
+
+export function applySidebarOrder(
+  worktreesByRepo: Record<string, Worktree[]>,
+  orderedIds: string[]
+): Record<string, Worktree[]> {
+  if (orderedIds.length === 0) {
+    return worktreesByRepo
+  }
+
+  const nextOrderById = new Map(orderedIds.map((id, index) => [id, index]))
+  let changed = false
+  const next: Record<string, Worktree[]> = {}
+
+  for (const [repoId, worktrees] of Object.entries(worktreesByRepo)) {
+    let repoChanged = false
+    const nextWorktrees = worktrees.map((worktree) => {
+      const sidebarOrder = nextOrderById.get(worktree.id)
+      if (sidebarOrder == null || worktree.sidebarOrder === sidebarOrder) {
+        return worktree
+      }
+
+      repoChanged = true
+      changed = true
+      return { ...worktree, sidebarOrder }
     })
 
     next[repoId] = repoChanged ? nextWorktrees : worktrees

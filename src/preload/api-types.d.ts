@@ -240,6 +240,7 @@ export type PreloadApi = {
     }) => Promise<CreateWorktreeResult>
     remove: (args: { worktreeId: string; force?: boolean }) => Promise<void>
     updateMeta: (args: { worktreeId: string; updates: Partial<WorktreeMeta> }) => Promise<Worktree>
+    persistSidebarOrder: (args: { orderedIds: string[] }) => Promise<void>
     persistSortOrder: (args: { orderedIds: string[] }) => Promise<void>
     onChanged: (callback: (data: { repoId: string }) => void) => () => void
   }

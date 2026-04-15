@@ -2,7 +2,7 @@ import { detectAgentStatusFromTitle } from '@/lib/agent-status'
 import { branchName } from '@/lib/git-utils'
 import type { Worktree, Repo, TerminalTab } from '../../../../shared/types'
 
-type SortBy = 'name' | 'recent' | 'repo'
+type SortBy = 'manual' | 'name' | 'recent' | 'repo'
 
 type PRCacheEntry = { data: object | null; fetchedAt: number }
 export type RecentSortOverride = {
@@ -110,6 +110,20 @@ export function buildWorktreeComparator(
 ): (a: Worktree, b: Worktree) => number {
   return (a, b) => {
     switch (sortBy) {
+      case 'manual': {
+        const aHasManualOrder = a.sidebarOrder >= 0
+        const bHasManualOrder = b.sidebarOrder >= 0
+        if (aHasManualOrder && bHasManualOrder) {
+          return a.sidebarOrder - b.sidebarOrder || a.displayName.localeCompare(b.displayName)
+        }
+        if (aHasManualOrder) {
+          return -1
+        }
+        if (bHasManualOrder) {
+          return 1
+        }
+        return a.displayName.localeCompare(b.displayName)
+      }
       case 'name':
         return a.displayName.localeCompare(b.displayName)
       case 'recent': {

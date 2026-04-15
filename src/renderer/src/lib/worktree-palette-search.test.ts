@@ -19,7 +19,8 @@ function makeWorktree(overrides: Partial<Worktree> = {}): Worktree {
     isUnread: false,
     sortOrder: 0,
     lastActivityAt: 0,
-    ...overrides
+    ...overrides,
+    sidebarOrder: overrides.sidebarOrder ?? -1
   }
 }
 
