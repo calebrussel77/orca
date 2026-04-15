@@ -211,7 +211,9 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
         }
       }}
     >
-      <DialogContent className="sm:max-w-lg">
+      {/* Why: the option cards include a title plus helper copy, so a wider chooser with
+          constrained text blocks prevents labels from visually running together at desktop scales. */}
+      <DialogContent className="sm:max-w-xl">
         {/* Step indicator row — back button (step 2 only), dots, X is rendered by DialogContent */}
         <div className="flex items-center justify-center -mt-1">
           {(step === 'clone' || step === 'remote') && (
@@ -244,7 +246,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
 
         {step === 'add' ? (
           <>
-            <DialogHeader>
+            <DialogHeader className="pr-8">
               <DialogTitle>Add a repository</DialogTitle>
               <DialogDescription>
                 {repos.length === 0
@@ -253,17 +255,17 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               </DialogDescription>
             </DialogHeader>
 
-            <div className="grid grid-cols-3 gap-3 pt-2">
+            <div className="grid grid-cols-3 gap-4 pt-3">
               <Button
                 onClick={handleBrowse}
                 disabled={isAdding}
                 variant="outline"
-                className="h-auto py-5 px-2 flex flex-col items-center gap-2 text-center"
+                className="flex h-auto min-w-0 flex-col items-center gap-3 rounded-lg px-3 py-5 text-center whitespace-normal sm:px-4 sm:py-6"
               >
-                <FolderOpen className="size-6 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">Browse folder</p>
-                  <p className="text-[11px] text-muted-foreground font-normal mt-0.5">
+                <FolderOpen className="size-6 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 space-y-1">
+                  <p className="text-sm leading-snug font-medium">Browse folder</p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground font-normal whitespace-normal">
                     Local repo or folder
                   </p>
                 </div>
@@ -272,12 +274,12 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               <Button
                 onClick={() => setStep('clone')}
                 variant="outline"
-                className="h-auto py-5 px-2 flex flex-col items-center gap-2 text-center"
+                className="flex h-auto min-w-0 flex-col items-center gap-3 rounded-lg px-3 py-5 text-center whitespace-normal sm:px-4 sm:py-6"
               >
-                <Globe className="size-6 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">Clone from URL</p>
-                  <p className="text-[11px] text-muted-foreground font-normal mt-0.5">
+                <Globe className="size-6 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 space-y-1">
+                  <p className="text-sm leading-snug font-medium">Clone from URL</p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground font-normal whitespace-normal">
                     Remote Git repository
                   </p>
                 </div>
@@ -286,12 +288,12 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               <Button
                 onClick={handleOpenRemoteStep}
                 variant="outline"
-                className="h-auto py-5 px-2 flex flex-col items-center gap-2 text-center"
+                className="flex h-auto min-w-0 flex-col items-center gap-3 rounded-lg px-3 py-5 text-center whitespace-normal sm:px-4 sm:py-6"
               >
-                <Monitor className="size-6 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">Remote repo</p>
-                  <p className="text-[11px] text-muted-foreground font-normal mt-0.5">
+                <Monitor className="size-6 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 space-y-1">
+                  <p className="text-sm leading-snug font-medium">Remote repo</p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground font-normal whitespace-normal">
                     SSH connected target
                   </p>
                 </div>
