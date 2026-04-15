@@ -213,7 +213,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
     >
       {/* Why: the option cards include a title plus helper copy, so a wider chooser with
           constrained text blocks prevents labels from visually running together at desktop scales. */}
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-2xl">
         {/* Step indicator row — back button (step 2 only), dots, X is rendered by DialogContent */}
         <div className="flex items-center justify-center -mt-1">
           {(step === 'clone' || step === 'remote') && (
