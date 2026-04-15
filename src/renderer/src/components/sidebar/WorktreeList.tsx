@@ -542,6 +542,14 @@ const WorktreeList = React.memo(function WorktreeList() {
     const structuralChange = worktreeCount !== prevWorktreeCountRef.current
     prevWorktreeCountRef.current = worktreeCount
 
+    // Why: manual drag-and-drop is explicit user intent, not background score
+    // churn. Delaying the re-sort makes a successful drop look broken because
+    // the row appears to snap back until the debounce window expires.
+    if (sortBy === 'manual') {
+      setDebouncedSortEpoch(sortEpoch)
+      return
+    }
+
     if (structuralChange) {
       setDebouncedSortEpoch(sortEpoch)
       return
@@ -549,7 +557,7 @@ const WorktreeList = React.memo(function WorktreeList() {
 
     const timer = setTimeout(() => setDebouncedSortEpoch(sortEpoch), SORT_SETTLE_MS)
     return () => clearTimeout(timer)
-  }, [sortEpoch, debouncedSortEpoch, worktreeCount])
+  }, [sortEpoch, debouncedSortEpoch, worktreeCount, sortBy])
 
   // Why a latching ref: we need to distinguish "app just started, no PTYs
   // have spawned yet" from "user closed all terminals mid-session." The
