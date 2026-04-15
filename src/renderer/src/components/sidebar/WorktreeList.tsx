@@ -100,7 +100,7 @@ const EdgeDropZone = React.memo(function EdgeDropZone({ id, top, active }: EdgeD
       style={{ top, height: EDGE_DROP_ZONE_HEIGHT }}
     >
       {isOver ? (
-        <div className="absolute left-3 right-3 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]" />
+        <div className="pointer-events-none absolute left-3 right-3 top-1/2 z-10 h-0.5 -translate-y-1/2 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]" />
       ) : null}
     </div>
   )
@@ -150,12 +150,8 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
     disabled: !canReorder
   })
 
-  // Why: with DragOverlay we want the "picked up" card to live under the
-  // cursor while the source card stays in the list as a faint placeholder.
-  // Letting the active sortable node keep following the pointer would render
-  // two moving cards and make the drag feel jittery.
-  const translateX = isDragging ? 0 : (transform?.x ?? 0)
-  const translateY = isDragging ? 0 : (transform?.y ?? 0)
+  const translateX = transform?.x ?? 0
+  const translateY = transform?.y ?? 0
   const activeSortableIndex = active?.data.current?.sortable.index
   const showDropBefore =
     canReorder &&
@@ -184,14 +180,14 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
       style={{
         transform: `translate3d(${translateX}px, ${top + translateY}px, 0)`,
         transition,
-        opacity: isDragging ? 0.18 : 1
+        opacity: isDragging ? 0.08 : 1
       }}
       {...(canReorder ? listeners : {})}
     >
       {showDropBefore ? (
         <div
           aria-hidden="true"
-          className="absolute left-3 right-3 top-0 h-0.5 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]"
+          className="pointer-events-none absolute left-3 right-3 -top-1 z-10 h-0.5 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]"
         />
       ) : null}
       <WorktreeCard
@@ -204,7 +200,7 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
       {showDropAfter ? (
         <div
           aria-hidden="true"
-          className="absolute left-3 right-3 bottom-0 h-0.5 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]"
+          className="pointer-events-none absolute left-3 right-3 -bottom-1 z-10 h-0.5 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]"
         />
       ) : null}
     </div>
