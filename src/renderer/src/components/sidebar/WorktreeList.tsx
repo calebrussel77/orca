@@ -97,12 +97,9 @@ const EdgeDropZone = React.memo(function EdgeDropZone({ id, top, active }: EdgeD
       className="absolute left-0 right-0"
       style={{ top, height: EDGE_DROP_ZONE_HEIGHT }}
     >
-      <div
-        className={cn(
-          'absolute left-3 right-3 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-primary/70 transition-all',
-          isOver ? 'opacity-100 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]' : 'opacity-30'
-        )}
-      />
+      {isOver ? (
+        <div className="absolute left-3 right-3 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]" />
+      ) : null}
     </div>
   )
 })
