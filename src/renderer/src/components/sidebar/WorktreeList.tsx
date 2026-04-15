@@ -3,6 +3,7 @@ import React, { useMemo, useCallback, useRef, useState, useEffect, useLayoutEffe
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   closestCenter,
   useDroppable,
@@ -104,6 +105,35 @@ const EdgeDropZone = React.memo(function EdgeDropZone({ id, top, active }: EdgeD
   )
 })
 
+type DragOverlayCardProps = {
+  row: Extract<Row, { type: 'item' }>
+  activeWorktreeId: string | null
+  hintByWorktreeId: Map<string, number> | null
+  width: number | null
+}
+
+const DragOverlayCard = React.memo(function DragOverlayCard({
+  row,
+  activeWorktreeId,
+  hintByWorktreeId,
+  width
+}: DragOverlayCardProps) {
+  return (
+    <div
+      className="pointer-events-none opacity-95 drop-shadow-[0_16px_28px_rgba(0,0,0,0.34)]"
+      style={width != null ? { width } : undefined}
+    >
+      <WorktreeCard
+        worktree={row.worktree}
+        repo={row.repo}
+        isActive={activeWorktreeId === row.worktree.id}
+        hideRepoBadge={false}
+        hintNumber={hintByWorktreeId?.get(row.worktree.id)}
+      />
+    </div>
+  )
+})
+
 const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
   row,
   index,
@@ -119,8 +149,12 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
     disabled: !canReorder
   })
 
-  const translateX = transform?.x ?? 0
-  const translateY = transform?.y ?? 0
+  // Why: with DragOverlay we want the "picked up" card to live under the
+  // cursor while the source card stays in the list as a faint placeholder.
+  // Letting the active sortable node keep following the pointer would render
+  // two moving cards and make the drag feel jittery.
+  const translateX = isDragging ? 0 : (transform?.x ?? 0)
+  const translateY = isDragging ? 0 : (transform?.y ?? 0)
   const activeSortableIndex = active?.data.current?.sortable.index
   const showDropBefore =
     canReorder &&
@@ -149,8 +183,7 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
       style={{
         transform: `translate3d(${translateX}px, ${top + translateY}px, 0)`,
         transition,
-        zIndex: isDragging ? 20 : undefined,
-        opacity: isDragging ? 0.92 : 1
+        opacity: isDragging ? 0.18 : 1
       }}
       {...(canReorder ? listeners : {})}
     >
@@ -218,6 +251,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
 }: VirtualizedWorktreeViewportProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
+  const [activeDragWidth, setActiveDragWidth] = useState<number | null>(null)
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 }
@@ -225,6 +259,14 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   )
   const showEdgeDropZones = canReorder && activeDragId != null
   const edgeDropZoneOffset = showEdgeDropZones ? EDGE_DROP_ZONE_HEIGHT : 0
+  const activeDragRow = useMemo(
+    () =>
+      rows.find(
+        (row): row is Extract<Row, { type: 'item' }> =>
+          row.type === 'item' && row.worktree.id === activeDragId
+      ) ?? null,
+    [rows, activeDragId]
+  )
   const activeWorktreeRowIndex = useMemo(
     () => rows.findIndex((row) => row.type === 'item' && row.worktree.id === activeWorktreeId),
     [rows, activeWorktreeId]
@@ -389,6 +431,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       setActiveDragId(null)
+      setActiveDragWidth(null)
 
       if (!canReorder) {
         return
@@ -416,9 +459,11 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   )
   const handleDragStart = useCallback((event: DragStartEvent) => {
     setActiveDragId(event.active.id as string)
+    setActiveDragWidth(event.active.rect.current.initial?.width ?? null)
   }, [])
   const handleDragCancel = useCallback(() => {
     setActiveDragId(null)
+    setActiveDragWidth(null)
   }, [])
   const totalHeight =
     virtualizer.getTotalSize() + (showEdgeDropZones ? EDGE_DROP_ZONE_HEIGHT * 2 : 0)
@@ -553,6 +598,16 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
           </div>
         </div>
       </SortableContext>
+      <DragOverlay>
+        {activeDragRow ? (
+          <DragOverlayCard
+            row={activeDragRow}
+            activeWorktreeId={activeWorktreeId}
+            hintByWorktreeId={hintByWorktreeId}
+            width={activeDragWidth}
+          />
+        ) : null}
+      </DragOverlay>
     </DndContext>
   )
 })
