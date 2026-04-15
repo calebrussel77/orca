@@ -12,6 +12,7 @@ import {
   type DragStartEvent,
   type DragEndEvent
 } from '@dnd-kit/core'
+import type { Modifier } from '@dnd-kit/core/dist/modifiers'
 import {
   SortableContext,
   arrayMove,
@@ -259,6 +260,23 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   )
   const showEdgeDropZones = canReorder && activeDragId != null
   const edgeDropZoneOffset = showEdgeDropZones ? EDGE_DROP_ZONE_HEIGHT : 0
+  const constrainOverlayToViewport = useCallback<Modifier>(({ transform, overlayNodeRect }) => {
+    const viewportRect = scrollRef.current?.getBoundingClientRect()
+    if (!viewportRect || !overlayNodeRect) {
+      return transform
+    }
+
+    const minX = viewportRect.left - overlayNodeRect.left
+    const maxX = viewportRect.right - overlayNodeRect.right
+    const minY = viewportRect.top - overlayNodeRect.top
+    const maxY = viewportRect.bottom - overlayNodeRect.bottom
+
+    return {
+      ...transform,
+      x: Math.min(Math.max(transform.x, minX), maxX),
+      y: Math.min(Math.max(transform.y, minY), maxY)
+    }
+  }, [])
   const activeDragRow = useMemo(
     () =>
       rows.find(
@@ -598,7 +616,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
           </div>
         </div>
       </SortableContext>
-      <DragOverlay>
+      <DragOverlay modifiers={[constrainOverlayToViewport]}>
         {activeDragRow ? (
           <DragOverlayCard
             row={activeDragRow}
