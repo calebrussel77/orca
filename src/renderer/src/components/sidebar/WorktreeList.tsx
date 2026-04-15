@@ -5,8 +5,10 @@ import {
   DndContext,
   PointerSensor,
   closestCenter,
+  useDroppable,
   useSensor,
   useSensors,
+  type DragStartEvent,
   type DragEndEvent
 } from '@dnd-kit/core'
 import {
@@ -32,6 +34,9 @@ import { useModifierHint } from '@/hooks/useModifierHint'
 // Prevents jarring position shifts when background events (AI starting work,
 // terminal title changes) trigger score recalculations.
 const SORT_SETTLE_MS = 3_000
+const EDGE_DROP_ZONE_HEIGHT = 18
+const TOP_DROP_ZONE_ID = '__worktree-drop-zone-top__'
+const BOTTOM_DROP_ZONE_ID = '__worktree-drop-zone-bottom__'
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -69,6 +74,39 @@ type SortableWorktreeRowProps = {
   measureElement: (element: HTMLElement | null) => void
 }
 
+type EdgeDropZoneProps = {
+  id: string
+  top: number
+  active: boolean
+}
+
+const EdgeDropZone = React.memo(function EdgeDropZone({ id, top, active }: EdgeDropZoneProps) {
+  const { isOver, setNodeRef } = useDroppable({
+    id,
+    disabled: !active
+  })
+
+  if (!active) {
+    return null
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      aria-hidden="true"
+      className="absolute left-0 right-0"
+      style={{ top, height: EDGE_DROP_ZONE_HEIGHT }}
+    >
+      <div
+        className={cn(
+          'absolute left-3 right-3 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-primary/70 transition-all',
+          isOver ? 'opacity-100 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]' : 'opacity-30'
+        )}
+      />
+    </div>
+  )
+})
+
 const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
   row,
   index,
@@ -79,13 +117,26 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
   canReorder,
   measureElement
 }: SortableWorktreeRowProps) {
-  const { setNodeRef, listeners, transform, transition, isDragging } = useSortable({
+  const { setNodeRef, listeners, transform, transition, isDragging, active, isOver } = useSortable({
     id: row.worktree.id,
     disabled: !canReorder
   })
 
   const translateX = transform?.x ?? 0
   const translateY = transform?.y ?? 0
+  const activeSortableIndex = active?.data.current?.sortable.index
+  const showDropBefore =
+    canReorder &&
+    isOver &&
+    !isDragging &&
+    typeof activeSortableIndex === 'number' &&
+    activeSortableIndex > index
+  const showDropAfter =
+    canReorder &&
+    isOver &&
+    !isDragging &&
+    typeof activeSortableIndex === 'number' &&
+    activeSortableIndex < index
 
   return (
     <div
@@ -106,6 +157,12 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
       }}
       {...(canReorder ? listeners : {})}
     >
+      {showDropBefore ? (
+        <div
+          aria-hidden="true"
+          className="absolute left-3 right-3 top-0 h-0.5 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]"
+        />
+      ) : null}
       <WorktreeCard
         worktree={row.worktree}
         repo={row.repo}
@@ -113,6 +170,12 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
         hideRepoBadge={groupBy === 'repo'}
         hintNumber={hintByWorktreeId?.get(row.worktree.id)}
       />
+      {showDropAfter ? (
+        <div
+          aria-hidden="true"
+          className="absolute left-3 right-3 bottom-0 h-0.5 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]"
+        />
+      ) : null}
     </div>
   )
 })
@@ -157,11 +220,14 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   onReorder
 }: VirtualizedWorktreeViewportProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [activeDragId, setActiveDragId] = useState<string | null>(null)
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 }
     })
   )
+  const showEdgeDropZones = canReorder && activeDragId != null
+  const edgeDropZoneOffset = showEdgeDropZones ? EDGE_DROP_ZONE_HEIGHT : 0
   const activeWorktreeRowIndex = useMemo(
     () => rows.findIndex((row) => row.type === 'item' && row.worktree.id === activeWorktreeId),
     [rows, activeWorktreeId]
@@ -325,6 +391,8 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
+      setActiveDragId(null)
+
       if (!canReorder) {
         return
       }
@@ -335,7 +403,12 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
       }
 
       const oldIndex = sortableIds.indexOf(active.id as string)
-      const newIndex = sortableIds.indexOf(over.id as string)
+      const newIndex =
+        over.id === TOP_DROP_ZONE_ID
+          ? 0
+          : over.id === BOTTOM_DROP_ZONE_ID
+            ? sortableIds.length - 1
+            : sortableIds.indexOf(over.id as string)
       if (oldIndex === -1 || newIndex === -1) {
         return
       }
@@ -344,9 +417,23 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
     },
     [canReorder, sortableIds, onReorder]
   )
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveDragId(event.active.id as string)
+  }, [])
+  const handleDragCancel = useCallback(() => {
+    setActiveDragId(null)
+  }, [])
+  const totalHeight =
+    virtualizer.getTotalSize() + (showEdgeDropZones ? EDGE_DROP_ZONE_HEIGHT * 2 : 0)
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={handleDragStart}
+      onDragCancel={handleDragCancel}
+      onDragEnd={handleDragEnd}
+    >
       <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
         <div
           ref={scrollRef}
@@ -361,8 +448,9 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
           <div
             role="presentation"
             className="relative w-full"
-            style={{ height: `${virtualizer.getTotalSize()}px` }}
+            style={{ height: `${totalHeight}px` }}
           >
+            <EdgeDropZone id={TOP_DROP_ZONE_ID} top={0} active={showEdgeDropZones} />
             {virtualItems.map((vItem) => {
               const row = rows[vItem.index]
 
@@ -374,7 +462,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                     data-index={vItem.index}
                     ref={virtualizer.measureElement}
                     className="absolute left-0 right-0"
-                    style={{ transform: `translateY(${vItem.start}px)` }}
+                    style={{ transform: `translateY(${vItem.start + edgeDropZoneOffset}px)` }}
                   >
                     <button
                       className={cn(
@@ -451,7 +539,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                   key={vItem.key}
                   row={row}
                   index={vItem.index}
-                  top={vItem.start}
+                  top={vItem.start + edgeDropZoneOffset}
                   activeWorktreeId={activeWorktreeId}
                   groupBy={groupBy}
                   hintByWorktreeId={hintByWorktreeId}
@@ -460,6 +548,11 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                 />
               )
             })}
+            <EdgeDropZone
+              id={BOTTOM_DROP_ZONE_ID}
+              top={totalHeight - EDGE_DROP_ZONE_HEIGHT}
+              active={showEdgeDropZones}
+            />
           </div>
         </div>
       </SortableContext>
