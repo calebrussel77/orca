@@ -11,6 +11,7 @@ import { registerWorktreeHandlers } from '../ipc/worktrees'
 import { registerPtyHandlers } from '../ipc/pty'
 import { registerSshHandlers } from '../ipc/ssh'
 import { browserManager } from '../browser/browser-manager'
+import { isAllowedBrowserGuestPermission } from '../browser/browser-guest-permissions'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import {
   checkForUpdatesFromMenu,
@@ -88,7 +89,7 @@ export function attachMainWindowServices(
     // Why: the in-app browser is for dev previews and lightweight browsing, not
     // trusted desktop-app privileges. Denying by default keeps arbitrary sites
     // from silently escalating into camera/mic/notification prompts inside Orca.
-    const allowed = permission === 'fullscreen'
+    const allowed = isAllowedBrowserGuestPermission(permission)
     if (!allowed) {
       browserManager.notifyPermissionDenied({
         guestWebContentsId: webContents.id,
@@ -99,7 +100,7 @@ export function attachMainWindowServices(
     callback(allowed)
   })
   browserSession.setPermissionCheckHandler((_webContents, permission) => {
-    return permission === 'fullscreen'
+    return isAllowedBrowserGuestPermission(permission)
   })
   browserSession.setDisplayMediaRequestHandler((_request, callback) => {
     // Why: arbitrary sites inside Orca should never be able to capture the

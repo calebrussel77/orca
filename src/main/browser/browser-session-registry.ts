@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { ORCA_BROWSER_PARTITION } from '../../shared/constants'
 import type { BrowserSessionProfile, BrowserSessionProfileScope } from '../../shared/types'
 import { browserManager } from './browser-manager'
+import { isAllowedBrowserGuestPermission } from './browser-guest-permissions'
 
 type BrowserSessionMeta = {
   defaultSource: BrowserSessionProfile['source']
@@ -449,7 +450,7 @@ class BrowserSessionRegistry {
 
     const sess = session.fromPartition(partition)
     sess.setPermissionRequestHandler((webContents, permission, callback) => {
-      const allowed = permission === 'fullscreen'
+      const allowed = isAllowedBrowserGuestPermission(permission)
       if (!allowed) {
         browserManager.notifyPermissionDenied({
           guestWebContentsId: webContents.id,
@@ -460,7 +461,7 @@ class BrowserSessionRegistry {
       callback(allowed)
     })
     sess.setPermissionCheckHandler((_webContents, permission) => {
-      return permission === 'fullscreen'
+      return isAllowedBrowserGuestPermission(permission)
     })
     sess.setDisplayMediaRequestHandler((_request, callback) => {
       callback({ video: undefined, audio: undefined })

@@ -129,8 +129,9 @@ describe('attachMainWindowServices', () => {
     permissionHandler(null, 'fullscreen', callback)
     permissionHandler(null, 'pointerLock', callback)
     permissionHandler(null, 'clipboard-read', callback)
+    permissionHandler(null, 'clipboard-sanitized-write', callback)
 
-    expect(callback.mock.calls).toEqual([[true], [true], [true], [false]])
+    expect(callback.mock.calls).toEqual([[true], [true], [true], [false], [false]])
   })
 
   it('denies browser-session permissions, display capture, and downloads by default', () => {
@@ -170,9 +171,10 @@ describe('attachMainWindowServices', () => {
     const permissionCallback = vi.fn()
     const guestWebContents = { id: 401, getURL: vi.fn(() => 'https://example.com/account') }
     browserPermissionHandler(guestWebContents, 'fullscreen', permissionCallback)
+    browserPermissionHandler(guestWebContents, 'clipboard-sanitized-write', permissionCallback)
     browserPermissionHandler(guestWebContents, 'media', permissionCallback)
 
-    expect(permissionCallback.mock.calls).toEqual([[true], [false]])
+    expect(permissionCallback.mock.calls).toEqual([[true], [true], [false]])
     expect(browserManagerNotifyPermissionDeniedMock).toHaveBeenCalledTimes(1)
     expect(browserManagerNotifyPermissionDeniedMock).toHaveBeenCalledWith({
       guestWebContentsId: 401,
@@ -185,6 +187,7 @@ describe('attachMainWindowServices', () => {
       permission: string
     ) => boolean
     expect(browserPermissionCheckHandler(null, 'fullscreen')).toBe(true)
+    expect(browserPermissionCheckHandler(null, 'clipboard-sanitized-write')).toBe(true)
     expect(browserPermissionCheckHandler(null, 'notifications')).toBe(false)
 
     const displayMediaHandler = setDisplayMediaRequestHandlerMock.mock.calls[0][0] as (

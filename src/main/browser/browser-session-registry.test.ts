@@ -135,6 +135,25 @@ describe('BrowserSessionRegistry', () => {
     expect(mockSession?.setPermissionCheckHandler).toHaveBeenCalled()
   })
 
+  it('allows sanitized clipboard writes for browser guests while keeping other permissions denied', () => {
+    browserSessionRegistry.createProfile('isolated', 'Clipboard Policy Test')
+    const mockSession = sessionFromPartitionMock.mock.results[0]?.value
+    const permissionHandler = mockSession?.setPermissionRequestHandler.mock.calls[0]?.[0] as
+      | ((wc: { id: number; getURL: () => string }, permission: string, callback: (allowed: boolean) => void) => void)
+      | undefined
+    const permissionCheckHandler = mockSession?.setPermissionCheckHandler.mock.calls[0]?.[0] as
+      | ((wc: unknown, permission: string) => boolean)
+      | undefined
+
+    const callback = vi.fn()
+    permissionHandler?.({ id: 55, getURL: () => 'https://skills.sh' }, 'clipboard-sanitized-write', callback)
+    permissionHandler?.({ id: 55, getURL: () => 'https://skills.sh' }, 'notifications', callback)
+
+    expect(callback.mock.calls).toEqual([[true], [false]])
+    expect(permissionCheckHandler?.(null, 'clipboard-sanitized-write')).toBe(true)
+    expect(permissionCheckHandler?.(null, 'notifications')).toBe(false)
+  })
+
   describe('setupClientHintsOverride', () => {
     it('overrides sec-ch-ua headers for Edge UA', () => {
       const onBeforeSendHeaders = vi.fn()
