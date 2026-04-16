@@ -187,7 +187,9 @@ function FileExplorerInner(): React.JSX.Element {
   const virtualizer = useVirtualizer({
     count: totalCount,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 26,
+    // Why: file-explorer rows were bumped slightly for readability, so keep
+    // the virtualizer estimate in sync to avoid jumpy initial scroll math.
+    estimateSize: () => 36,
     overscan: 20,
     getItemKey: (index) => {
       if (inlineInputIndex >= 0) {
@@ -259,7 +261,7 @@ function FileExplorerInner(): React.JSX.Element {
 
   if (!worktreePath) {
     return (
-      <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground px-4 text-center">
+      <div className="flex h-full items-center justify-center text-muted-foreground px-4 text-center">
         Select a worktree to browse files
       </div>
     )
@@ -309,17 +311,17 @@ function FileExplorerInner(): React.JSX.Element {
         }}
       >
         {isLoading && (
-          <div className="flex items-center justify-center h-full text-[11px] text-muted-foreground">
+          <div className="flex items-center justify-center h-full text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
           </div>
         )}
         {hasError && (
-          <div className="flex h-full items-center justify-center px-4 text-center text-[11px] text-muted-foreground">
+          <div className="flex h-full items-center justify-center px-4 text-center text-muted-foreground">
             Could not load files for this worktree: {rootError}
           </div>
         )}
         {isEmpty && (
-          <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground px-4 text-center">
+          <div className="flex h-full items-center justify-center text-muted-foreground px-4 text-center">
             No files in this worktree
           </div>
         )}

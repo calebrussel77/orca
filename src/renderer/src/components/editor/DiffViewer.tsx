@@ -7,6 +7,7 @@ import '@/lib/monaco-setup'
 import { computeEditorFontSize } from '@/lib/editor-font-zoom'
 import { useContextualCopySetup } from './useContextualCopySetup'
 import { buildCodeFontFamily } from '@/lib/font-family'
+import { resolveDiffMonacoTheme } from '@/lib/monaco-setup'
 
 type DiffViewerProps = {
   modelKey: string
@@ -117,7 +118,7 @@ export default function DiffViewer({
           language={language}
           original={originalContent}
           modified={modifiedContent}
-          theme={isDark ? 'vs-dark' : 'vs'}
+          theme={resolveDiffMonacoTheme(isDark ? 'dark' : 'light')}
           onMount={handleMount}
           // Why: A single file can have multiple live diff tabs at once
           // (staged, unstaged, branch compare versions). The kept Monaco models

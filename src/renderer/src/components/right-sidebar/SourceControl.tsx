@@ -7,11 +7,6 @@ import {
   RefreshCw,
   Settings2,
   Undo2,
-  FileEdit,
-  FileMinus,
-  FilePlus,
-  FileQuestion,
-  ArrowRightLeft,
   FolderOpen,
   GitMerge,
   GitPullRequestArrow,
@@ -20,6 +15,7 @@ import {
   Search,
   X
 } from 'lucide-react'
+import { VscodeEntryIcon } from '@/components/VscodeEntryIcon'
 import { useAppStore } from '@/store'
 import { detectLanguage } from '@/lib/language-detect'
 import { basename, dirname, joinPath } from '@/lib/path'
@@ -60,18 +56,6 @@ import type {
 import { STATUS_COLORS, STATUS_LABELS } from './status-display'
 
 type SourceControlScope = 'all' | 'uncommitted'
-
-const STATUS_ICONS: Record<
-  string,
-  React.ComponentType<{ className?: string; style?: React.CSSProperties }>
-> = {
-  modified: FileEdit,
-  added: FilePlus,
-  deleted: FileMinus,
-  renamed: ArrowRightLeft,
-  untracked: FileQuestion,
-  copied: FilePlus
-}
 
 // Why: unstaged ("Changes") is listed first so that conflict files — which
 // are assigned area:'unstaged' by the parser — appear above "Staged Changes".
@@ -544,14 +528,14 @@ function SourceControlInner(): React.JSX.Element {
 
   if (!activeWorktree || !activeRepo || !worktreePath) {
     return (
-      <div className="flex items-center justify-center h-full text-xs text-muted-foreground px-4 text-center">
+      <div className="flex items-center justify-center h-full text-muted-foreground px-4 text-center">
         Select a worktree to view changes
       </div>
     )
   }
   if (isFolder) {
     return (
-      <div className="flex items-center justify-center h-full text-xs text-muted-foreground px-4 text-center">
+      <div className="flex items-center justify-center h-full text-muted-foreground px-4 text-center">
         Source Control is only available for Git repositories
       </div>
     )
@@ -575,7 +559,7 @@ function SourceControlInner(): React.JSX.Element {
               key={value}
               type="button"
               className={cn(
-                'px-3 pb-2 text-xs font-medium transition-colors border-b-2 -mb-px',
+                'px-3 pb-2 font-medium transition-colors border-b-2 -mb-px',
                 scope === value
                   ? 'border-foreground text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground'
@@ -586,7 +570,7 @@ function SourceControlInner(): React.JSX.Element {
             </button>
           ))}
           {prInfo && (
-            <div className="ml-auto mb-1.5 flex items-center gap-1.5 min-w-0 text-[11.5px] leading-none">
+            <div className="ml-auto mb-1.5 flex items-center gap-1.5 min-w-0 text-[0.8em] leading-none">
               <PullRequestIcon
                 className={cn(
                   'size-3 shrink-0',
@@ -628,7 +612,7 @@ function SourceControlInner(): React.JSX.Element {
             value={filterQuery}
             onChange={(e) => setFilterQuery(e.target.value)}
             placeholder="Filter files…"
-            className="flex-1 min-w-0 bg-transparent text-xs text-foreground placeholder:text-muted-foreground/60 outline-none"
+            className="flex-1 min-w-0 bg-transparent text-foreground placeholder:text-muted-foreground/60 outline-none"
           />
           {filterQuery && (
             <button
@@ -724,7 +708,7 @@ function SourceControlInner(): React.JSX.Element {
                             type="button"
                             variant="ghost"
                             size="sm"
-                            className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                            className="h-6 px-1.5 text-[0.75em] text-muted-foreground hover:text-foreground"
                             onClick={(e) => {
                               e.stopPropagation()
                               if (activeWorktreeId && worktreePath) {
@@ -739,7 +723,7 @@ function SourceControlInner(): React.JSX.Element {
                             type="button"
                             variant="ghost"
                             size="sm"
-                            className="h-auto px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+                            className="h-auto px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
                             onClick={(e) => {
                               e.stopPropagation()
                               if (activeWorktreeId && worktreePath) {
@@ -802,7 +786,7 @@ function SourceControlInner(): React.JSX.Element {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-auto px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+                    className="h-auto px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
                     onClick={(e) => {
                       e.stopPropagation()
                       if (activeWorktreeId && worktreePath && branchSummary) {
@@ -846,7 +830,7 @@ function SourceControlInner(): React.JSX.Element {
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle className="text-sm">Change Base Ref</DialogTitle>
-            <DialogDescription className="text-xs">
+            <DialogDescription>
               Pick the branch compare target for this repository.
             </DialogDescription>
           </DialogHeader>
@@ -884,7 +868,7 @@ function CompareSummary({
 }): React.JSX.Element {
   if (!summary || summary.status === 'loading') {
     return (
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 text-muted-foreground">
         <RefreshCw className="size-3.5 animate-spin" />
         <span>Comparing against {summary?.baseRef ?? '…'}</span>
       </div>
@@ -893,7 +877,7 @@ function CompareSummary({
 
   if (summary.status !== 'ready') {
     return (
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 text-muted-foreground">
         <span className="truncate">{summary.errorMessage ?? 'Branch compare unavailable'}</span>
         <button
           className="shrink-0 hover:text-foreground"
@@ -910,7 +894,7 @@ function CompareSummary({
   }
 
   return (
-    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+    <div className="flex items-center gap-2 text-muted-foreground">
       {summary.commitsAhead !== undefined && (
         <span title={`Comparing against ${summary.baseRef}`}>
           {summary.commitsAhead} commits ahead
@@ -959,7 +943,7 @@ function CompareUnavailable({
     summary.status === 'error'
 
   return (
-    <div className="m-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3 text-xs">
+    <div className="m-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
       <div className="font-medium text-foreground">
         {summary.status === 'error' ? 'Branch compare failed' : 'Branch compare unavailable'}
       </div>
@@ -972,14 +956,14 @@ function CompareUnavailable({
             type="button"
             variant="outline"
             size="sm"
-            className="h-7 text-xs"
+            className="h-7"
             onClick={onChangeBaseRef}
           >
             <Settings2 className="size-3.5" />
             Change Base Ref
           </Button>
         )}
-        <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={onRetry}>
+        <Button type="button" variant="ghost" size="sm" className="h-7" onClick={onRetry}>
           <RefreshCw className="size-3.5" />
           Retry
         </Button>
@@ -1007,16 +991,16 @@ function SectionHeader({
     <div className="group/section flex items-center pl-1 pr-3 pt-3 pb-1">
       <button
         type="button"
-        className="flex flex-1 items-center gap-1 rounded-md px-0.5 py-0.5 text-left text-xs font-semibold uppercase tracking-wider text-foreground/70 hover:bg-accent hover:text-accent-foreground"
+        className="flex flex-1 items-center gap-1 rounded-md px-0.5 py-0.5 text-left text-[0.8em] font-semibold uppercase tracking-wider text-foreground/70 hover:bg-accent hover:text-accent-foreground"
         onClick={onToggle}
       >
         <ChevronDown
           className={cn('size-3.5 shrink-0 transition-transform', isCollapsed && '-rotate-90')}
         />
         <span>{label}</span>
-        <span className="text-[11px] font-medium tabular-nums">{count}</span>
+        <span className="text-[0.85em] font-medium tabular-nums">{count}</span>
         {conflictCount > 0 && (
-          <span className="text-[11px] font-medium text-destructive/80">
+          <span className="text-[0.85em] font-medium text-destructive/80">
             · {conflictCount} conflict{conflictCount === 1 ? '' : 's'}
           </span>
         )}
@@ -1050,22 +1034,16 @@ function ConflictSummaryCard({
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
         <div className="min-w-0 flex-1">
           <div
-            className="text-xs font-medium text-foreground"
+            className="font-medium text-foreground"
             aria-live="polite"
           >{`${operationLabel}: ${unresolvedCount} unresolved`}</div>
-          <div className="mt-1 text-[11px] text-muted-foreground">
+          <div className="mt-1 text-[0.85em] text-muted-foreground">
             Resolved files move back to normal changes after they leave the live conflict state.
           </div>
         </div>
       </div>
       <div className="mt-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 text-xs w-full"
-          onClick={onReview}
-        >
+        <Button type="button" variant="outline" size="sm" className="h-7 w-full" onClick={onReview}>
           <GitMerge className="size-3.5" />
           Review conflicts
         </Button>
@@ -1099,7 +1077,7 @@ function OperationBanner({
     <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2">
       <div className="flex items-center gap-2">
         <Icon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-        <span className="text-xs font-medium text-foreground">{label}</span>
+        <span className="font-medium text-foreground">{label}</span>
       </div>
     </div>
   )
@@ -1132,7 +1110,6 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   onUnstage: (filePath: string) => Promise<void>
   onDiscard: (filePath: string) => Promise<void>
 }): React.JSX.Element {
-  const StatusIcon = STATUS_ICONS[entry.status] ?? FileQuestion
   const fileName = basename(entry.path)
   const parentDir = dirname(entry.path)
   const dirPath = parentDir === '.' ? '' : parentDir
@@ -1172,7 +1149,7 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
     >
       <div
         className={cn(
-          'group relative flex cursor-pointer items-center gap-1 pl-5 pr-3 py-1 transition-colors hover:bg-accent/40',
+          'group relative flex cursor-pointer items-center gap-1.5 pl-5 pr-3 py-1.5 text-sm transition-colors hover:bg-accent/40',
           selected && 'bg-accent/60'
         )}
         draggable
@@ -1193,21 +1170,23 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
           }
         }}
       >
-        <StatusIcon className="size-3.5 shrink-0" style={{ color: STATUS_COLORS[entry.status] }} />
-        <div className="min-w-0 flex-1 text-xs">
+        <VscodeEntryIcon pathValue={entry.path} kind="file" className="size-3.5 shrink-0" />
+        <div className="min-w-0 flex-1">
           <span className="min-w-0 block truncate">
             <span className="text-foreground">{fileName}</span>
-            {dirPath && <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>}
+            {dirPath && (
+              <span className="ml-1.5 text-[0.9em] text-muted-foreground">{dirPath}</span>
+            )}
           </span>
           {conflictLabel && (
-            <div className="truncate text-[11px] text-muted-foreground">{conflictLabel}</div>
+            <div className="truncate text-[0.9em] text-muted-foreground">{conflictLabel}</div>
           )}
         </div>
         {entry.conflictStatus ? (
           <ConflictBadge entry={entry} />
         ) : (
           <span
-            className="w-4 shrink-0 text-center text-[10px] font-bold"
+            className="w-4 shrink-0 text-center text-[0.8em] font-bold"
             style={{ color: STATUS_COLORS[entry.status] }}
           >
             {STATUS_LABELS[entry.status]}
@@ -1259,13 +1238,13 @@ function ConflictBadge({ entry }: { entry: GitStatusEntry }): React.JSX.Element 
       role="status"
       aria-label={`${label} conflict${entry.conflictKind ? `, ${CONFLICT_KIND_LABELS[entry.conflictKind]}` : ''}`}
       className={cn(
-        'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold',
+        'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[0.8em] font-semibold',
         isUnresolvedConflict
           ? 'bg-destructive/12 text-destructive'
           : 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-400'
       )}
     >
-      <Icon className="size-3" />
+      <Icon className="size-3.5" />
       <span>{label}</span>
     </span>
   )
@@ -1299,7 +1278,6 @@ function BranchEntryRow({
   onRevealInExplorer: (worktreeId: string, absolutePath: string) => void
   onOpen: () => void
 }): React.JSX.Element {
-  const StatusIcon = STATUS_ICONS[entry.status] ?? FileQuestion
   const fileName = basename(entry.path)
   const parentDir = dirname(entry.path)
   const dirPath = parentDir === '.' ? '' : parentDir
@@ -1311,7 +1289,7 @@ function BranchEntryRow({
       onRevealInExplorer={onRevealInExplorer}
     >
       <div
-        className="group flex cursor-pointer items-center gap-1 pl-5 pr-3 py-1 transition-colors hover:bg-accent/40"
+        className="group flex cursor-pointer items-center gap-1.5 pl-5 pr-3 py-1.5 text-sm transition-colors hover:bg-accent/40"
         draggable
         onDragStart={(e) => {
           const absolutePath = joinPath(worktreePath, entry.path)
@@ -1320,13 +1298,13 @@ function BranchEntryRow({
         }}
         onClick={onOpen}
       >
-        <StatusIcon className="size-3.5 shrink-0" style={{ color: STATUS_COLORS[entry.status] }} />
-        <span className="min-w-0 flex-1 truncate text-xs">
+        <VscodeEntryIcon pathValue={entry.path} kind="file" className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">
           <span className="text-foreground">{fileName}</span>
-          {dirPath && <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>}
+          {dirPath && <span className="ml-1.5 text-[0.9em] text-muted-foreground">{dirPath}</span>}
         </span>
         <span
-          className="w-4 shrink-0 text-center text-[10px] font-bold"
+          className="w-4 shrink-0 text-center text-[0.8em] font-bold"
           style={{ color: STATUS_COLORS[entry.status] }}
         >
           {STATUS_LABELS[entry.status]}
@@ -1379,7 +1357,7 @@ function EmptyState({
   return (
     <div className="px-4 py-6">
       <div className="text-sm font-medium text-foreground">{heading}</div>
-      <div className="mt-1 text-xs text-muted-foreground">{supportingText}</div>
+      <div className="mt-1 text-[0.85em] text-muted-foreground">{supportingText}</div>
     </div>
   )
 }

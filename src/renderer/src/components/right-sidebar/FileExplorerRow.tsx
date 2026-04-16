@@ -3,16 +3,14 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
-  File,
   FilePlus,
   Files,
-  Folder,
-  FolderOpen,
   FolderPlus,
   Loader2,
   Pencil,
   Trash2
 } from 'lucide-react'
+import { VscodeEntryIcon } from '@/components/VscodeEntryIcon'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -128,18 +126,22 @@ export function InlineInputRow({
 
   return (
     <div
-      className="flex items-center w-full h-[26px] px-2 gap-1"
+      className="flex items-center w-full px-2 py-1.5 gap-1.5"
       style={{ paddingLeft: `${depth * 16 + 8}px` }}
     >
-      <span className="size-3 shrink-0" />
-      {inlineInput.type === 'folder' ? (
-        <Folder className="size-3 shrink-0 text-muted-foreground" />
-      ) : (
-        <File className="size-3 shrink-0 text-muted-foreground" />
-      )}
+      <span className="size-3.5 shrink-0" />
+      <VscodeEntryIcon
+        pathValue={
+          inlineInput.type === 'rename'
+            ? (inlineInput.existingPath ?? inlineInput.parentPath)
+            : `${inlineInput.parentPath}/${inlineInput.type === 'folder' ? 'new-folder' : 'new-file'}`
+        }
+        kind={inlineInput.type === 'folder' ? 'directory' : 'file'}
+        className="size-3.5 shrink-0"
+      />
       <input
         ref={inputRef}
-        className="flex-1 min-w-0 bg-transparent text-xs text-foreground outline-none border border-ring rounded-sm px-1"
+        className="flex-1 min-w-0 border border-ring rounded-sm bg-transparent px-1 text-sm text-foreground outline-none"
         defaultValue={inlineInput.type === 'rename' ? inlineInput.existingName : ''}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
@@ -254,7 +256,7 @@ export function FileExplorerRow({
       <ContextMenuTrigger asChild>
         <button
           className={cn(
-            'flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-xs transition-colors hover:bg-accent hover:text-foreground',
+            'flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-foreground',
             isSelected && 'bg-accent text-accent-foreground',
             isFlashing && 'bg-amber-400/20 ring-1 ring-inset ring-amber-400/70'
           )}
@@ -281,22 +283,24 @@ export function FileExplorerRow({
             <>
               <ChevronRight
                 className={cn(
-                  'size-3 shrink-0 text-muted-foreground transition-transform',
+                  'size-3.5 shrink-0 text-muted-foreground transition-transform',
                   isExpanded && 'rotate-90'
                 )}
               />
               {isLoading ? (
-                <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />
-              ) : isExpanded ? (
-                <FolderOpen className="size-3 shrink-0 text-muted-foreground" />
+                <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
               ) : (
-                <Folder className="size-3 shrink-0 text-muted-foreground" />
+                <VscodeEntryIcon
+                  pathValue={node.path}
+                  kind="directory"
+                  className="size-3.5 shrink-0"
+                />
               )}
             </>
           ) : (
             <>
-              <span className="size-3 shrink-0" />
-              <File className="size-3 shrink-0 text-muted-foreground" />
+              <span className="size-3.5 shrink-0" />
+              <VscodeEntryIcon pathValue={node.path} kind="file" className="size-3.5 shrink-0" />
             </>
           )}
           <span
@@ -307,7 +311,7 @@ export function FileExplorerRow({
           </span>
           {nodeStatus && (
             <span
-              className="ml-auto shrink-0 text-[10px] font-semibold tracking-wide mr-2"
+              className="mr-2 ml-auto shrink-0 text-[0.75em] font-semibold tracking-wide"
               style={{ color: statusColor ?? undefined }}
             >
               {STATUS_LABELS[nodeStatus]}

@@ -3,11 +3,13 @@ import { LazySection } from './LazySection'
 import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
 import { DiffEditor, type DiffOnMount } from '@monaco-editor/react'
 import type { editor as monacoEditor } from 'monaco-editor'
+import { VscodeEntryIcon } from '@/components/VscodeEntryIcon'
 import { joinPath } from '@/lib/path'
 import { detectLanguage } from '@/lib/language-detect'
 import { useAppStore } from '@/store'
 import { computeEditorFontSize } from '@/lib/editor-font-zoom'
 import { buildCodeFontFamily } from '@/lib/font-family'
+import { resolveDiffMonacoTheme } from '@/lib/monaco-setup'
 import type { GitDiffResult } from '../../../../shared/types'
 
 const ImageDiffViewer = lazy(() => import('./ImageDiffViewer'))
@@ -170,14 +172,15 @@ export function DiffSectionItem({
   return (
     <LazySection key={section.key} index={index} onVisible={loadSection}>
       <div
-        className="sticky top-0 z-10 bg-background flex items-center w-full px-3 py-1.5 text-left text-xs hover:bg-accent transition-colors group cursor-pointer"
+        className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-border/70 bg-background/95 px-3 py-1.5 text-left text-xs transition-colors hover:bg-accent/35 group cursor-pointer backdrop-blur-sm"
         onClick={() => toggleSection(index)}
       >
+        <VscodeEntryIcon pathValue={section.path} kind="file" className="size-3.5" />
         <span className="min-w-0 flex-1 truncate text-muted-foreground">
           <span
             role="button"
             tabIndex={0}
-            className="cursor-copy hover:underline"
+            className="cursor-copy font-mono hover:underline"
             onMouseDown={(e) => {
               e.preventDefault()
               e.stopPropagation()
@@ -210,10 +213,12 @@ export function DiffSectionItem({
           {lineStats && (lineStats.added > 0 || lineStats.removed > 0) && (
             <span className="tabular-nums ml-2">
               {lineStats.added > 0 && (
-                <span className="text-green-600 dark:text-green-500">+{lineStats.added}</span>
+                <span style={{ color: 'var(--git-decoration-added)' }}>+{lineStats.added}</span>
               )}
               {lineStats.added > 0 && lineStats.removed > 0 && <span> </span>}
-              {lineStats.removed > 0 && <span className="text-red-500">-{lineStats.removed}</span>}
+              {lineStats.removed > 0 && (
+                <span style={{ color: 'var(--git-decoration-deleted)' }}>-{lineStats.removed}</span>
+              )}
             </span>
           )}
         </span>
@@ -280,7 +285,7 @@ export function DiffSectionItem({
               language={language}
               original={section.originalContent}
               modified={section.modifiedContent}
-              theme={isDark ? 'vs-dark' : 'vs'}
+              theme={resolveDiffMonacoTheme(isDark ? 'dark' : 'light')}
               onMount={handleMount}
               options={{
                 readOnly: !isEditable,

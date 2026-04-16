@@ -14,6 +14,7 @@ import {
   MessageSquare
 } from 'lucide-react'
 import { ExternalLink } from 'lucide-react'
+import { VscodeEntryIcon } from '@/components/VscodeEntryIcon'
 import { cn } from '@/lib/utils'
 import type { PRInfo, PRCheckDetail, PRComment } from '../../../../shared/types'
 
@@ -47,23 +48,30 @@ export function ConflictingFilesSection({ pr }: { pr: PRInfo }): React.JSX.Eleme
 
   return (
     <div className="border-t border-border px-3 py-3">
-      <div className="text-[11px] font-medium text-foreground">
+      <div className="font-medium text-foreground">
         This branch has conflicts that must be resolved
       </div>
-      <div className="mt-1 text-[11px] text-muted-foreground">
+      <div className="mt-1 text-[0.85em] text-muted-foreground">
         It&apos;s {pr.conflictSummary!.commitsBehind} commit
         {pr.conflictSummary!.commitsBehind === 1 ? '' : 's'} behind (base commit:{' '}
-        <span className="font-mono text-[10px]">{pr.conflictSummary!.baseCommit}</span>)
+        <span className="font-mono text-[0.8em]">{pr.conflictSummary!.baseCommit}</span>)
       </div>
       <div className="mt-2 flex items-center gap-2">
         <Files className="size-3.5 shrink-0 text-muted-foreground" />
-        <div className="text-[11px] text-muted-foreground">Conflicting files</div>
+        <div className="text-[0.85em] text-muted-foreground">Conflicting files</div>
       </div>
       <div className="mt-2 space-y-2">
         {files.map((filePath) => (
           <div key={filePath} className="rounded-md border border-border bg-accent/20 px-2.5 py-2">
-            <div className="break-all font-mono text-[11px] leading-4 text-foreground">
-              {filePath}
+            <div className="flex items-start gap-2">
+              <VscodeEntryIcon
+                pathValue={filePath}
+                kind="file"
+                className="mt-0.5 size-3.5 shrink-0"
+              />
+              <div className="break-all font-mono text-sm leading-5 text-foreground">
+                {filePath}
+              </div>
             </div>
           </div>
         ))}
@@ -80,10 +88,10 @@ export function MergeConflictNotice({ pr }: { pr: PRInfo }): React.JSX.Element |
 
   return (
     <div className="border-t border-border px-3 py-3">
-      <div className="text-[11px] font-medium text-foreground">
+      <div className="font-medium text-foreground">
         This branch has conflicts that must be resolved
       </div>
-      <div className="mt-1 text-[11px] text-muted-foreground">Refreshing conflict details…</div>
+      <div className="mt-1 text-[0.85em] text-muted-foreground">Refreshing conflict details…</div>
     </div>
   )
 }
@@ -123,7 +131,7 @@ export function ChecksList({
     <>
       {/* Checks Summary */}
       {checks.length > 0 && (
-        <div className="flex items-center gap-3 px-3 py-2 border-b border-border text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-3 px-3 py-2 border-b border-border text-[0.75em] text-muted-foreground">
           {passingCount > 0 && (
             <span className="flex items-center gap-1">
               <CircleCheck className="size-3 text-emerald-500" />
@@ -151,7 +159,7 @@ export function ChecksList({
           <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
         </div>
       ) : checks.length === 0 ? (
-        <div className="flex items-center justify-center py-8 text-[11px] text-muted-foreground">
+        <div className="flex items-center justify-center py-8 text-muted-foreground">
           No checks configured
         </div>
       ) : (
@@ -180,7 +188,7 @@ export function ChecksList({
                     conclusion === 'pending' && 'animate-spin'
                   )}
                 />
-                <span className="flex-1 truncate text-[12px] text-foreground">{check.name}</span>
+                <span className="flex-1 truncate text-foreground">{check.name}</span>
                 {check.url && <ExternalLink className="size-3 text-muted-foreground/40 shrink-0" />}
               </div>
             )
@@ -243,7 +251,7 @@ function ResolveButton({
 
   return (
     <button
-      className="text-[10px] px-1.5 py-0.5 rounded transition-colors shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent"
+      className="text-[0.75em] px-1.5 py-0.5 rounded transition-colors shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent"
       onClick={handleClick}
     >
       {isResolved ? 'Unresolve' : 'Resolve'}
@@ -313,14 +321,14 @@ function CommentRow({
           )}
           <span
             className={cn(
-              'text-[11px] font-semibold shrink-0',
+              'font-semibold shrink-0',
               comment.isResolved ? 'text-muted-foreground' : 'text-foreground'
             )}
           >
             {comment.author}
           </span>
           {!isReply && comment.path && (
-            <span className="text-[10px] font-mono text-muted-foreground/60 truncate min-w-0">
+            <span className="min-w-0 truncate font-mono text-[0.8em] text-muted-foreground/60">
               {comment.path.split('/').pop()}
               {formatLineRange(comment) && `:${formatLineRange(comment)}`}
             </span>
@@ -340,7 +348,7 @@ function CommentRow({
         {/* Comment body */}
         <p
           className={cn(
-            'text-[11px] text-muted-foreground leading-snug mt-0.5',
+            'mt-0.5 text-[0.9em] leading-snug text-muted-foreground',
             isReply ? 'pl-5 line-clamp-1' : 'pl-[22px] line-clamp-2'
           )}
         >
@@ -411,9 +419,9 @@ export function PRCommentsList({
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
         <MessageSquare className="size-3.5 text-muted-foreground" />
-        <span className="text-[11px] font-medium text-foreground">Comments</span>
+        <span className="font-medium text-foreground">Comments</span>
         {comments.length > 0 && (
-          <span className="text-[10px] text-muted-foreground">{comments.length}</span>
+          <span className="text-[0.75em] text-muted-foreground">{comments.length}</span>
         )}
       </div>
 
@@ -423,7 +431,7 @@ export function PRCommentsList({
           <LoaderCircle className="size-4 animate-spin text-muted-foreground" />
         </div>
       ) : comments.length === 0 ? (
-        <div className="flex items-center justify-center py-6 text-[11px] text-muted-foreground">
+        <div className="flex items-center justify-center py-6 text-muted-foreground">
           No comments
         </div>
       ) : (
