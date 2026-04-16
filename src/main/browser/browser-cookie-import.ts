@@ -325,6 +325,26 @@ function localStateUsesAppBoundEncryption(localStatePath: string | null): boolea
   }
 }
 
+export function localStateHasEncryptedKeyFromText(localStateText: string): boolean {
+  try {
+    const localState = JSON.parse(localStateText)
+    return typeof localState?.os_crypt?.encrypted_key === 'string'
+  } catch {
+    return false
+  }
+}
+
+function localStateHasEncryptedKey(localStatePath: string | null): boolean {
+  if (!localStatePath || !existsSync(localStatePath)) {
+    return false
+  }
+  try {
+    return localStateHasEncryptedKeyFromText(readFileSync(localStatePath, 'utf-8'))
+  } catch {
+    return false
+  }
+}
+
 function getBrowserAvailability(
   browser: Pick<DetectedBrowser, 'label' | 'localStatePath'>
 ): Pick<DetectedBrowser, 'available' | 'unavailableReason'> {
@@ -338,9 +358,12 @@ function getBrowserAvailability(
         unavailableReason: `${browser.label} uses Windows app-bound encryption, which Orca cannot import directly yet.`
       }
     }
+    if (localStateHasEncryptedKey(browser.localStatePath)) {
+      return { available: true }
+    }
     return {
       available: false,
-      unavailableReason: `Direct ${browser.label} cookie import is not available on Windows yet.`
+      unavailableReason: `${browser.label} does not expose a Windows Chromium encryption key Orca can import.`
     }
   }
   return {
@@ -391,6 +414,19 @@ type ValidatedCookie = {
   httpOnly: boolean
   sameSite: 'unspecified' | 'no_restriction' | 'lax' | 'strict'
   expirationDate: number | undefined
+}
+
+const IMPORTED_SESSION_COOKIE_TTL_SECONDS = 400 * 24 * 60 * 60
+
+function toPersistentImportedExpirationDate(expirationDate: number | undefined): number {
+  if (expirationDate !== undefined) {
+    return expirationDate
+  }
+  // Why: Electron treats cookies without expirationDate as session cookies and
+  // drops them on app restart. Orca's import flow is explicitly for reusing a
+  // login across Orca launches, so imported session cookies get a bounded
+  // persistent lifetime instead of disappearing on the next relaunch.
+  return Math.floor(Date.now() / 1000) + IMPORTED_SESSION_COOKIE_TTL_SECONDS
 }
 
 function normalizeSameSite(raw: unknown): 'unspecified' | 'no_restriction' | 'lax' | 'strict' {
@@ -503,7 +539,7 @@ async function importValidatedCookies(
         secure: cookie.secure,
         httpOnly: cookie.httpOnly,
         sameSite: cookie.sameSite,
-        expirationDate: cookie.expirationDate
+        expirationDate: toPersistentImportedExpirationDate(cookie.expirationDate)
       })
       importedCount++
       // Why: surface only the domain — never name, value, or path — so the
@@ -730,6 +766,55 @@ function getMacEncryptionKey(family: BrowserSessionProfileSource['browserFamily'
   }
 }
 
+function decryptWindowsDpapi(encryptedData: Buffer): Buffer | null {
+  if (process.platform !== 'win32' || encryptedData.length === 0) {
+    return null
+  }
+  try {
+    // Why: Chromium stores the Windows `encrypted_key` using DPAPI. PowerShell's
+    // ProtectedData API gives Orca a small native bridge here without needing a
+    // custom addon just to unwrap the current user's browser key.
+    const output = execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        "$ErrorActionPreference='Stop'; $bytes=[Convert]::FromBase64String($args[0]); $plain=[Security.Cryptography.ProtectedData]::Unprotect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Convert]::ToBase64String($plain))",
+        encryptedData.toString('base64')
+      ],
+      { encoding: 'utf-8', timeout: 30_000 }
+    ).trim()
+    return output ? Buffer.from(output, 'base64') : null
+  } catch {
+    return null
+  }
+}
+
+function getWindowsEncryptionKey(localStatePath: string | null): Buffer | null {
+  if (process.platform !== 'win32' || !localStatePath || !existsSync(localStatePath)) {
+    return null
+  }
+  try {
+    const localState = JSON.parse(readFileSync(localStatePath, 'utf-8'))
+    const encodedKey = localState?.os_crypt?.encrypted_key
+    if (typeof encodedKey !== 'string' || encodedKey.length === 0) {
+      return null
+    }
+    const encryptedKeyWithHeader = Buffer.from(encodedKey, 'base64')
+    const header = Buffer.from('DPAPI')
+    if (encryptedKeyWithHeader.length <= header.length) {
+      return null
+    }
+    if (!encryptedKeyWithHeader.subarray(0, header.length).equals(header)) {
+      return null
+    }
+    return decryptWindowsDpapi(encryptedKeyWithHeader.subarray(header.length))
+  } catch {
+    return null
+  }
+}
+
 // Why: Chromium 127+ prepends a 32-byte per-host HMAC to the cookie value
 // before encrypting. After AES-CBC decryption, the raw output is:
 //   [32-byte HMAC] [actual cookie value]
@@ -771,6 +856,34 @@ function decryptCookieValueRaw(encryptedBuffer: Buffer, key: Buffer): Buffer | n
   } catch {
     return null
   }
+}
+
+function decryptWindowsCookieValueRaw(
+  encryptedBuffer: Buffer,
+  key: Buffer | null
+): Buffer | null {
+  if (!encryptedBuffer || encryptedBuffer.length === 0) {
+    return null
+  }
+  const version = encryptedBuffer.subarray(0, 3).toString('utf-8')
+  if (version === 'v10' || version === 'v11') {
+    if (!key || encryptedBuffer.length <= 3 + 12 + 16) {
+      return null
+    }
+    const nonce = encryptedBuffer.subarray(3, 15)
+    const ciphertextWithTag = encryptedBuffer.subarray(15)
+    const ciphertext = ciphertextWithTag.subarray(0, -16)
+    const authTag = ciphertextWithTag.subarray(-16)
+    try {
+      const decipher = createDecipheriv('aes-256-gcm', key, nonce)
+      decipher.setAuthTag(authTag)
+      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+      return hasHmacPrefix(decrypted) ? decrypted.subarray(CHROMIUM_COOKIE_HMAC_LEN) : decrypted
+    } catch {
+      return null
+    }
+  }
+  return decryptWindowsDpapi(encryptedBuffer)
 }
 
 export async function importCookiesFromBrowser(
@@ -815,12 +928,27 @@ export async function importCookiesFromBrowser(
   // In packaged builds where os_crypt IS active, CookieMonster will re-encrypt
   // plaintext cookies on its next flush, so this approach is safe in both modes.
 
-  const sourceKey = getMacEncryptionKey(browser.family)
-  if (!sourceKey) {
+  let sourceKey: Buffer | null = null
+  if (process.platform === 'darwin') {
+    sourceKey = getMacEncryptionKey(browser.family)
+  } else if (process.platform === 'win32') {
+    sourceKey = getWindowsEncryptionKey(browser.localStatePath)
+  }
+
+  if (process.platform === 'darwin' && !sourceKey) {
     rmSync(tmpDir, { recursive: true, force: true })
     return {
       ok: false,
       reason: `Could not access ${browser.label} encryption key. macOS may have denied Keychain access.`
+    }
+  }
+  if (process.platform === 'win32' && !sourceKey) {
+    rmSync(tmpDir, { recursive: true, force: true })
+    return {
+      ok: false,
+      reason:
+        browser.unavailableReason ??
+        `Could not access ${browser.label}'s Windows Chromium encryption key.`
     }
   }
 
@@ -962,7 +1090,10 @@ export async function importCookiesFromBrowser(
 
       let plaintextHex: string
       if (encBuf.length > 0) {
-        const rawDecrypted = decryptCookieValueRaw(encBuf, sourceKey)
+        const rawDecrypted =
+          process.platform === 'win32'
+            ? decryptWindowsCookieValueRaw(encBuf, sourceKey)
+            : decryptCookieValueRaw(encBuf, sourceKey!)
         if (rawDecrypted === null) {
           skipped++
           continue

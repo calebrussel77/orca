@@ -16,7 +16,8 @@ import {
   detectInstalledBrowsers,
   getBrowserCookiePathCandidates,
   getBrowserLocalStateCandidates,
-  localStateUsesAppBoundEncryptionFromText
+  localStateUsesAppBoundEncryptionFromText,
+  localStateHasEncryptedKeyFromText
 } from './browser-cookie-import'
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -217,6 +218,28 @@ describe('importCookiesFromFile', () => {
     expect(result.summary.skippedCookies).toBe(1)
     expect(cookiesFlushStoreMock).toHaveBeenCalledTimes(1)
   })
+
+  it('promotes imported session cookies to a persistent expiration date', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-04-16T10:00:00Z'))
+
+      const filePath = writeCookieFile([{ domain: '.example.com', name: 'session', value: 'abc' }])
+
+      const result = await importCookiesFromFile(filePath, 'persist:test')
+      expect(result.ok).toBe(true)
+      if (!result.ok) {
+        return
+      }
+
+      expect(cookiesSetMock).toHaveBeenCalledTimes(1)
+      expect(cookiesSetMock.mock.calls[0][0].expirationDate).toBe(
+        Math.floor(new Date('2026-04-16T10:00:00Z').getTime() / 1000) + 400 * 24 * 60 * 60
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('detectInstalledBrowsers', () => {
@@ -282,6 +305,17 @@ describe('detectInstalledBrowsers', () => {
     expect(
       localStateUsesAppBoundEncryptionFromText(
         JSON.stringify({ os_crypt: { encrypted_key: 'abc' } })
+      )
+    ).toBe(false)
+  })
+
+  it('detects the classic Windows encrypted_key from Local State', () => {
+    expect(
+      localStateHasEncryptedKeyFromText(JSON.stringify({ os_crypt: { encrypted_key: 'abc' } }))
+    ).toBe(true)
+    expect(
+      localStateHasEncryptedKeyFromText(
+        JSON.stringify({ os_crypt: { app_bound_encrypted_key: 'abc' } })
       )
     ).toBe(false)
   })
