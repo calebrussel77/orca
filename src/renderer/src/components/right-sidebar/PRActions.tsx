@@ -98,7 +98,7 @@ export default function PRActions({
                     type="button"
                     size="xs"
                     className={cn(
-                      'flex-1 rounded-r-none px-3 text-[11px]',
+                      'flex-1 rounded-r-none px-3',
                       'bg-green-600 text-white hover:bg-green-700',
                       'disabled:opacity-50 disabled:cursor-not-allowed'
                     )}
@@ -133,7 +133,7 @@ export default function PRActions({
                           type="button"
                           variant="ghost"
                           size="xs"
-                          className="h-auto w-full justify-start rounded-none px-3 py-1 text-left text-[11px]"
+                          className="h-auto w-full justify-start rounded-none px-3 py-1 text-left"
                           onClick={() => void handleMerge(method)}
                         >
                           {MERGE_LABELS[method]}
@@ -151,7 +151,7 @@ export default function PRActions({
             )}
           </Tooltip>
         </TooltipProvider>
-        {mergeError && <div className="text-[10px] text-rose-500 break-words">{mergeError}</div>}
+        {mergeError && <div className="text-[0.75em] text-rose-500 break-words">{mergeError}</div>}
       </div>
     )
   }
@@ -162,7 +162,7 @@ export default function PRActions({
         type="button"
         variant="secondary"
         size="xs"
-        className="w-full text-[11px]"
+        className="w-full"
         onClick={handleDeleteWorktree}
       >
         <Trash2 className="size-3.5" />

@@ -2,14 +2,26 @@ import React, { useEffect, useMemo, useCallback, useState } from 'react'
 import { useAppStore } from '@/store'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
-import { Bell, GitMerge, LoaderCircle, CircleCheck, CircleX, Globe, WifiOff } from 'lucide-react'
+import {
+  Bell,
+  Folder,
+  FolderGit2,
+  FolderOpen,
+  GitBranch,
+  GitMerge,
+  LoaderCircle,
+  CircleCheck,
+  CircleX,
+  Globe,
+  WifiOff
+} from 'lucide-react'
 import StatusIndicator from './StatusIndicator'
 import CacheTimer from './CacheTimer'
 import WorktreeContextMenu from './WorktreeContextMenu'
 import { SshDisconnectedDialog } from './SshDisconnectedDialog'
 import { cn } from '@/lib/utils'
 import { getWorktreeStatus, type WorktreeStatus } from '@/lib/worktree-status'
-import { getRepoKindLabel, isFolderRepo } from '../../../../shared/repo-kind'
+import { isFolderRepo } from '../../../../shared/repo-kind'
 import type { Worktree, Repo, PRInfo, IssueInfo } from '../../../../shared/types'
 import {
   branchDisplayName,
@@ -263,34 +275,45 @@ const WorktreeCard = React.memo(function WorktreeCard({
             </div>
           )}
 
-          {/* Content area */}
-          <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-            {/* Header row: Title and Checks */}
+          {/* Content area
+           Hierarchy: the repository (project) is the anchor identity — a
+           worktree only makes sense inside one — so it gets the bold primary
+           slot. The worktree's own label (branch name or user-set alias)
+           becomes the secondary line. When grouping by repo, the group
+           header already names the repo, so we promote the worktree label
+           back to primary to avoid a redundant bold line. */}
+          <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+            {/* Primary row: Project/repo name + structural badges */}
             <div className="flex items-center justify-between min-w-0 gap-2">
               <div className="flex items-center gap-1.5 min-w-0">
-                <div className="truncate text-sm font-semibold leading-snug tracking-[-0.005em] text-foreground">
-                  {worktree.displayName}
-                </div>
+                {repo && !hideRepoBadge && (
+                  isFolder ? (
+                    <Folder className="size-3.5 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+                  )
+                )}
+                <span className="truncate text-sm font-semibold leading-snug text-foreground">
+                  {hideRepoBadge ? worktree.displayName : (repo?.displayName ?? worktree.displayName)}
+                </span>
 
-                {/* Why: the primary worktree (the original clone directory) cannot be
-                 deleted via `git worktree remove`. Placing this badge next to the
-                 name makes it immediately visible and avoids confusion with the
-                 branch name "main" shown below. */}
-                {worktree.isMainWorktree && !isFolder && (
+                {repo?.connectionId && (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <Badge
-                        variant="outline"
-                        className="h-4 shrink-0 rounded-sm border-muted-foreground/25 bg-muted-foreground/[0.06] px-1 py-0 font-mono text-[0.625rem] font-medium uppercase leading-none tracking-[0.06em] text-muted-foreground"
-                      >
-                        primary
-                      </Badge>
+                      <span className="shrink-0 inline-flex items-center gap-0.5">
+                        {isSshDisconnected ? (
+                          <WifiOff className="size-3 text-red-400" />
+                        ) : (
+                          <Globe className="size-3 text-muted-foreground" />
+                        )}
+                      </span>
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={8}>
-                      Primary worktree (original clone directory)
+                      {isSshDisconnected ? 'SSH disconnected' : 'Remote repository via SSH'}
                     </TooltipContent>
                   </Tooltip>
                 )}
+
               </div>
 
               {/* CI Checks & PR state on the right */}
@@ -318,63 +341,57 @@ const WorktreeCard = React.memo(function WorktreeCard({
               )}
             </div>
 
-            {/* Subtitle row: Repo badge + Branch */}
-            <div className="flex items-center gap-1.5 min-w-0">
-              {repo && !hideRepoBadge && (
-                <div className="flex shrink-0 items-center gap-1.5 rounded-sm border border-border bg-background/60 px-1.5 py-[0.1875rem] dark:bg-background/40 dark:border-border/60">
-                  <div
-                    className="size-1.5 rounded-full"
-                    style={{ backgroundColor: repo.badgeColor }}
-                  />
-                  <span className="max-w-[6rem] truncate font-mono text-xs font-medium leading-none text-foreground lowercase">
-                    {repo.displayName}
-                  </span>
-                </div>
-              )}
-
-              {repo?.connectionId && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="shrink-0 inline-flex items-center gap-0.5">
-                      {isSshDisconnected ? (
-                        <WifiOff className="size-3 text-red-400" />
-                      ) : (
-                        <Globe className="size-3 text-muted-foreground" />
-                      )}
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" sideOffset={8}>
-                    {isSshDisconnected ? 'SSH disconnected' : 'Remote repository via SSH'}
-                  </TooltipContent>
-                </Tooltip>
-              )}
-
+            {/* Secondary row: Worktree label (branch/alias) + state badges.
+             A small leading icon anchors the row visually and gives it a
+             semantic tie to the primary name above. Folder-kind repos show
+             their filesystem path instead of a branch, so every card keeps a
+             consistent two-line rhythm regardless of repo kind. */}
+            <div className="flex items-center gap-1.5 min-w-0 pl-4">
               {isFolder ? (
-                <Badge
-                  variant="secondary"
-                  className="h-[1.125rem] shrink-0 rounded-sm border border-border bg-accent px-1.5 font-mono text-[0.625rem] font-medium uppercase leading-none tracking-[0.06em] text-muted-foreground dark:border-border/50 dark:bg-accent/80"
-                >
-                  {repo ? getRepoKindLabel(repo) : 'Folder'}
-                </Badge>
+                <FolderOpen className="size-3.5 shrink-0 text-muted-foreground/60" />
               ) : (
-                <span className="truncate font-mono text-xs leading-none text-muted-foreground">
-                  {branch}
-                </span>
+                <GitBranch className="size-3.5 shrink-0 text-muted-foreground/60" />
               )}
+              <span
+                className="truncate font-mono text-xs leading-snug text-muted-foreground"
+                title={isFolder ? (repo?.path ?? '') : undefined}
+              >
+                {isFolder
+                  ? (repo?.path ?? 'Local folder')
+                  : hideRepoBadge
+                    ? branch
+                    : worktree.displayName}
+              </span>
 
-              {/* Why: the conflict operation (merge/rebase/cherry-pick) is the
-               only signal that the worktree is in an incomplete operation state.
-               Showing it on the card lets the user spot worktrees that need
-               attention without switching to them first. */}
-              {conflictOperation && conflictOperation !== 'unknown' && (
-                <Badge
-                  variant="outline"
-                  className="h-5 rounded px-1.5 text-xs font-medium leading-none shrink-0 gap-1 text-amber-600 border-amber-500/30 bg-amber-500/5 dark:text-amber-400 dark:border-amber-400/30 dark:bg-amber-400/5"
-                >
-                  <GitMerge className="size-2.5" />
-                  {CONFLICT_OPERATION_LABELS[conflictOperation]}
-                </Badge>
-              )}
+                {/* Why: the primary worktree (the original clone directory) cannot
+                 be deleted via `git worktree remove`. The badge sits on the
+                 secondary row because it qualifies the worktree, not the repo. */}
+                {worktree.isMainWorktree && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="shrink-0 rounded-sm bg-muted-foreground/10 px-1.5 py-0.5 text-xs font-medium uppercase leading-none tracking-wider text-muted-foreground/80">
+                        primary
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" sideOffset={8}>
+                      Primary worktree (original clone directory)
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+
+                {/* Why: the conflict operation (merge/rebase/cherry-pick) is the
+                 only signal that the worktree is in an incomplete operation state.
+                 Showing it on the card lets the user spot worktrees that need
+                 attention without switching to them first. */}
+                {conflictOperation && conflictOperation !== 'unknown' && (
+                  <Badge
+                    variant="outline"
+                    className="h-5 rounded px-1.5 text-xs font-medium leading-none shrink-0 gap-1 text-amber-600 border-amber-500/30 bg-amber-500/5 dark:text-amber-400 dark:border-amber-400/30 dark:bg-amber-400/5"
+                  >
+                    <GitMerge className="size-2.5" />
+                    {CONFLICT_OPERATION_LABELS[conflictOperation]}
+                  </Badge>
+                )}
 
               <CacheTimer worktreeId={worktree.id} />
             </div>

@@ -23,6 +23,7 @@ import WorktreeJumpPalette from './components/WorktreeJumpPalette'
 import { StatusBar } from './components/status-bar/StatusBar'
 import { UpdateCard } from './components/UpdateCard'
 import { ZoomOverlay } from './components/ZoomOverlay'
+import { WindowControls } from './components/WindowControls'
 import { useGitStatusPolling } from './components/right-sidebar/useGitStatusPolling'
 import {
   setRuntimeGraphStoreStateGetter,
@@ -38,6 +39,7 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { findWorktreeById, getRepoIdFromWorktreeId } from '@/store/slices/worktree-helpers'
 
 const isMac = navigator.userAgent.includes('Mac')
+const isWindows = navigator.userAgent.includes('Windows')
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -685,6 +687,7 @@ function App(): React.JSX.Element {
               </TooltipContent>
             </Tooltip>
           ) : null}
+          {isWindows ? <WindowControls /> : null}
         </div>
         <div className="flex flex-row flex-1 min-h-0 overflow-hidden">
           {showSidebar ? <Sidebar /> : null}

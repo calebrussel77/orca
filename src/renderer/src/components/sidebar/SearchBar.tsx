@@ -63,7 +63,7 @@ const SearchBar = React.memo(function SearchBar() {
   )
 
   return (
-    <div className="px-3 pb-3">
+    <div className="px-3 pb-6">
       <div className="group/search relative flex items-center rounded-md border border-border/60 bg-muted/40 transition-colors focus-within:border-ring/40 focus-within:bg-muted/60 hover:bg-muted/55">
         <Search className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground" />
         <Input

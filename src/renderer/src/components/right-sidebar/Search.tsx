@@ -298,7 +298,7 @@ export default function Search(): React.JSX.Element {
 
   if (!activeWorktreeId) {
     return (
-      <div className="flex items-center justify-center h-full text-muted-foreground text-xs">
+      <div className="flex items-center justify-center h-full text-muted-foreground">
         Select a worktree to search
       </div>
     )
@@ -355,7 +355,7 @@ export default function Search(): React.JSX.Element {
       {/* Why: the summary is rendered outside the virtualizer so it stays
          pinned at the top while the user scrolls through results. */}
       {deferredSearchResults && searchRows.length > 0 && (
-        <div className="px-2 py-1 text-[10px] text-muted-foreground border-b border-border">
+        <div className="px-2 py-1 text-[0.75em] text-muted-foreground border-b border-border">
           {deferredSearchResults.totalMatches} result
           {deferredSearchResults.totalMatches !== 1 ? 's' : ''} in{' '}
           {deferredSearchResults.files.length} file
@@ -407,13 +407,13 @@ export default function Search(): React.JSX.Element {
         )}
 
         {!fileSearchResults && fileSearchQuery && !fileSearchLoading && (
-          <div className="flex items-center justify-center h-32 text-muted-foreground text-xs">
+          <div className="flex items-center justify-center h-32 text-muted-foreground">
             Press Enter to search
           </div>
         )}
 
         {!fileSearchQuery && (
-          <div className="flex items-center justify-center h-32 text-muted-foreground text-xs">
+          <div className="flex items-center justify-center h-32 text-muted-foreground">
             Type to search in files
           </div>
         )}

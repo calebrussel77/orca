@@ -55,18 +55,15 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  --text-xs: 0.875rem;
+  --text-xs--line-height: 1.25rem;
 }
 
 /* ── Light Mode ──────────────────────────────────────── */
 
 :root {
   --app-font-size: 16px;
-  --app-font-family:
-    'Geist',
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    sans-serif;
+  --app-font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-sans: var(--app-font-family);
   --font-mono:
     'SF Mono', SFMono-Regular, ui-monospace, 'Cascadia Code', Menlo, Consolas, 'Liberation Mono',
@@ -107,12 +104,12 @@
   --sidebar-accent-foreground: #171717;
   --sidebar-border: #e5e5e5;
   --sidebar-ring: #a1a1a1;
-  --git-decoration-added: #587c0c;
-  --git-decoration-modified: #895503;
-  --git-decoration-deleted: #ad0707;
-  --git-decoration-renamed: #007acc;
-  --git-decoration-untracked: #007100;
-  --git-decoration-copied: #007acc;
+  --git-decoration-added: #00cab1;
+  --git-decoration-modified: #009fff;
+  --git-decoration-deleted: #ff2e3f;
+  --git-decoration-renamed: #009fff;
+  --git-decoration-untracked: #00cab1;
+  --git-decoration-copied: #00cab1;
 }
 
 /* ── Dark Mode ───────────────────────────────────────── */
@@ -151,12 +148,12 @@
   --sidebar-accent-foreground: #fafafa;
   --sidebar-border: rgb(255 255 255 / 0.07);
   --sidebar-ring: #525252;
-  --git-decoration-added: #81b88b;
-  --git-decoration-modified: #e2c08d;
-  --git-decoration-deleted: #c74e39;
-  --git-decoration-renamed: #73c991;
-  --git-decoration-untracked: #73c991;
-  --git-decoration-copied: #73c991;
+  --git-decoration-added: #00cab1;
+  --git-decoration-modified: #009fff;
+  --git-decoration-deleted: #ff2e3f;
+  --git-decoration-renamed: #009fff;
+  --git-decoration-untracked: #00cab1;
+  --git-decoration-copied: #00cab1;
 }
 
 /* ── Base Layer ──────────────────────────────────────── */
@@ -178,6 +175,19 @@
     letter-spacing: 0.01em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Why: user-agent stylesheets give form elements (button, input, textarea,
+     select) their own font-family (usually system-ui) instead of inheriting
+     from body. This breaks the chosen app font everywhere there is a button
+     or input — most visibly in the Settings sidebar, where the search input
+     and nav buttons would otherwise render in a different face than plain
+     <p>/<span> siblings. Force inheritance so the app font setting wins. */
+  button,
+  input,
+  textarea,
+  select {
+    font-family: inherit;
   }
 
   html {
@@ -297,7 +307,11 @@
   display: flex;
   flex-direction: row;
   align-items: center;
-  background: var(--bg-titlebar, var(--card));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-titlebar, var(--card)) 82%, var(--background) 18%),
+    var(--bg-titlebar, var(--card))
+  );
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
   user-select: none;
@@ -552,6 +566,105 @@
   color: var(--muted-foreground);
 }
 
+.window-controls {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-self: stretch;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.window-control-button {
+  position: relative;
+  width: 46px;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.window-control-button:hover {
+  background: color-mix(in srgb, var(--accent) 82%, transparent);
+  color: var(--foreground);
+}
+
+.window-control-button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ring) 64%, transparent);
+}
+
+.window-control-button-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+.window-control-glyph {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  display: inline-block;
+}
+
+.window-control-glyph-minimize::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  border-top: 1.5px solid currentColor;
+  transform: translateY(-50%);
+}
+
+.window-control-glyph-maximize {
+  box-sizing: border-box;
+  border: 1.5px solid currentColor;
+}
+
+.window-control-glyph-restore::before,
+.window-control-glyph-restore::after {
+  content: '';
+  position: absolute;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  background: var(--bg-titlebar, var(--card));
+}
+
+.window-control-glyph-restore::before {
+  top: 0;
+  right: 0;
+}
+
+.window-control-glyph-restore::after {
+  left: 0;
+  bottom: 0;
+}
+
+.window-control-glyph-close::before,
+.window-control-glyph-close::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: -1px;
+  width: 12px;
+  border-top: 1.5px solid currentColor;
+  transform-origin: center;
+}
+
+.window-control-glyph-close::before {
+  transform: rotate(45deg);
+}
+
+.window-control-glyph-close::after {
+  transform: rotate(-45deg);
+}
+
 .editor-header {
   display: flex;
   align-items: center;
@@ -660,6 +773,28 @@
 
 .settings-view-shell {
   animation: settings-shell-enter 180ms ease-out;
+  /* Why: Geist Mono (and other monospace fonts the user may set as the app
+     font) ships with tight vertical metrics that make descriptions in
+     Settings feel cramped compared to the same text rendered in sans-serif
+     apps. Relax the leading and letter-spacing locally so Settings copy
+     breathes regardless of the chosen font. */
+  letter-spacing: 0;
+}
+
+.settings-view-shell p,
+.settings-view-shell label,
+.settings-view-shell .text-xs,
+.settings-view-shell .text-sm,
+.settings-view-shell .text-base {
+  line-height: 1.55;
+}
+
+.settings-view-shell h1,
+.settings-view-shell h2,
+.settings-view-shell h3,
+.settings-view-shell h4,
+.settings-view-shell h5 {
+  line-height: 1.35;
 }
 
 .sidebar.collapsed {

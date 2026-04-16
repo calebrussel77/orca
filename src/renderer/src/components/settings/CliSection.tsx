@@ -111,7 +111,7 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
   return (
     <section className="space-y-4">
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">Orca CLI</h2>
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Orca CLI</h3>
         <p className="text-sm text-muted-foreground">
           Use Orca from your terminal to open the app, manage worktrees, and interact with Orca
           terminals.

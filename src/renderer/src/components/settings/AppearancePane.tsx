@@ -66,7 +66,7 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, themeEntries) ? (
       <section key="theme" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Theme</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Theme</h3>
           <p className="text-sm text-muted-foreground">Choose how Orca looks in the app window.</p>
         </div>
 
@@ -99,7 +99,7 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, typographyEntries) ? (
       <section key="typography" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Application Typography</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Application Typography</h3>
           <p className="text-sm text-muted-foreground">
             Customize the normal Orca interface text separately from terminal and code views.
           </p>
@@ -148,7 +148,7 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, zoomEntries) ? (
       <section key="zoom" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">UI Zoom</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">UI Zoom</h3>
           <p className="text-sm text-muted-foreground">
             Scale the entire application interface. Use{' '}
             <kbd className="rounded border px-1 py-0.5 text-sm">{zoomInLabel}</kbd> /{' '}
@@ -169,7 +169,7 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, layoutEntries) ? (
       <section key="layout" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Layout</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Layout</h3>
           <p className="text-sm text-muted-foreground">
             Default layout when creating new worktrees.
           </p>
@@ -211,7 +211,7 @@ export function AppearancePane({
     matchesSettingsSearch(searchQuery, titlebarEntries) ? (
       <section key="titlebar" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Titlebar</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Titlebar</h3>
           <p className="text-sm text-muted-foreground">
             Control what appears in the application titlebar.
           </p>

@@ -78,7 +78,7 @@ export function TerminalPane({
     matchesSettingsSearch(searchQuery, TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES) ? (
       <section key="typography" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Code & Terminal Typography</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Code & Terminal Typography</h3>
           <p className="text-sm text-muted-foreground">
             Shared typography for terminal panes, Monaco editors, diff views, and file previews.
           </p>
@@ -176,7 +176,7 @@ export function TerminalPane({
     matchesSettingsSearch(searchQuery, TERMINAL_CURSOR_SEARCH_ENTRIES) ? (
       <section key="cursor" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Cursor</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Cursor</h3>
           <p className="text-sm text-muted-foreground">
             Default cursor appearance for Orca terminal panes.
           </p>
@@ -246,7 +246,7 @@ export function TerminalPane({
       matchesSettingsSearch(searchQuery, TERMINAL_RIGHT_CLICK_TO_PASTE_SEARCH_ENTRY)) ? (
       <section key="pane-styling" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Pane Styling</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Pane Styling</h3>
           <p className="text-sm text-muted-foreground">
             Control inactive pane dimming, divider thickness, mouse behavior, and transition timing.
           </p>
@@ -396,7 +396,7 @@ export function TerminalPane({
     matchesSettingsSearch(searchQuery, TERMINAL_ADVANCED_SEARCH_ENTRIES) ? (
       <section key="advanced" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Advanced</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Advanced</h3>
           <p className="text-sm text-muted-foreground">
             Scrollback is bounded for stability. This setting applies to new terminal panes.
           </p>

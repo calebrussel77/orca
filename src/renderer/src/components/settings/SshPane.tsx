@@ -193,7 +193,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       {/* Header row */}
       <div className="flex items-center justify-between gap-3">
         <div className="space-y-0.5">
-          <p className="text-lg font-semibold">Targets</p>
+          <p className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Targets</p>
           <p className="text-sm text-muted-foreground">
             Add a remote host to connect to it in Orca.
           </p>

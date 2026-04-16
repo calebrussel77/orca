@@ -244,9 +244,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
 
   const visibleSections = [
     matchesSettingsSearch(searchQuery, GENERAL_WORKSPACE_SEARCH_ENTRIES) ? (
-      <section key="workspace" className="space-y-4">
+      <section key="workspace" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Workspace</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Workspace</h3>
           <p className="text-sm text-muted-foreground">
             Configure where new worktrees are created.
           </p>
@@ -284,7 +284,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Nest Workspaces"
           description="Create worktrees inside a repo-named subfolder."
           keywords={['nested', 'subfolder', 'directory']}
-          className="flex items-center justify-between gap-4 px-1 py-2"
+          className="flex items-center justify-between gap-6 py-3"
         >
           <div className="space-y-0.5">
             <Label>Nest Workspaces</Label>
@@ -314,9 +314,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
       </section>
     ) : null,
     matchesSettingsSearch(searchQuery, GENERAL_BROWSER_SEARCH_ENTRIES) ? (
-      <section key="browser" className="space-y-4">
+      <section key="browser" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Browser</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Browser</h3>
           <p className="text-sm text-muted-foreground">
             Control how Orca handles links and browser workspace defaults.
           </p>
@@ -326,7 +326,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Default Home Page"
           description="URL opened when creating a new browser tab. Leave empty to open a blank tab."
           keywords={['browser', 'home', 'homepage', 'default', 'url', 'new tab', 'blank']}
-          className="flex items-start justify-between gap-4 px-1 py-2"
+          className="flex items-start justify-between gap-6 py-3"
         >
           <div className="min-w-0 shrink space-y-0.5">
             <Label>Default Home Page</Label>
@@ -370,7 +370,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Terminal Link Routing"
           description="Cmd/Ctrl+click opens terminal http(s) links in Orca. Shift+Cmd/Ctrl+click uses the system browser."
           keywords={['browser', 'preview', 'links', 'localhost', 'webview']}
-          className="flex items-center justify-between gap-4 px-1 py-2"
+          className="flex items-center justify-between gap-6 py-3"
         >
           <div className="space-y-0.5">
             <Label>Terminal Link Routing</Label>
@@ -409,7 +409,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             'arc',
             'profile'
           ]}
-          className="space-y-3 px-1 py-2"
+          className="space-y-4 py-3"
         >
           <div className="flex items-center justify-between gap-3">
             <div className="space-y-0.5">
@@ -422,7 +422,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="outline"
-                  size="xs"
+                  size="sm"
                   className="shrink-0 gap-1.5"
                   disabled={browserSessionImportState?.status === 'importing'}
                 >
@@ -547,9 +547,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
       </section>
     ) : null,
     matchesSettingsSearch(searchQuery, GENERAL_EDITOR_SEARCH_ENTRIES) ? (
-      <section key="editor" className="space-y-4">
+      <section key="editor" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Editor</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Editor</h3>
           <p className="text-sm text-muted-foreground">Configure how Orca persists file edits.</p>
         </div>
 
@@ -557,7 +557,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Auto Save Files"
           description="Save editor and editable diff changes automatically after a short pause."
           keywords={['autosave', 'save']}
-          className="flex items-center justify-between gap-4 px-1 py-2"
+          className="flex items-center justify-between gap-6 py-3"
         >
           <div className="space-y-0.5">
             <Label>Auto Save Files</Label>
@@ -589,7 +589,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Auto Save Delay"
           description="How long Orca waits after your last edit before saving automatically."
           keywords={['autosave', 'delay', 'milliseconds']}
-          className="flex items-center justify-between gap-4 px-1 py-2"
+          className="flex items-center justify-between gap-6 py-3"
         >
           <div className="space-y-0.5">
             <Label>Auto Save Delay</Label>
@@ -622,7 +622,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Default Diff View"
           description="Preferred presentation format for showing git diffs by default."
           keywords={['diff', 'view', 'inline', 'side-by-side', 'split']}
-          className="flex flex-col items-start gap-3 px-1 py-2 sm:flex-row sm:items-center sm:justify-between"
+          className="flex flex-col items-start gap-4 py-3 sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="space-y-0.5">
             <Label>Default Diff View</Label>
@@ -655,9 +655,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
       />
     ) : null,
     matchesSettingsSearch(searchQuery, GENERAL_CACHE_TIMER_SEARCH_ENTRIES) ? (
-      <section key="cache-timer" className="space-y-4">
+      <section key="cache-timer" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Prompt Cache Timer</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Prompt Cache Timer</h3>
           <p className="text-sm text-muted-foreground">
             Claude caches your conversation to reduce costs. When idle too long the cache expires
             and the next message resends full context at higher cost. This shows a countdown so you
@@ -669,7 +669,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Cache Timer"
           description="Show a countdown after a Claude agent becomes idle."
           keywords={['cache', 'timer', 'prompt', 'ttl', 'claude']}
-          className="flex items-center justify-between gap-4 px-1 py-2"
+          className="flex items-center justify-between gap-6 py-3"
         >
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
@@ -711,7 +711,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             title="Timer Duration"
             description="Match this to your provider's cache TTL."
             keywords={['cache', 'timer', 'duration', 'ttl']}
-            className="flex items-center justify-between gap-4 px-1 py-2 pl-7"
+            className="flex items-center justify-between gap-6 py-3 pl-7"
           >
             <div className="space-y-0.5">
               <Label>Timer Duration</Label>
@@ -736,9 +736,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
       </section>
     ) : null,
     matchesSettingsSearch(searchQuery, GENERAL_CODEX_ACCOUNTS_SEARCH_ENTRIES) ? (
-      <section key="codex-accounts" id="general-codex-accounts" className="space-y-4 scroll-mt-6">
+      <section key="codex-accounts" id="general-codex-accounts" className="space-y-6 scroll-mt-6">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Codex Accounts</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Codex Accounts</h3>
           <p className="text-sm text-muted-foreground">
             Add and switch between Codex accounts in Orca.
           </p>
@@ -752,7 +752,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Codex Accounts"
           description="Manage which Codex account Orca uses for live rate limit fetching."
           keywords={['codex', 'account', 'rate limit', 'status bar', 'quota']}
-          className="space-y-3 px-1 py-2"
+          className="space-y-4 py-3"
         >
           {/* Why: Settings deep-links can target this subsection directly from
           the status-bar account switcher. Keeping a stable DOM anchor here
@@ -919,9 +919,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
       </section>
     ) : null,
     matchesSettingsSearch(searchQuery, GENERAL_UPDATE_SEARCH_ENTRIES) ? (
-      <section key="updates" className="space-y-4">
+      <section key="updates" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Updates</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Updates</h3>
           <p className="text-sm text-muted-foreground">Current version: {appVersion ?? '…'}</p>
         </div>
 
@@ -1018,7 +1018,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
   ].filter(Boolean)
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-12">
       <Dialog
         open={removeAccountId !== null}
         onOpenChange={(open) => !open && setRemoveAccountId(null)}
@@ -1054,8 +1054,8 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
         </DialogContent>
       </Dialog>
       {visibleSections.map((section, index) => (
-        <div key={index} className="space-y-8">
-          {index > 0 ? <Separator /> : null}
+        <div key={index} className="space-y-6">
+          {index > 0 ? <Separator className="my-2" /> : null}
           {section}
         </div>
       ))}

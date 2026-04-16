@@ -178,7 +178,7 @@ export function RepositoryPane({
       <section key="identity" className="space-y-8">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
-            <h3 className="text-lg font-semibold">Identity</h3>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Identity</h3>
             <p className="text-sm text-muted-foreground">
               Repo-specific display details for the sidebar and tabs.
             </p>

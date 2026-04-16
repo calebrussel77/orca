@@ -1044,11 +1044,32 @@ const api = {
     setZoomLevel: (level: number): void => webFrame.setZoomLevel(level),
     syncTrafficLights: (zoomFactor: number): void =>
       ipcRenderer.send('ui:sync-traffic-lights', zoomFactor),
+    minimizeWindow: (): void => {
+      ipcRenderer.send('window:minimize')
+    },
+    toggleMaximizeWindow: (): void => {
+      ipcRenderer.send('window:toggle-maximize')
+    },
+    closeWindow: (): void => {
+      ipcRenderer.send('window:close')
+    },
+    getWindowState: (): Promise<{ isFullScreen: boolean; isMaximized: boolean }> =>
+      ipcRenderer.invoke('window:get-state'),
     onFullscreenChanged: (callback: (isFullScreen: boolean) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, isFullScreen: boolean) =>
         callback(isFullScreen)
       ipcRenderer.on('window:fullscreen-changed', listener)
       return () => ipcRenderer.removeListener('window:fullscreen-changed', listener)
+    },
+    onWindowStateChanged: (
+      callback: (state: { isFullScreen: boolean; isMaximized: boolean }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        state: { isFullScreen: boolean; isMaximized: boolean }
+      ) => callback(state)
+      ipcRenderer.on('window:state-changed', listener)
+      return () => ipcRenderer.removeListener('window:state-changed', listener)
     },
     /** Fired by the main process when the user tries to close the window
      *  (X button, Cmd+Q, etc.). Renderer should show a confirmation dialog

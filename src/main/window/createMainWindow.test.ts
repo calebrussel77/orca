@@ -10,7 +10,7 @@ const { browserWindowMock, openExternalMock, attachGuestPoliciesMock, isMock } =
 
 vi.mock('electron', () => ({
   BrowserWindow: browserWindowMock,
-  ipcMain: { on: vi.fn(), removeListener: vi.fn() },
+  ipcMain: { on: vi.fn(), handle: vi.fn(), removeListener: vi.fn(), removeHandler: vi.fn() },
   nativeTheme: { shouldUseDarkColors: false },
   shell: { openExternal: openExternalMock }
 }))
@@ -43,7 +43,9 @@ describe('createMainWindow', () => {
     attachGuestPoliciesMock.mockReset()
     isMock.dev = false
     vi.mocked(ipcMain.on).mockReset()
+    vi.mocked(ipcMain.handle).mockReset()
     vi.mocked(ipcMain.removeListener).mockReset()
+    vi.mocked(ipcMain.removeHandler).mockReset()
   })
 
   it('enables renderer sandboxing and opens external links safely', () => {
@@ -84,6 +86,11 @@ describe('createMainWindow', () => {
 
     expect(browserWindowMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        ...(process.platform === 'win32'
+          ? { frame: false, titleBarStyle: 'hidden' }
+          : process.platform === 'darwin'
+            ? { titleBarStyle: 'hiddenInset' }
+            : {}),
         webPreferences: expect.objectContaining({ sandbox: true })
       })
     )
@@ -486,5 +493,76 @@ describe('createMainWindow', () => {
     }
 
     expect(browserWindowInstance.setWindowButtonPosition).not.toHaveBeenCalled()
+  })
+
+  it('registers custom window control IPC handlers and reports current window state', async () => {
+    const windowHandlers: Record<string, (...args: any[]) => void> = {}
+    const webContents = {
+      on: vi.fn((event, handler) => {
+        windowHandlers[event] = handler
+      }),
+      setZoomLevel: vi.fn(),
+      setBackgroundThrottling: vi.fn(),
+      invalidate: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      send: vi.fn()
+    }
+    const browserWindowInstance = {
+      webContents,
+      on: vi.fn((event, handler) => {
+        windowHandlers[event] = handler
+      }),
+      isDestroyed: vi.fn(() => false),
+      isMaximized: vi.fn(() => false),
+      isFullScreen: vi.fn(() => false),
+      getSize: vi.fn(() => [1200, 800]),
+      setSize: vi.fn(),
+      minimize: vi.fn(),
+      maximize: vi.fn(),
+      unmaximize: vi.fn(),
+      show: vi.fn(),
+      close: vi.fn(),
+      loadFile: vi.fn(),
+      loadURL: vi.fn()
+    }
+    browserWindowMock.mockImplementation(function () {
+      return browserWindowInstance
+    })
+
+    createMainWindow(null)
+
+    const minimizeListener = vi
+      .mocked(ipcMain.on)
+      .mock.calls.find(([channel]) => channel === 'window:minimize')?.[1]
+    const toggleMaximizeListener = vi
+      .mocked(ipcMain.on)
+      .mock.calls.find(([channel]) => channel === 'window:toggle-maximize')?.[1]
+    const closeListener = vi
+      .mocked(ipcMain.on)
+      .mock.calls.find(([channel]) => channel === 'window:close')?.[1]
+    const stateHandler = vi
+      .mocked(ipcMain.handle)
+      .mock.calls.find(([channel]) => channel === 'window:get-state')?.[1]
+
+    expect(minimizeListener).toBeTypeOf('function')
+    expect(toggleMaximizeListener).toBeTypeOf('function')
+    expect(closeListener).toBeTypeOf('function')
+    expect(stateHandler).toBeTypeOf('function')
+
+    minimizeListener?.({} as never)
+    expect(browserWindowInstance.minimize).toHaveBeenCalledTimes(1)
+
+    toggleMaximizeListener?.({} as never)
+    expect(browserWindowInstance.maximize).toHaveBeenCalledTimes(1)
+
+    browserWindowInstance.isMaximized.mockReturnValue(true)
+    toggleMaximizeListener?.({} as never)
+    expect(browserWindowInstance.unmaximize).toHaveBeenCalledTimes(1)
+
+    closeListener?.({} as never)
+    expect(browserWindowInstance.close).toHaveBeenCalledTimes(1)
+
+    const state = await stateHandler?.({} as never)
+    expect(state).toEqual({ isFullScreen: false, isMaximized: true })
   })
 })

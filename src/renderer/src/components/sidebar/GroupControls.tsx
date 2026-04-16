@@ -37,7 +37,7 @@ const GroupControls = React.memo(function GroupControls() {
             aria-selected={isActive}
             onClick={() => setGroupBy(opt.value)}
             className={cn(
-              'relative inline-flex h-7 cursor-pointer items-center px-2.5 text-xs font-medium transition-colors outline-none',
+              'relative inline-flex h-8 cursor-pointer items-center px-3 text-sm font-medium transition-colors outline-none',
               'focus-visible:text-foreground',
               isActive
                 ? 'text-foreground'

@@ -68,8 +68,17 @@ export function createMainWindow(
     minHeight: 400,
     show: false,
     autoHideMenuBar: true,
+    // Why: Windows currently shows both Chromium's native caption bar and the
+    // renderer titlebar. Going frameless on Windows lets Orca own one unified
+    // titlebar surface while keeping macOS traffic lights on the native path.
+    frame: process.platform === 'win32' ? false : undefined,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#ffffff',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
+    titleBarStyle:
+      process.platform === 'darwin'
+        ? 'hiddenInset'
+        : process.platform === 'win32'
+          ? 'hidden'
+          : undefined,
     // Why: initial position for 1x zoom; syncTrafficLightPosition() adjusts
     // dynamically when the user changes UI zoom.
     ...(process.platform === 'darwin'
@@ -121,11 +130,32 @@ export function createMainWindow(
 
   mainWindow.on('enter-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen-changed', true)
+    mainWindow.webContents.send('window:state-changed', {
+      isFullScreen: true,
+      isMaximized: mainWindow.isMaximized()
+    })
   })
 
   mainWindow.on('leave-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen-changed', false)
+    mainWindow.webContents.send('window:state-changed', {
+      isFullScreen: false,
+      isMaximized: mainWindow.isMaximized()
+    })
   })
+
+  const emitWindowState = (): void => {
+    if (mainWindow.isDestroyed()) {
+      return
+    }
+    mainWindow.webContents.send('window:state-changed', {
+      isFullScreen: mainWindow.isFullScreen(),
+      isMaximized: mainWindow.isMaximized()
+    })
+  }
+
+  mainWindow.on('maximize', emitWindowState)
+  mainWindow.on('unmaximize', emitWindowState)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     const externalUrl = normalizeExternalBrowserUrl(details.url)
@@ -305,15 +335,51 @@ export function createMainWindow(
     }
   }
   const trafficLightChannel = 'ui:sync-traffic-lights'
+  const minimizeWindowChannel = 'window:minimize'
+  const toggleMaximizeWindowChannel = 'window:toggle-maximize'
+  const closeWindowChannel = 'window:close'
+  const getWindowStateChannel = 'window:get-state'
   const onSyncTrafficLights = (_event: Electron.IpcMainEvent, zoomFactor: number): void => {
     syncTrafficLightPosition(mainWindow, zoomFactor)
   }
+  const onMinimizeWindow = (): void => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.minimize()
+    }
+  }
+  const onToggleMaximizeWindow = (): void => {
+    if (mainWindow.isDestroyed()) {
+      return
+    }
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize()
+      return
+    }
+    mainWindow.maximize()
+  }
+  const onCloseWindow = (): void => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.close()
+    }
+  }
   ipcMain.on(trafficLightChannel, onSyncTrafficLights)
+  ipcMain.on(minimizeWindowChannel, onMinimizeWindow)
+  ipcMain.on(toggleMaximizeWindowChannel, onToggleMaximizeWindow)
+  ipcMain.on(closeWindowChannel, onCloseWindow)
+  ipcMain.removeHandler(getWindowStateChannel)
+  ipcMain.handle(getWindowStateChannel, () => ({
+    isFullScreen: mainWindow.isFullScreen(),
+    isMaximized: mainWindow.isMaximized()
+  }))
 
   ipcMain.on(confirmCloseChannel, onConfirmClose)
   mainWindow.on('closed', () => {
     ipcMain.removeListener(trafficLightChannel, onSyncTrafficLights)
+    ipcMain.removeListener(minimizeWindowChannel, onMinimizeWindow)
+    ipcMain.removeListener(toggleMaximizeWindowChannel, onToggleMaximizeWindow)
+    ipcMain.removeListener(closeWindowChannel, onCloseWindow)
     ipcMain.removeListener(confirmCloseChannel, onConfirmClose)
+    ipcMain.removeHandler(getWindowStateChannel)
   })
 
   if (is.dev && process.env.ELECTRON_RENDERER_URL) {

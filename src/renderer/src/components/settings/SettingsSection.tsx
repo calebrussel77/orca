@@ -35,11 +35,11 @@ export function SettingsSection({
         // line gets lost in the visual noise. Giving each section its own padded surface creates a
         // clear outer silhouette that still works when the inner content changes.
         className ??
-        'scroll-mt-6 space-y-8 rounded-2xl border border-border/60 bg-card/35 px-6 py-6 shadow-sm'
+        'scroll-mt-6 space-y-10 rounded-2xl border border-border/60 bg-card/35 px-8 py-10 shadow-sm md:px-10 md:py-12'
       }
     >
-      <div className="space-y-1">
-        <h2 className="flex items-center gap-2 text-xl font-semibold">
+      <header className="space-y-1.5 border-b border-border/40 pb-5">
+        <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
           {title}
           {badge ? (
             <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -47,8 +47,8 @@ export function SettingsSection({
             </span>
           ) : null}
         </h2>
-        <p className="text-base text-muted-foreground">{description}</p>
-      </div>
+        <p className="text-sm text-muted-foreground">{description}</p>
+      </header>
       {children}
     </section>
   )

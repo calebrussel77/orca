@@ -332,7 +332,7 @@ export default function ChecksPanel(): React.JSX.Element {
     return (
       <div className="px-4 py-6">
         <div className="text-sm font-medium text-foreground">No worktree selected</div>
-        <div className="mt-1 text-xs text-muted-foreground">
+        <div className="mt-1 text-[0.85em] text-muted-foreground">
           Select a worktree to view PR checks
         </div>
       </div>
@@ -342,7 +342,7 @@ export default function ChecksPanel(): React.JSX.Element {
     return (
       <div className="px-4 py-6">
         <div className="text-sm font-medium text-foreground">Checks unavailable</div>
-        <div className="mt-1 text-xs text-muted-foreground">
+        <div className="mt-1 text-[0.85em] text-muted-foreground">
           Checks require a Git branch and pull request context
         </div>
       </div>
@@ -369,14 +369,14 @@ export default function ChecksPanel(): React.JSX.Element {
         <div className="text-sm font-medium text-foreground">
           {operationInProgress ? `${operationLabel} in progress` : 'No pull request found'}
         </div>
-        <div className="mt-1 text-xs text-muted-foreground">
+        <div className="mt-1 text-[0.85em] text-muted-foreground">
           {operationInProgress
             ? 'PR checks will be available after the operation completes'
             : 'Push your branch and open a PR to see checks here'}
         </div>
         {!operationInProgress && (
           <button
-            className="mt-3 px-3 py-1 text-xs font-medium rounded-md border border-border bg-accent/50 text-foreground hover:bg-accent transition-colors disabled:opacity-50"
+            className="mt-3 px-3 py-1 font-medium rounded-md border border-border bg-accent/50 text-foreground hover:bg-accent transition-colors disabled:opacity-50"
             disabled={emptyRefreshing}
             onClick={() => {
               if (!activeWorktreeId) {
@@ -402,10 +402,10 @@ export default function ChecksPanel(): React.JSX.Element {
         {/* PR number + state badge + refresh + open link */}
         <div className="flex items-center gap-2">
           <PullRequestIcon className="size-4 text-muted-foreground shrink-0" />
-          <span className="text-[12px] font-semibold text-foreground">#{pr.number}</span>
+          <span className="font-semibold text-foreground">#{pr.number}</span>
           <span
             className={cn(
-              'text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border',
+              'text-[0.65em] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border',
               prStateColor(pr.state)
             )}
           >
@@ -434,7 +434,7 @@ export default function ChecksPanel(): React.JSX.Element {
           <div className="flex items-center gap-1">
             <input
               ref={titleInputRef}
-              className="flex-1 text-[12px] bg-background border border-border rounded px-2 py-1 text-foreground outline-none focus:ring-1 focus:ring-ring"
+              className="flex-1 bg-background border border-border rounded px-2 py-1 text-foreground outline-none focus:ring-1 focus:ring-ring"
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
               onKeyDown={handleTitleKeyDown}
@@ -466,14 +466,14 @@ export default function ChecksPanel(): React.JSX.Element {
             className="group/title flex items-start gap-1.5 cursor-pointer -mx-1 px-1 py-0.5 rounded hover:bg-accent/40 transition-colors"
             onClick={handleStartEdit}
           >
-            <span className="text-[12px] text-foreground leading-snug flex-1">{pr.title}</span>
+            <span className="text-foreground leading-snug flex-1">{pr.title}</span>
             <Pencil className="size-3 text-muted-foreground/40 opacity-0 group-hover/title:opacity-100 transition-opacity shrink-0 mt-0.5" />
           </div>
         )}
 
         {/* Updated at */}
         {pr.updatedAt && (
-          <div className="text-[10px] text-muted-foreground/60">
+          <div className="text-[0.75em] text-muted-foreground/60">
             Updated {new Date(pr.updatedAt).toLocaleString()}
           </div>
         )}

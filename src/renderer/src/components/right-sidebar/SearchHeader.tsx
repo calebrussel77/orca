@@ -64,7 +64,7 @@ export function SearchHeader({
         <input
           ref={inputRef}
           type="text"
-          className="flex-1 bg-transparent text-xs py-1.5 outline-none text-foreground placeholder:text-muted-foreground/50 min-w-0"
+          className="flex-1 bg-transparent py-1.5 outline-none text-foreground placeholder:text-muted-foreground/50 min-w-0"
           placeholder="Search"
           value={query}
           onChange={onQueryChange}

@@ -283,7 +283,7 @@ const SidebarToolbar = React.memo(function SidebarToolbar() {
               // a brand colour into the neutral palette.
               className="h-8 gap-1.5 rounded-md border border-transparent px-2.5 text-foreground hover:bg-accent/70 hover:border-border/50"
             >
-              <FolderPlus className="size-[0.9375rem] text-foreground/80" />
+              <FolderPlus className="size-4 text-foreground/80" />
               <span className="text-sm font-medium">Add Repo</span>
             </Button>
           </TooltipTrigger>

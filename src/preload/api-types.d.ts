@@ -517,7 +517,14 @@ export type PreloadApi = {
     getZoomLevel: () => number
     setZoomLevel: (level: number) => void
     syncTrafficLights: (zoomFactor: number) => void
+    minimizeWindow: () => void
+    toggleMaximizeWindow: () => void
+    closeWindow: () => void
+    getWindowState: () => Promise<{ isFullScreen: boolean; isMaximized: boolean }>
     onFullscreenChanged: (callback: (isFullScreen: boolean) => void) => () => void
+    onWindowStateChanged: (
+      callback: (state: { isFullScreen: boolean; isMaximized: boolean }) => void
+    ) => () => void
     onWindowCloseRequested: (callback: (data: { isQuitting: boolean }) => void) => () => void
     confirmWindowClose: () => void
   }

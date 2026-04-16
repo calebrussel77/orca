@@ -43,7 +43,7 @@ export function DarkTerminalThemeSection({
     <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Dark Theme</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Dark Theme</h3>
           <p className="text-sm text-muted-foreground">
             Choose the theme used for terminal panes in dark mode.
           </p>
@@ -148,7 +148,7 @@ export function LightTerminalThemeSection({
           <div className="grid gap-6 pt-2 xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="space-y-6">
               <div className="space-y-1">
-                <h3 className="text-lg font-semibold">Light Theme</h3>
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Light Theme</h3>
                 <p className="text-sm text-muted-foreground">
                   Configure the optional light-mode terminal appearance.
                 </p>

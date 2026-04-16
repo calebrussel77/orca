@@ -233,7 +233,7 @@ function RightSidebarInner(): React.JSX.Element {
         ) : (
           /* ── Side layout: static title header ── */
           <div className="flex items-center h-[33px] min-h-[33px] px-3 border-b border-border">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
+            <span className="text-[0.8em] font-semibold uppercase tracking-wider text-foreground">
               {visibleItems.find((item) => item.id === effectiveTab)?.title ?? ''}
             </span>
           </div>

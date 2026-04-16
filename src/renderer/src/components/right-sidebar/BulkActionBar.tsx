@@ -21,7 +21,7 @@ export function BulkActionBar({
   return (
     <div className="absolute bottom-0 left-0 right-0 p-2 bg-background/95 backdrop-blur-sm border-t border-border shadow-lg animate-in slide-in-from-bottom-2 z-10">
       <div className="flex items-center gap-2 justify-between bg-accent/30 p-1.5 pr-2 rounded-md border border-border/50">
-        <div className="flex items-center gap-2 text-xs font-medium text-foreground ml-1">
+        <div className="flex items-center gap-2 font-medium text-foreground ml-1">
           {isExecuting ? (
             <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
           ) : (
@@ -34,7 +34,7 @@ export function BulkActionBar({
               type="button"
               variant="secondary"
               size="sm"
-              className="h-7 px-2 text-[11px]"
+              className="h-7 px-2"
               onClick={onStage}
               disabled={isExecuting}
             >
@@ -47,7 +47,7 @@ export function BulkActionBar({
               type="button"
               variant="secondary"
               size="sm"
-              className="h-7 px-2 text-[11px]"
+              className="h-7 px-2"
               onClick={onUnstage}
               disabled={isExecuting}
             >

@@ -4,9 +4,9 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   DndContext,
   DragOverlay,
+  MeasuringStrategy,
   PointerSensor,
   closestCenter,
-  useDroppable,
   useSensor,
   useSensors,
   type DragStartEvent,
@@ -36,9 +36,6 @@ import { useModifierHint } from '@/hooks/useModifierHint'
 // Prevents jarring position shifts when background events (AI starting work,
 // terminal title changes) trigger score recalculations.
 const SORT_SETTLE_MS = 3_000
-const EDGE_DROP_ZONE_HEIGHT = 18
-const TOP_DROP_ZONE_ID = '__worktree-drop-zone-top__'
-const BOTTOM_DROP_ZONE_ID = '__worktree-drop-zone-bottom__'
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -76,36 +73,6 @@ type SortableWorktreeRowProps = {
   measureElement: (element: HTMLElement | null) => void
 }
 
-type EdgeDropZoneProps = {
-  id: string
-  top: number
-  active: boolean
-}
-
-const EdgeDropZone = React.memo(function EdgeDropZone({ id, top, active }: EdgeDropZoneProps) {
-  const { isOver, setNodeRef } = useDroppable({
-    id,
-    disabled: !active
-  })
-
-  if (!active) {
-    return null
-  }
-
-  return (
-    <div
-      ref={setNodeRef}
-      aria-hidden="true"
-      className="absolute left-0 right-0"
-      style={{ top, height: EDGE_DROP_ZONE_HEIGHT }}
-    >
-      {isOver ? (
-        <div className="pointer-events-none absolute left-3 right-3 top-1/2 z-10 h-0.5 -translate-y-1/2 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]" />
-      ) : null}
-    </div>
-  )
-})
-
 type DragOverlayCardProps = {
   row: Extract<Row, { type: 'item' }>
   activeWorktreeId: string | null
@@ -121,7 +88,7 @@ const DragOverlayCard = React.memo(function DragOverlayCard({
 }: DragOverlayCardProps) {
   return (
     <div
-      className="pointer-events-none opacity-95 drop-shadow-[0_16px_28px_rgba(0,0,0,0.34)]"
+      className="pointer-events-none rotate-[1.5deg] drop-shadow-[0_18px_32px_rgba(0,0,0,0.4)]"
       style={width != null ? { width } : undefined}
     >
       <WorktreeCard
@@ -145,26 +112,13 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
   canReorder,
   measureElement
 }: SortableWorktreeRowProps) {
-  const { setNodeRef, listeners, transform, transition, isDragging, active, isOver } = useSortable({
+  const { setNodeRef, listeners, transform, transition, isDragging } = useSortable({
     id: row.worktree.id,
     disabled: !canReorder
   })
 
   const translateX = transform?.x ?? 0
   const translateY = transform?.y ?? 0
-  const activeSortableIndex = active?.data.current?.sortable.index
-  const showDropBefore =
-    canReorder &&
-    isOver &&
-    !isDragging &&
-    typeof activeSortableIndex === 'number' &&
-    activeSortableIndex > index
-  const showDropAfter =
-    canReorder &&
-    isOver &&
-    !isDragging &&
-    typeof activeSortableIndex === 'number' &&
-    activeSortableIndex < index
 
   return (
     <div
@@ -176,20 +130,21 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
       role="option"
       aria-selected={activeWorktreeId === row.worktree.id}
       data-index={index}
-      className={cn('absolute left-0 right-0', canReorder && 'cursor-grab active:cursor-grabbing')}
+      className={cn(
+        'absolute left-0 right-0',
+        canReorder && 'cursor-grab active:cursor-grabbing',
+        isDragging && 'z-0'
+      )}
       style={{
         transform: `translate3d(${translateX}px, ${top + translateY}px, 0)`,
         transition,
-        opacity: isDragging ? 0.08 : 1
+        // Why keep a faint ghost instead of opacity: 0: the empty slot plus the
+        // sibling shift is what communicates "where the drop will land". A hard
+        // hide would make the list feel like items have disappeared.
+        opacity: isDragging ? 0.15 : 1
       }}
       {...(canReorder ? listeners : {})}
     >
-      {showDropBefore ? (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute left-3 right-3 -top-1 z-10 h-0.5 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]"
-        />
-      ) : null}
       <WorktreeCard
         worktree={row.worktree}
         repo={row.repo}
@@ -197,12 +152,6 @@ const SortableWorktreeRow = React.memo(function SortableWorktreeRow({
         hideRepoBadge={groupBy === 'repo'}
         hintNumber={hintByWorktreeId?.get(row.worktree.id)}
       />
-      {showDropAfter ? (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute left-3 right-3 -bottom-1 z-10 h-0.5 rounded-full bg-primary/80 shadow-[0_0_0_3px_rgba(250,204,21,0.12)]"
-        />
-      ) : null}
     </div>
   )
 })
@@ -251,11 +200,11 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
   const [activeDragWidth, setActiveDragWidth] = useState<number | null>(null)
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: { distance: 6 }
+      // Small distance threshold so a click still feels like a click — the drag
+      // only engages once the pointer has clearly committed to moving the card.
+      activationConstraint: { distance: 5 }
     })
   )
-  const showEdgeDropZones = canReorder && activeDragId != null
-  const edgeDropZoneOffset = showEdgeDropZones ? EDGE_DROP_ZONE_HEIGHT : 0
   const constrainOverlayToViewport = useCallback<Modifier>(({ transform, overlayNodeRect }) => {
     const viewportRect = scrollRef.current?.getBoundingClientRect()
     if (!viewportRect || !overlayNodeRect) {
@@ -457,12 +406,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
       }
 
       const oldIndex = sortableIds.indexOf(active.id as string)
-      const newIndex =
-        over.id === TOP_DROP_ZONE_ID
-          ? 0
-          : over.id === BOTTOM_DROP_ZONE_ID
-            ? sortableIds.length - 1
-            : sortableIds.indexOf(over.id as string)
+      const newIndex = sortableIds.indexOf(over.id as string)
       if (oldIndex === -1 || newIndex === -1) {
         return
       }
@@ -479,13 +423,21 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
     setActiveDragId(null)
     setActiveDragWidth(null)
   }, [])
-  const totalHeight =
-    virtualizer.getTotalSize() + (showEdgeDropZones ? EDGE_DROP_ZONE_HEIGHT * 2 : 0)
+  const totalHeight = virtualizer.getTotalSize()
 
   return (
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
+      // Why BeforeDragging: rows are absolutely positioned via CSS transform,
+      // so `getBoundingClientRect` returns the *transformed* position. When
+      // siblings shift to make space during a drag, the default WhileDragging
+      // strategy re-reads those shifted rects and feeds them back into the
+      // sort strategy, which causes the "over" target to oscillate between
+      // the active item and its neighbor — visually the drop below the next
+      // card never sticks. Freezing the droppable rects at drag start gives
+      // the strategy a stable layout to reason about.
+      measuring={{ droppable: { strategy: MeasuringStrategy.BeforeDragging } }}
       onDragStart={handleDragStart}
       onDragCancel={handleDragCancel}
       onDragEnd={handleDragEnd}
@@ -506,7 +458,6 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
             className="relative w-full"
             style={{ height: `${totalHeight}px` }}
           >
-            <EdgeDropZone id={TOP_DROP_ZONE_ID} top={0} active={showEdgeDropZones} />
             {virtualItems.map((vItem) => {
               const row = rows[vItem.index]
 
@@ -518,31 +469,25 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                     data-index={vItem.index}
                     ref={virtualizer.measureElement}
                     className="absolute left-0 right-0"
-                    style={{ transform: `translateY(${vItem.start + edgeDropZoneOffset}px)` }}
+                    style={{ transform: `translateY(${vItem.start}px)` }}
                   >
                     <button
                       className={cn(
-                        'group mt-2 flex h-7 w-full items-center gap-1 px-1.5 text-left transition-all',
+                        'group mt-2 flex h-8 w-full items-center gap-1.5 px-2 text-left transition-all',
                         row.repo ? 'overflow-hidden' : row.tone
                       )}
                       onClick={() => toggleGroup(row.key)}
                     >
-                      <div
-                        className={cn(
-                          'flex size-4 shrink-0 items-center justify-center rounded-[4px]',
-                          row.repo ? 'text-foreground' : ''
-                        )}
-                        style={row.repo ? { color: row.repo.badgeColor } : undefined}
-                      >
-                        <row.icon className="size-3" />
+                      <div className="flex size-[18px] shrink-0 items-center justify-center rounded-[4px] text-muted-foreground">
+                        <row.icon className="size-3.5" />
                       </div>
 
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
-                          <div className="truncate font-mono text-[0.6875rem] font-medium uppercase leading-none tracking-[0.12em] text-muted-foreground">
+                          <div className="truncate font-mono text-sm font-medium text-muted-foreground">
                             {row.label}
                           </div>
-                          <div className="rounded-full bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.625rem] font-medium leading-none text-muted-foreground/90">
+                          <div className="rounded-full bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.6875rem] font-medium leading-none text-muted-foreground/90">
                             {row.count}
                           </div>
                         </div>
@@ -555,7 +500,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                               type="button"
                               variant="ghost"
                               size="icon-xs"
-                              className="mr-0.5 size-5 shrink-0 rounded-md text-muted-foreground hover:bg-accent/70 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                              className="mr-0.5 size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent/70 hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
                               aria-label={`Create worktree for ${row.label}`}
                               onClick={(event) => {
                                 event.preventDefault()
@@ -566,7 +511,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                               }}
                               disabled={row.repo ? !isGitRepoKind(row.repo) : false}
                             >
-                              <Plus className="size-3" />
+                              <Plus className="size-4" />
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent side="bottom" sideOffset={6}>
@@ -577,10 +522,10 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                         </Tooltip>
                       ) : null}
 
-                      <div className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex size-[18px] shrink-0 items-center justify-center text-muted-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity">
                         <ChevronDown
                           className={cn(
-                            'size-3.5 transition-transform',
+                            'size-4 transition-transform',
                             collapsedGroups.has(row.key) && '-rotate-90'
                           )}
                         />
@@ -595,7 +540,7 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                   key={vItem.key}
                   row={row}
                   index={vItem.index}
-                  top={vItem.start + edgeDropZoneOffset}
+                  top={vItem.start}
                   activeWorktreeId={activeWorktreeId}
                   groupBy={groupBy}
                   hintByWorktreeId={hintByWorktreeId}
@@ -604,11 +549,6 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
                 />
               )
             })}
-            <EdgeDropZone
-              id={BOTTOM_DROP_ZONE_ID}
-              top={totalHeight - EDGE_DROP_ZONE_HEIGHT}
-              active={showEdgeDropZones}
-            />
           </div>
         </div>
       </SortableContext>

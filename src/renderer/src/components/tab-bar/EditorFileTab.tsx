@@ -90,7 +90,7 @@ export default function EditorFileTab({
           style={style}
           {...attributes}
           {...listeners}
-          className={`group relative flex items-center h-full px-3 text-sm cursor-pointer select-none shrink-0 border-r border-border ${
+          className={`group relative flex items-center h-full px-3.5 text-sm cursor-pointer select-none shrink-0 border-r border-border ${
             isActive
               ? 'bg-accent/40 text-foreground border-b-transparent'
               : 'bg-card text-muted-foreground hover:text-foreground hover:bg-accent/50'
@@ -122,27 +122,27 @@ export default function EditorFileTab({
         >
           {isConflictReview ? (
             <ShieldAlert
-              className={`w-3.5 h-3.5 mr-1.5 shrink-0 ${isActive ? 'text-orange-400' : 'text-orange-400/70'}`}
+              className={`size-4 mr-2 shrink-0 ${isActive ? 'text-orange-400' : 'text-orange-400/70'}`}
             />
           ) : isDiff ? (
             <GitCompareArrows
-              className={`w-3.5 h-3.5 mr-1.5 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground'}`}
+              className={`size-4 mr-2 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground'}`}
             />
           ) : (
             <FileCode
-              className={`w-3.5 h-3.5 mr-1.5 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground'}`}
+              className={`size-4 mr-2 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground'}`}
             />
           )}
-          <span className="mr-1.5 flex min-w-0 items-baseline gap-1.5">
+          <span className="mr-2 flex min-w-0 items-baseline gap-1.5">
             <span
-              className={`truncate max-w-[130px]${file.isPreview ? ' italic' : ''}`}
+              className={`truncate max-w-[136px]${file.isPreview ? ' italic' : ''}`}
               style={tabStatusColor ? { color: tabStatusColor } : undefined}
             >
               {getEditorDisplayLabel(file)}
             </span>
             {tabStatus && (
               <span
-                className="shrink-0 text-[10px] leading-none font-semibold tracking-wide"
+                className="shrink-0 text-[11px] leading-none font-semibold tracking-wide"
                 style={{ color: tabStatusColor }}
               >
                 {STATUS_LABELS[tabStatus]}
