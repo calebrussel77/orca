@@ -20,11 +20,21 @@ export type TerminalShortcutAction =
 
 export function resolveTerminalShortcutAction(
   event: TerminalShortcutEvent,
-  isMac: boolean
+  isMac: boolean,
+  isWindows: boolean = false
 ): TerminalShortcutAction | null {
   const mod = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
   if (!event.repeat && mod && !event.altKey) {
     const lowerKey = event.key.toLowerCase()
+
+    // Why: Windows terminal users expect Ctrl+C to copy an active selection,
+    // matching PowerShell/Windows Terminal muscle memory. We only classify the
+    // chord as "copy selection" on Windows; the handler lets it fall through to
+    // the shell unchanged when no selection exists, so Ctrl+C still interrupts
+    // the foreground process in the common no-selection case.
+    if (isWindows && !isMac && !event.shiftKey && lowerKey === 'c') {
+      return { type: 'copySelection' }
+    }
 
     if (event.shiftKey && lowerKey === 'c') {
       return { type: 'copySelection' }

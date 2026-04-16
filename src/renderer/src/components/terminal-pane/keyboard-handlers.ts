@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 import type { PtyTransport } from './pty-transport'
 import { resolveTerminalShortcutAction } from './terminal-shortcut-policy'
+import { isWindowsUserAgent } from './pane-helpers'
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -97,7 +98,9 @@ export function useTerminalKeyboardShortcuts({
       return
     }
 
-    const isMac = navigator.userAgent.includes('Mac')
+    const userAgent = navigator.userAgent
+    const isMac = userAgent.includes('Mac')
+    const isWindows = isWindowsUserAgent(userAgent)
     const onKeyDown = (e: KeyboardEvent): void => {
       const manager = managerRef.current
       if (!manager) {
@@ -133,7 +136,7 @@ export function useTerminalKeyboardShortcuts({
         return
       }
 
-      const action = resolveTerminalShortcutAction(e, isMac)
+      const action = resolveTerminalShortcutAction(e, isMac, isWindows)
       if (!action) {
         return
       }
@@ -153,8 +156,9 @@ export function useTerminalKeyboardShortcuts({
         return
       }
 
-      // Cmd/Ctrl+Shift+C copies terminal selection via Electron clipboard.
-      // This ensures Linux terminal copy works consistently.
+      // Cmd/Ctrl+Shift+C copies terminal selection everywhere, and on Windows
+      // Ctrl+C also copies when a selection is active. Returning early when the
+      // selection is empty keeps Ctrl+C available for SIGINT in the shell.
       if (action.type === 'copySelection') {
         const pane = manager.getActivePane() ?? manager.getPanes()[0]
         if (!pane) {

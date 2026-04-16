@@ -107,6 +107,16 @@ describe('resolveTerminalShortcutAction', () => {
     ).toBeNull()
   })
 
+  it('treats bare Ctrl+C as copy-selection only on Windows', () => {
+    expect(
+      resolveTerminalShortcutAction(event({ key: 'c', code: 'KeyC', ctrlKey: true }), false, true)
+    ).toEqual({ type: 'copySelection' })
+
+    expect(
+      resolveTerminalShortcutAction(event({ key: 'c', code: 'KeyC', ctrlKey: true }), false, false)
+    ).toBeNull()
+  })
+
   it('lets Ctrl+D pass through as EOF on non-Mac, requires Shift for split (#586)', () => {
     // Ctrl+D without Shift on Windows/Linux must NOT trigger split — it's EOF
     expect(

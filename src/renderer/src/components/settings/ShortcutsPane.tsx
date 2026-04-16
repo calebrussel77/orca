@@ -17,7 +17,7 @@ type ShortcutGroup = {
 type ShortcutDefinition = {
   action: string
   searchKeywords: string[]
-  keys: (labels: { mod: string; shift: string; enter: string }) => string[]
+  keys: (labels: { mod: string; shift: string; enter: string; isWindows: boolean }) => string[]
 }
 
 type ShortcutGroupDefinition = {
@@ -130,6 +130,14 @@ const SHORTCUT_GROUP_DEFINITIONS: ShortcutGroupDefinition[] = [
     title: 'Terminal Panes',
     items: [
       {
+        action: 'Copy selection',
+        searchKeywords: ['shortcut', 'pane', 'copy', 'clipboard'],
+        // Why: Windows terminals conventionally use Ctrl+C to copy the active
+        // selection, while Linux keeps Ctrl+Shift+C to avoid stealing SIGINT.
+        keys: ({ mod, shift, isWindows }) =>
+          mod === '⌘' ? [mod, shift, 'C'] : isWindows ? ['Ctrl', 'C'] : ['Ctrl', 'Shift', 'C']
+      },
+      {
         action: 'Split pane right',
         searchKeywords: ['shortcut', 'pane', 'split'],
         // Why: on Windows/Linux, Ctrl+D must pass through as EOF (#586),
@@ -186,6 +194,7 @@ export const SHORTCUTS_PANE_SEARCH_ENTRIES: SettingsSearchEntry[] =
 export function ShortcutsPane(): React.JSX.Element {
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
   const isMac = navigator.userAgent.includes('Mac')
+  const isWindows = navigator.userAgent.includes('Windows')
   const mod = isMac ? '⌘' : 'Ctrl'
   const shift = isMac ? '⇧' : 'Shift'
   const enter = isMac ? '↵' : 'Enter'
@@ -196,10 +205,10 @@ export function ShortcutsPane(): React.JSX.Element {
         title: group.title,
         items: group.items.map((item) => ({
           action: item.action,
-          keys: item.keys({ mod, shift, enter })
+          keys: item.keys({ mod, shift, enter, isWindows })
         }))
       })),
-    [mod, shift, enter]
+    [mod, shift, enter, isWindows]
   )
 
   // Why: keywords here must match the ones used by SHORTCUTS_PANE_SEARCH_ENTRIES
@@ -225,7 +234,7 @@ export function ShortcutsPane(): React.JSX.Element {
     <div className="space-y-8">
       <section className="space-y-4">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold">Keyboard Shortcuts</h2>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Keyboard Shortcuts</h3>
           <p className="text-sm text-muted-foreground">
             View common hotkeys used across the application. Shortcuts customization is not
             currently supported.
