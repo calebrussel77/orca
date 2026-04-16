@@ -9,9 +9,12 @@ function extname(filePath: string): string {
 
 const EXT_TO_LANGUAGE: Record<string, string> = {
   '.ts': 'typescript',
-  '.tsx': 'typescriptreact',
+  // Why: Monaco registers `typescript`/`javascript` language ids and uses the
+  // model URI extension (`.tsx`/`.jsx`) to enable the JSX/TSX grammar. Using
+  // VS Code-style ids like `typescriptreact` falls back to plaintext here.
+  '.tsx': 'typescript',
   '.js': 'javascript',
-  '.jsx': 'javascriptreact',
+  '.jsx': 'javascript',
   '.mjs': 'javascript',
   '.cjs': 'javascript',
   '.json': 'json',

@@ -8,15 +8,16 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { resolveEditorMonacoTheme } from '@/lib/monaco-setup'
 import { useAppStore } from '@/store'
 import { getConnectionId } from '@/lib/connection-context'
 import { scrollTopCache, cursorPositionCache, setWithLRU } from '@/lib/scroll-cache'
-import '@/lib/monaco-setup'
 import { computeEditorFontSize } from '@/lib/editor-font-zoom'
 import { buildCodeFontFamily } from '@/lib/font-family'
 
 import { useContextualCopySetup } from './useContextualCopySetup'
 import { computeMonacoRevealRange } from './monaco-reveal-range'
+import { syncMonacoModelLanguage } from './monaco-language'
 
 type MonacoEditorProps = {
   filePath: string
@@ -42,6 +43,7 @@ export default function MonacoEditor({
   revealMatchLength
 }: MonacoEditorProps): React.JSX.Element {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
+  const monacoRef = useRef<Parameters<OnMount>[1] | null>(null)
   const revealDecorationRef = useRef<editor.IEditorDecorationsCollection | null>(null)
   const revealHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const revealRafRef = useRef<number | null>(null)
@@ -133,6 +135,9 @@ export default function MonacoEditor({
   const handleMount: OnMount = useCallback(
     (editorInstance, monaco) => {
       editorRef.current = editorInstance
+      monacoRef.current = monaco
+
+      syncMonacoModelLanguage(editorInstance, monaco, language)
 
       setupCopy(editorInstance, monaco, filePath, propsRef)
 
@@ -271,6 +276,14 @@ export default function MonacoEditor({
   }, [editorFontFamily, editorFontSize, settings])
 
   useEffect(() => {
+    if (!editorRef.current || !monacoRef.current) {
+      return
+    }
+
+    syncMonacoModelLanguage(editorRef.current, monacoRef.current, language)
+  }, [language])
+
+  useEffect(() => {
     const handler = (event: Event): void => {
       const detail = (event as CustomEvent).detail as
         | { filePath?: string; line?: number; column?: number | null }
@@ -313,7 +326,7 @@ export default function MonacoEditor({
         height="100%"
         language={language}
         value={content}
-        theme={isDark ? 'vs-dark' : 'vs'}
+        theme={resolveEditorMonacoTheme(isDark ? 'dark' : 'light')}
         onChange={handleChange}
         onMount={handleMount}
         options={{
