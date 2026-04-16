@@ -19,13 +19,15 @@ import { tmpdir } from 'node:os'
 describe('importCookiesFromFile', () => {
   let tmpDir: string
   let cookiesSetMock: ReturnType<typeof vi.fn>
+  let cookiesFlushStoreMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'orca-cookie-test-'))
     cookiesSetMock = vi.fn().mockResolvedValue(undefined)
+    cookiesFlushStoreMock = vi.fn().mockResolvedValue(undefined)
     sessionFromPartitionMock.mockReset()
     sessionFromPartitionMock.mockReturnValue({
-      cookies: { set: cookiesSetMock }
+      cookies: { set: cookiesSetMock, flushStore: cookiesFlushStoreMock }
     })
   })
 
@@ -74,6 +76,7 @@ describe('importCookiesFromFile', () => {
     expect(result.summary.domains).toContain('example.com')
 
     expect(cookiesSetMock).toHaveBeenCalledTimes(2)
+    expect(cookiesFlushStoreMock).toHaveBeenCalledTimes(1)
     const firstCall = cookiesSetMock.mock.calls[0][0]
     expect(firstCall.name).toBe('_gh_sess')
     expect(firstCall.domain).toBe('.github.com')
@@ -206,6 +209,7 @@ describe('importCookiesFromFile', () => {
     }
     expect(result.summary.importedCookies).toBe(1)
     expect(result.summary.skippedCookies).toBe(1)
+    expect(cookiesFlushStoreMock).toHaveBeenCalledTimes(1)
   })
 })
 

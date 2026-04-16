@@ -275,6 +275,14 @@ async function importValidatedCookies(
     `importValidatedCookies result: imported=${importedCount} skipped=${skipped} domains=${domainSet.size}`
   )
 
+  // Why: importing from a JSON file can happen from Settings before any guest
+  // browser tab is mounted. Relying on Chromium's background cookie flush means
+  // a user who imports and immediately quits Orca can lose the session on next
+  // launch even though the import metadata already persisted. Force a flush here
+  // so uploaded cookies survive app restarts unless the user explicitly clears
+  // them later.
+  await targetSession.cookies.flushStore()
+
   const summary: BrowserCookieImportSummary = {
     totalCookies: totalInput,
     importedCookies: importedCount,
@@ -786,6 +794,12 @@ export async function importCookiesFromBrowser(
     }
 
     diag(`  memory load: ${memoryLoaded} OK, ${memoryFailed} failed`)
+
+    // Why: direct browser import also needs an explicit disk flush. Without it,
+    // sessions that loaded successfully into CookieMonster memory can still be
+    // dropped if the user quits Orca before Chromium performs its own async
+    // persistence pass.
+    await targetSession.cookies.flushStore()
 
     if (memoryFailed > 0) {
       // Why: some cookies couldn't be loaded via cookies.set() (non-ASCII values
