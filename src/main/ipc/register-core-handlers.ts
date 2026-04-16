@@ -63,12 +63,12 @@ export function registerCoreHandlers(
   registerNotificationHandlers(store)
   registerSettingsHandlers(store)
   registerBrowserHandlers()
-  // Why: applyPendingCookieImport MUST run before restorePersistedUserAgent
+  // Why: applyPendingCookieImport MUST run before restorePersistedSessions
   // because the latter calls session.fromPartition() which initializes
   // CookieMonster. The pending import replaces the live DB file so
   // CookieMonster reads the imported cookies on first access.
   browserSessionRegistry.applyPendingCookieImport()
-  browserSessionRegistry.restorePersistedUserAgent()
+  browserSessionRegistry.restorePersistedSessions()
   registerShellHandlers()
   registerSessionHandlers(store)
   registerUIHandlers(store)

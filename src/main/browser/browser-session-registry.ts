@@ -8,8 +8,11 @@ import { browserManager } from './browser-manager'
 
 type BrowserSessionMeta = {
   defaultSource: BrowserSessionProfile['source']
-  userAgent: string | null
+  defaultUserAgent: string | null
   pendingCookieDbPath: string | null
+  pendingCookieImports: Record<string, string>
+  profiles: BrowserSessionProfile[]
+  profileUserAgents: Record<string, string | null>
 }
 
 // Why: the registry is the single source of truth for which Electron partitions
@@ -19,6 +22,7 @@ type BrowserSessionMeta = {
 
 class BrowserSessionRegistry {
   private readonly profiles = new Map<string, BrowserSessionProfile>()
+  private readonly profileUserAgents = new Map<string, string | null>()
 
   constructor() {
     const persisted = this.loadPersistedSource()
@@ -55,8 +59,20 @@ class BrowserSessionRegistry {
   private persistSource(source: BrowserSessionProfile['source'], userAgent?: string | null): void {
     this.persistMeta({
       defaultSource: source,
-      ...(userAgent !== undefined ? { userAgent } : {})
+      ...(userAgent !== undefined ? { defaultUserAgent: userAgent } : {})
     })
+  }
+
+  private listPersistedProfiles(): BrowserSessionProfile[] {
+    return [...this.profiles.values()].filter((profile) => profile.id !== 'default')
+  }
+
+  private persistProfiles(): void {
+    const profiles = this.listPersistedProfiles()
+    const profileUserAgents = Object.fromEntries(
+      profiles.map((profile) => [profile.id, this.profileUserAgents.get(profile.id) ?? null])
+    )
+    this.persistMeta({ profiles, profileUserAgents })
   }
 
   private loadPersistedMeta(): BrowserSessionMeta {
@@ -65,11 +81,29 @@ class BrowserSessionRegistry {
       const data = JSON.parse(raw)
       return {
         defaultSource: data?.defaultSource ?? null,
-        userAgent: data?.userAgent ?? null,
-        pendingCookieDbPath: data?.pendingCookieDbPath ?? null
+        // Why: keep reading the legacy `userAgent` field so existing installs
+        // migrate cleanly to the newer per-profile persistence format.
+        defaultUserAgent: data?.defaultUserAgent ?? data?.userAgent ?? null,
+        pendingCookieDbPath: data?.pendingCookieDbPath ?? null,
+        pendingCookieImports:
+          data?.pendingCookieImports && typeof data.pendingCookieImports === 'object'
+            ? data.pendingCookieImports
+            : {},
+        profiles: Array.isArray(data?.profiles) ? data.profiles : [],
+        profileUserAgents:
+          data?.profileUserAgents && typeof data.profileUserAgents === 'object'
+            ? data.profileUserAgents
+            : {}
       }
     } catch {
-      return { defaultSource: null, userAgent: null, pendingCookieDbPath: null }
+      return {
+        defaultSource: null,
+        defaultUserAgent: null,
+        pendingCookieDbPath: null,
+        pendingCookieImports: {},
+        profiles: [],
+        profileUserAgents: {}
+      }
     }
   }
 
@@ -82,18 +116,30 @@ class BrowserSessionRegistry {
   // is not guaranteed before ready, so the constructor's loadPersistedSource()
   // silently returns null. Re-reading here (called from registerCoreHandlers,
   // after app is ready) ensures the default profile's source is populated.
-  restorePersistedUserAgent(): void {
+  restorePersistedSessions(): void {
     const meta = this.loadPersistedMeta()
-    if (meta.userAgent) {
+    this.hydrateFromPersisted(meta.profiles)
+
+    if (meta.defaultUserAgent) {
       const sess = session.fromPartition(ORCA_BROWSER_PARTITION)
-      sess.setUserAgent(meta.userAgent)
-      this.setupClientHintsOverride(sess, meta.userAgent)
+      sess.setUserAgent(meta.defaultUserAgent)
+      this.setupClientHintsOverride(sess, meta.defaultUserAgent)
     }
     if (meta.defaultSource) {
       const current = this.profiles.get('default')
       if (current && current.source === null) {
         this.profiles.set('default', { ...current, source: meta.defaultSource })
       }
+    }
+    for (const profile of meta.profiles) {
+      const ua = meta.profileUserAgents[profile.id] ?? null
+      this.profileUserAgents.set(profile.id, ua)
+      if (!ua) {
+        continue
+      }
+      const sess = session.fromPartition(profile.partition)
+      sess.setUserAgent(ua)
+      this.setupClientHintsOverride(sess, ua)
     }
   }
 
@@ -144,56 +190,100 @@ class BrowserSessionRegistry {
   applyPendingCookieImport(): void {
     try {
       const meta = this.loadPersistedMeta()
-      if (!meta.pendingCookieDbPath) {
-        return
+      const pendingImports = { ...meta.pendingCookieImports }
+      if (meta.pendingCookieDbPath && !pendingImports[ORCA_BROWSER_PARTITION]) {
+        pendingImports[ORCA_BROWSER_PARTITION] = meta.pendingCookieDbPath
       }
-      if (!existsSync(meta.pendingCookieDbPath)) {
-        this.persistMeta({ pendingCookieDbPath: null })
+      if (Object.keys(pendingImports).length === 0) {
         return
       }
 
-      const partitionName = ORCA_BROWSER_PARTITION.replace('persist:', '')
-      const liveCookiesPath = join(app.getPath('userData'), 'Partitions', partitionName, 'Cookies')
+      let didMutateMeta = false
 
-      copyFileSync(meta.pendingCookieDbPath, liveCookiesPath)
-      // Why: SQLite WAL mode stores uncommitted data in sidecar files.
-      // Stale WAL/SHM from a previous session could corrupt CookieMonster's
-      // read of the freshly swapped DB.
-      for (const suffix of ['-wal', '-shm']) {
-        try {
-          unlinkSync(liveCookiesPath + suffix)
-        } catch {
-          /* may not exist */
+      for (const [partition, stagingPath] of Object.entries(pendingImports)) {
+        if (!existsSync(stagingPath)) {
+          delete pendingImports[partition]
+          didMutateMeta = true
+          continue
         }
-        const stagingSidecar = meta.pendingCookieDbPath + suffix
-        if (existsSync(stagingSidecar)) {
+
+        const partitionName = partition.replace('persist:', '')
+        const liveCookiesPath = join(
+          app.getPath('userData'),
+          'Partitions',
+          partitionName,
+          'Cookies'
+        )
+
+        copyFileSync(stagingPath, liveCookiesPath)
+        // Why: SQLite WAL mode stores uncommitted data in sidecar files.
+        // Stale WAL/SHM from a previous session could corrupt CookieMonster's
+        // read of the freshly swapped DB.
+        for (const suffix of ['-wal', '-shm']) {
           try {
-            copyFileSync(stagingSidecar, liveCookiesPath + suffix)
+            unlinkSync(liveCookiesPath + suffix)
+          } catch {
+            /* may not exist */
+          }
+          const stagingSidecar = stagingPath + suffix
+          if (existsSync(stagingSidecar)) {
+            try {
+              copyFileSync(stagingSidecar, liveCookiesPath + suffix)
+            } catch {
+              /* best-effort */
+            }
+          }
+        }
+        for (const ext of ['', '-wal', '-shm']) {
+          try {
+            unlinkSync(`${stagingPath}${ext}`)
           } catch {
             /* best-effort */
           }
         }
+        delete pendingImports[partition]
+        didMutateMeta = true
       }
-      for (const ext of ['', '-wal', '-shm']) {
-        try {
-          unlinkSync(`${meta.pendingCookieDbPath}${ext}`)
-        } catch {
-          /* best-effort */
-        }
+
+      if (didMutateMeta) {
+        this.persistMeta({
+          pendingCookieDbPath: pendingImports[ORCA_BROWSER_PARTITION] ?? null,
+          pendingCookieImports: pendingImports
+        })
       }
-      this.persistMeta({ pendingCookieDbPath: null })
     } catch {
       // best-effort — if this fails, CookieMonster loads the old DB
     }
   }
 
-  setPendingCookieImport(stagingDbPath: string): void {
-    this.persistMeta({ pendingCookieDbPath: stagingDbPath })
+  setPendingCookieImport(partition: string, stagingDbPath: string): void {
+    const meta = this.loadPersistedMeta()
+    const pendingCookieImports = {
+      ...meta.pendingCookieImports,
+      [partition]: stagingDbPath
+    }
+    this.persistMeta({
+      pendingCookieDbPath:
+        partition === ORCA_BROWSER_PARTITION ? stagingDbPath : meta.pendingCookieDbPath,
+      pendingCookieImports
+    })
   }
 
-  persistUserAgent(userAgent: string | null): void {
-    const defaultProfile = this.profiles.get('default')
-    this.persistSource(defaultProfile?.source ?? null, userAgent)
+  persistUserAgent(profileId: string, userAgent: string | null): void {
+    if (profileId === 'default') {
+      const defaultProfile = this.profiles.get('default')
+      this.persistSource(defaultProfile?.source ?? null, userAgent)
+      return
+    }
+    this.profileUserAgents.set(profileId, userAgent)
+    this.persistProfiles()
+  }
+
+  getPersistedUserAgent(profileId: string): string | null {
+    if (profileId === 'default') {
+      return this.loadPersistedMeta().defaultUserAgent
+    }
+    return this.profileUserAgents.get(profileId) ?? null
   }
 
   getDefaultProfile(): BrowserSessionProfile {
@@ -202,6 +292,10 @@ class BrowserSessionRegistry {
 
   getProfile(profileId: string): BrowserSessionProfile | null {
     return this.profiles.get(profileId) ?? null
+  }
+
+  getProfileByPartition(partition: string): BrowserSessionProfile | null {
+    return [...this.profiles.values()].find((profile) => profile.partition === partition) ?? null
   }
 
   listProfiles(): BrowserSessionProfile[] {
@@ -237,9 +331,11 @@ class BrowserSessionRegistry {
       source: null
     }
     this.profiles.set(id, profile)
+    this.profileUserAgents.set(id, null)
     if (partition !== ORCA_BROWSER_PARTITION) {
       this.setupSessionPolicies(partition)
     }
+    this.persistProfiles()
     return profile
   }
 
@@ -255,6 +351,8 @@ class BrowserSessionRegistry {
     this.profiles.set(profileId, updated)
     if (profileId === 'default') {
       this.persistSource(source)
+    } else {
+      this.persistProfiles()
     }
     return updated
   }
@@ -265,6 +363,20 @@ class BrowserSessionRegistry {
       return false
     }
     this.profiles.delete(profileId)
+    this.profileUserAgents.delete(profileId)
+    const meta = this.loadPersistedMeta()
+    const pendingCookieImports = { ...meta.pendingCookieImports }
+    delete pendingCookieImports[profile.partition]
+    this.persistMeta({
+      pendingCookieImports,
+      profiles: this.listPersistedProfiles(),
+      profileUserAgents: Object.fromEntries(
+        this.listPersistedProfiles().map((entry) => [
+          entry.id,
+          this.profileUserAgents.get(entry.id) ?? null
+        ])
+      )
+    })
 
     // Why: clearing the partition's storage prevents orphaned cookies/cache from
     // lingering after the user deletes an imported or isolated session profile.
@@ -290,7 +402,15 @@ class BrowserSessionRegistry {
       if (defaultProfile) {
         this.profiles.set('default', { ...defaultProfile, source: null })
       }
-      this.persistMeta({ defaultSource: null, userAgent: null, pendingCookieDbPath: null })
+      const meta = this.loadPersistedMeta()
+      const pendingCookieImports = { ...meta.pendingCookieImports }
+      delete pendingCookieImports[ORCA_BROWSER_PARTITION]
+      this.persistMeta({
+        defaultSource: null,
+        defaultUserAgent: null,
+        pendingCookieDbPath: null,
+        pendingCookieImports
+      })
 
       const sess = session.fromPartition(ORCA_BROWSER_PARTITION)
       await sess.clearStorageData({ storages: ['cookies'] })

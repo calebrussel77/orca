@@ -81,6 +81,7 @@ export type BrowserSlice = {
     scope: 'isolated' | 'imported',
     label: string
   ) => Promise<BrowserSessionProfile | null>
+  assignBrowserSessionProfile: (workspaceId: string, profileId: string | null) => void
   deleteBrowserSessionProfile: (profileId: string) => Promise<boolean>
   importCookiesToProfile: (profileId: string) => Promise<BrowserCookieImportResult>
   clearBrowserSessionImportState: () => void
@@ -1013,12 +1014,38 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
     }
   },
 
+  assignBrowserSessionProfile: (workspaceId, profileId) => {
+    set((s) => {
+      const workspace = findWorkspace(s.browserTabsByWorktree, workspaceId)
+      if (!workspace) {
+        return s
+      }
+
+      return {
+        browserTabsByWorktree: {
+          ...s.browserTabsByWorktree,
+          [workspace.worktreeId]: (s.browserTabsByWorktree[workspace.worktreeId] ?? []).map((tab) =>
+            tab.id === workspaceId ? { ...tab, sessionProfileId: profileId } : tab
+          )
+        }
+      }
+    })
+  },
+
   deleteBrowserSessionProfile: async (profileId) => {
     try {
       const ok = await window.api.browser.sessionDeleteProfile({ profileId })
       if (ok) {
         set((s) => ({
-          browserSessionProfiles: s.browserSessionProfiles.filter((p) => p.id !== profileId)
+          browserSessionProfiles: s.browserSessionProfiles.filter((p) => p.id !== profileId),
+          browserTabsByWorktree: Object.fromEntries(
+            Object.entries(s.browserTabsByWorktree).map(([worktreeId, tabs]) => [
+              worktreeId,
+              tabs.map((tab) =>
+                tab.sessionProfileId === profileId ? { ...tab, sessionProfileId: null } : tab
+              )
+            ])
+          )
         }))
       }
       return ok

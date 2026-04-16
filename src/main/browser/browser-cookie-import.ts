@@ -805,7 +805,7 @@ export async function importCookiesFromBrowser(
       // Why: some cookies couldn't be loaded via cookies.set() (non-ASCII values
       // or other validation failures). Keep the staging DB so the next cold start
       // picks them up from SQLite where CookieMonster reads them without validation.
-      browserSessionRegistry.setPendingCookieImport(stagingCookiesPath)
+      browserSessionRegistry.setPendingCookieImport(targetPartition, stagingCookiesPath)
       diag(`  staged at ${stagingCookiesPath} for ${memoryFailed} cookies that need restart`)
     } else {
       try {
@@ -820,7 +820,10 @@ export async function importCookiesFromBrowser(
     if (ua) {
       targetSession.setUserAgent(ua)
       browserSessionRegistry.setupClientHintsOverride(targetSession, ua)
-      browserSessionRegistry.persistUserAgent(ua)
+      const targetProfile = browserSessionRegistry.getProfileByPartition(targetPartition)
+      if (targetProfile) {
+        browserSessionRegistry.persistUserAgent(targetProfile.id, ua)
+      }
       diag(`  set UA for partition: ${ua.substring(0, 80)}...`)
     }
 

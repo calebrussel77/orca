@@ -382,6 +382,7 @@ function BrowserPagePane({
   } | null>(null)
   const grab = useGrabMode(browserTab.id)
   const createBrowserTab = useAppStore((s) => s.createBrowserTab)
+  const assignBrowserSessionProfile = useAppStore((s) => s.assignBrowserSessionProfile)
   const consumeAddressBarFocusRequest = useAppStore((s) => s.consumeAddressBarFocusRequest)
   const browserDefaultUrl = useAppStore((s) => s.browserDefaultUrl)
   const setBrowserDefaultUrl = useAppStore((s) => s.setBrowserDefaultUrl)
@@ -811,6 +812,14 @@ function BrowserPagePane({
 
     let webview = webviewRegistry.get(browserTab.id)
     let needsInitialNavigation = false
+    if (webview && webview.getAttribute('partition') !== webviewPartition) {
+      // Why: Electron locks a webview's partition at creation time. When the
+      // user switches this browser workspace to an imported session profile we
+      // must destroy the cached guest so the replacement webview boots against
+      // the new persistent cookie/storage partition.
+      destroyPersistentWebview(browserTab.id)
+      webview = undefined
+    }
     if (webview) {
       container.appendChild(webview)
       parkedAtByTabId.delete(browserTab.id)
@@ -1042,7 +1051,9 @@ function BrowserPagePane({
     browserTab.id,
     workspaceId,
     worktreeId,
+    webviewPartition,
     createBrowserTab,
+    assignBrowserSessionProfile,
     focusAddressBarNow,
     focusWebviewNow,
     syncNavigationState
@@ -1591,6 +1602,7 @@ function BrowserPagePane({
                   onClick={async () => {
                     const store = useAppStore.getState()
                     let targetProfileId = sessionProfileId
+                    let createdProfileId: string | null = null
                     if (!targetProfileId) {
                       const profile = await store.createBrowserSessionProfile(
                         'imported',
@@ -1600,8 +1612,17 @@ function BrowserPagePane({
                         return
                       }
                       targetProfileId = profile.id
+                      createdProfileId = profile.id
                     }
-                    void store.importCookiesFromBrowser(targetProfileId, browser.family)
+                    const result = await store.importCookiesFromBrowser(
+                      targetProfileId,
+                      browser.family
+                    )
+                    if (result.ok) {
+                      store.assignBrowserSessionProfile(workspaceId, targetProfileId)
+                    } else if (createdProfileId) {
+                      await store.deleteBrowserSessionProfile(createdProfileId)
+                    }
                     setSettingsOpen(false)
                   }}
                 >
@@ -1616,6 +1637,7 @@ function BrowserPagePane({
                 onClick={async () => {
                   const store = useAppStore.getState()
                   let targetProfileId = sessionProfileId
+                  let createdProfileId: string | null = null
                   if (!targetProfileId) {
                     const profile = await store.createBrowserSessionProfile(
                       'imported',
@@ -1625,8 +1647,14 @@ function BrowserPagePane({
                       return
                     }
                     targetProfileId = profile.id
+                    createdProfileId = profile.id
                   }
-                  void store.importCookiesToProfile(targetProfileId)
+                  const result = await store.importCookiesToProfile(targetProfileId)
+                  if (result.ok) {
+                    store.assignBrowserSessionProfile(workspaceId, targetProfileId)
+                  } else if (createdProfileId) {
+                    await store.deleteBrowserSessionProfile(createdProfileId)
+                  }
                   setSettingsOpen(false)
                 }}
               >
