@@ -2,7 +2,11 @@
    splitting individual settings into separate files would scatter related controls without a
    meaningful abstraction boundary. */
 import { useEffect, useState } from 'react'
-import type { CodexRateLimitAccountsState, GlobalSettings } from '../../../../shared/types'
+import type {
+  BrowserSessionProfile,
+  CodexRateLimitAccountsState,
+  GlobalSettings
+} from '../../../../shared/types'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -50,6 +54,7 @@ import {
   DialogTitle
 } from '../ui/dialog'
 import { buildReleaseTagUrl, DEFAULT_GITHUB_RELEASE_INFO } from '../../../../shared/github-release'
+import { resolveSettingsCookieImportTarget } from '@/lib/browser-session-target'
 
 export { GENERAL_PANE_SEARCH_ENTRIES }
 
@@ -110,9 +115,24 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
   const setBrowserDefaultUrl = useAppStore((s) => s.setBrowserDefaultUrl)
   const detectedBrowsers = useAppStore((s) => s.detectedBrowsers)
   const browserSessionProfiles = useAppStore((s) => s.browserSessionProfiles)
+  const browserTabsByWorktree = useAppStore((s) => s.browserTabsByWorktree)
+  const activeBrowserTabIdByWorktree = useAppStore((s) => s.activeBrowserTabIdByWorktree)
+  const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
+  const activeTabType = useAppStore((s) => s.activeTabType)
   const browserSessionImportState = useAppStore((s) => s.browserSessionImportState)
-  const defaultProfile = browserSessionProfiles.find((p) => p.id === 'default')
-  const orphanedProfiles = browserSessionProfiles.filter((p) => p.scope !== 'default')
+  const { profile: cookieImportTargetProfile, workspace: cookieImportTargetWorkspace } =
+    resolveSettingsCookieImportTarget({
+      activeBrowserTabIdByWorktree,
+      activeTabType,
+      activeWorktreeId,
+      browserSessionProfiles,
+      browserTabsByWorktree
+    })
+  const cookieImportTargetProfileId = cookieImportTargetProfile?.id ?? 'default'
+  const cookieImportTargetLabel = cookieImportTargetProfile?.label ?? 'Default'
+  const customProfiles = browserSessionProfiles.filter(
+    (profile) => profile.scope !== 'default' && profile.id !== cookieImportTargetProfile?.id
+  )
   const [homePageDraft, setHomePageDraft] = useState(browserDefaultUrl ?? '')
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [autoSaveDelayDraft, setAutoSaveDelayDraft] = useState(
@@ -209,6 +229,19 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
       hour: 'numeric',
       minute: '2-digit'
     })
+  }
+
+  const getCookieImportTargetDescription = (
+    profile: BrowserSessionProfile | null,
+    isActiveWorkspaceTarget: boolean
+  ): string => {
+    if (!isActiveWorkspaceTarget) {
+      return 'Imports apply to Orca’s shared default browser session.'
+    }
+    if (profile?.id === 'default' || !profile) {
+      return 'Imports apply to the active browser workspace using the shared default session.'
+    }
+    return `Imports apply to the active browser workspace session: ${profile.label}.`
   }
 
   const runCodexAccountAction = async (
@@ -417,6 +450,12 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
               <p className="text-sm text-muted-foreground">
                 Import cookies from your system browser to reuse existing logins inside Orca.
               </p>
+              <p className="text-xs text-muted-foreground">
+                {getCookieImportTargetDescription(
+                  cookieImportTargetProfile,
+                  cookieImportTargetWorkspace != null
+                )}
+              </p>
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -440,10 +479,13 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                     key={browser.family}
                     onSelect={async () => {
                       const store = useAppStore.getState()
-                      const result = await store.importCookiesFromBrowser('default', browser.family)
+                      const result = await store.importCookiesFromBrowser(
+                        cookieImportTargetProfileId,
+                        browser.family
+                      )
                       if (result.ok) {
                         toast.success(
-                          `Imported ${result.summary.importedCookies} cookies from ${browser.label}.`
+                          `Imported ${result.summary.importedCookies} cookies from ${browser.label} into ${cookieImportTargetLabel}.`
                         )
                       } else {
                         toast.error(result.reason)
@@ -457,9 +499,11 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                 <DropdownMenuItem
                   onSelect={async () => {
                     const store = useAppStore.getState()
-                    const result = await store.importCookiesToProfile('default')
+                    const result = await store.importCookiesToProfile(cookieImportTargetProfileId)
                     if (result.ok) {
-                      toast.success(`Imported ${result.summary.importedCookies} cookies from file.`)
+                      toast.success(
+                        `Imported ${result.summary.importedCookies} cookies from file into ${cookieImportTargetLabel}.`
+                      )
                     } else if (result.reason !== 'canceled') {
                       toast.error(result.reason)
                     }
@@ -471,46 +515,69 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             </DropdownMenu>
           </div>
 
-          {defaultProfile?.source ? (
+          {cookieImportTargetProfile?.source ? (
             <div className="flex w-full items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2.5">
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="truncate text-sm font-medium">
-                  Imported from {defaultProfile.source.browserFamily}
-                  {defaultProfile.source.profileName
-                    ? ` (${defaultProfile.source.profileName})`
+                  {cookieImportTargetProfile.label}: imported from{' '}
+                  {cookieImportTargetProfile.source.browserFamily}
+                  {cookieImportTargetProfile.source.profileName
+                    ? ` (${cookieImportTargetProfile.source.profileName})`
                     : ''}
                 </span>
-                {defaultProfile.source.importedAt ? (
+                {cookieImportTargetProfile.source.importedAt ? (
                   <span className="truncate text-sm text-muted-foreground">
-                    {new Date(defaultProfile.source.importedAt).toLocaleDateString(undefined, {
-                      month: 'short',
-                      day: 'numeric',
-                      hour: 'numeric',
-                      minute: '2-digit'
-                    })}
+                    {new Date(cookieImportTargetProfile.source.importedAt).toLocaleDateString(
+                      undefined,
+                      {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit'
+                      }
+                    )}
                   </span>
                 ) : null}
               </div>
-              <Button
-                variant="ghost"
-                size="xs"
-                className="gap-1 text-muted-foreground hover:text-destructive"
-                onClick={async () => {
-                  const ok = await useAppStore.getState().clearDefaultSessionCookies()
-                  if (ok) {
-                    toast.success('Cookies cleared.')
-                  }
-                }}
-              >
-                <Trash2 className="size-3" />
-                Clear
-              </Button>
+              {cookieImportTargetProfile.id === 'default' ? (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="gap-1 text-muted-foreground hover:text-destructive"
+                  onClick={async () => {
+                    const ok = await useAppStore.getState().clearDefaultSessionCookies()
+                    if (ok) {
+                      toast.success('Cookies cleared.')
+                    }
+                  }}
+                >
+                  <Trash2 className="size-3" />
+                  Clear
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="gap-1 text-muted-foreground hover:text-destructive"
+                  onClick={async () => {
+                    const ok = await useAppStore
+                      .getState()
+                      .deleteBrowserSessionProfile(cookieImportTargetProfile.id)
+                    if (ok) {
+                      toast.success('Session removed.')
+                    }
+                  }}
+                >
+                  <Trash2 className="size-3" />
+                  Remove Session
+                </Button>
+              )}
             </div>
           ) : null}
 
-          {orphanedProfiles.length > 0 ? (
+          {customProfiles.length > 0 ? (
             <div className="space-y-2">
-              {orphanedProfiles.map((profile) => (
+              {customProfiles.map((profile) => (
                 <div
                   key={profile.id}
                   className="flex w-full items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2.5"
