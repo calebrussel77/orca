@@ -1594,41 +1594,50 @@ function BrowserPagePane({
             )}
             <div className="space-y-1">
               {detectedBrowsers.map((browser) => (
-                <Button
-                  key={browser.family}
-                  variant="outline"
-                  size="sm"
-                  className="w-full justify-start gap-2"
-                  onClick={async () => {
-                    const store = useAppStore.getState()
-                    let targetProfileId = sessionProfileId
-                    let createdProfileId: string | null = null
-                    if (!targetProfileId) {
-                      const profile = await store.createBrowserSessionProfile(
-                        'imported',
-                        `${browser.label} Session`
-                      )
-                      if (!profile) {
-                        return
+                <div key={browser.family} className="space-y-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-start gap-2"
+                    disabled={!browser.available}
+                    onClick={async () => {
+                      const store = useAppStore.getState()
+                      let targetProfileId = sessionProfileId
+                      let createdProfileId: string | null = null
+                      if (!targetProfileId) {
+                        const profile = await store.createBrowserSessionProfile(
+                          'imported',
+                          `${browser.label} Session`
+                        )
+                        if (!profile) {
+                          return
+                        }
+                        targetProfileId = profile.id
+                        createdProfileId = profile.id
                       }
-                      targetProfileId = profile.id
-                      createdProfileId = profile.id
-                    }
-                    const result = await store.importCookiesFromBrowser(
-                      targetProfileId,
-                      browser.family
-                    )
-                    if (result.ok) {
-                      store.assignBrowserSessionProfile(workspaceId, targetProfileId)
-                    } else if (createdProfileId) {
-                      await store.deleteBrowserSessionProfile(createdProfileId)
-                    }
-                    setSettingsOpen(false)
-                  }}
-                >
-                  <Import className="size-3.5" />
-                  Import from {browser.label}
-                </Button>
+                      const result = await store.importCookiesFromBrowser(
+                        targetProfileId,
+                        browser.family
+                      )
+                      if (result.ok) {
+                        store.assignBrowserSessionProfile(workspaceId, targetProfileId)
+                      } else if (createdProfileId) {
+                        await store.deleteBrowserSessionProfile(createdProfileId)
+                      }
+                      setSettingsOpen(false)
+                    }}
+                  >
+                    <Import className="size-3.5" />
+                    {browser.available
+                      ? `Import from ${browser.label}`
+                      : `Import from ${browser.label} (Unavailable)`}
+                  </Button>
+                  {!browser.available && browser.unavailableReason ? (
+                    <p className="px-1 text-xs text-muted-foreground">
+                      {browser.unavailableReason}
+                    </p>
+                  ) : null}
+                </div>
               ))}
               <Button
                 variant="outline"

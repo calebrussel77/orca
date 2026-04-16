@@ -2,6 +2,7 @@
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
 import type {
+  BrowserDetectedBrowser,
   BrowserCookieImportResult,
   BrowserCookieImportSummary,
   BrowserLoadError,
@@ -85,7 +86,7 @@ export type BrowserSlice = {
   deleteBrowserSessionProfile: (profileId: string) => Promise<boolean>
   importCookiesToProfile: (profileId: string) => Promise<BrowserCookieImportResult>
   clearBrowserSessionImportState: () => void
-  detectedBrowsers: { family: string; label: string }[]
+  detectedBrowsers: BrowserDetectedBrowser[]
   fetchDetectedBrowsers: () => Promise<void>
   importCookiesFromBrowser: (
     profileId: string,
@@ -1112,10 +1113,8 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
 
   fetchDetectedBrowsers: async () => {
     try {
-      const browsers = (await window.api.browser.sessionDetectBrowsers()) as {
-        family: string
-        label: string
-      }[]
+      const browsers =
+        (await window.api.browser.sessionDetectBrowsers()) as BrowserDetectedBrowser[]
       set({ detectedBrowsers: browsers })
     } catch {
       /* best-effort — empty list is acceptable fallback */

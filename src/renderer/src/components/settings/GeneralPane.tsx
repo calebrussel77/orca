@@ -133,6 +133,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
   const customProfiles = browserSessionProfiles.filter(
     (profile) => profile.scope !== 'default' && profile.id !== cookieImportTargetProfile?.id
   )
+  const unavailableDetectedBrowsers = detectedBrowsers.filter((browser) => !browser.available)
   const [homePageDraft, setHomePageDraft] = useState(browserDefaultUrl ?? '')
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [autoSaveDelayDraft, setAutoSaveDelayDraft] = useState(
@@ -279,7 +280,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_WORKSPACE_SEARCH_ENTRIES) ? (
       <section key="workspace" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Workspace</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Workspace
+          </h3>
           <p className="text-sm text-muted-foreground">
             Configure where new worktrees are created.
           </p>
@@ -349,7 +352,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_BROWSER_SEARCH_ENTRIES) ? (
       <section key="browser" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Browser</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Browser
+          </h3>
           <p className="text-sm text-muted-foreground">
             Control how Orca handles links and browser workspace defaults.
           </p>
@@ -456,6 +461,16 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                   cookieImportTargetWorkspace != null
                 )}
               </p>
+              {unavailableDetectedBrowsers.length > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {unavailableDetectedBrowsers
+                    .map(
+                      (browser) =>
+                        `${browser.label}: ${browser.unavailableReason ?? 'Unavailable in Orca.'}`
+                    )
+                    .join(' ')}
+                </p>
+              ) : null}
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -477,6 +492,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                 {detectedBrowsers.map((browser) => (
                   <DropdownMenuItem
                     key={browser.family}
+                    disabled={!browser.available}
                     onSelect={async () => {
                       const store = useAppStore.getState()
                       const result = await store.importCookiesFromBrowser(
@@ -492,7 +508,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                       }
                     }}
                   >
-                    From {browser.label}
+                    {browser.available
+                      ? `From ${browser.label}`
+                      : `From ${browser.label} (Unavailable)`}
                   </DropdownMenuItem>
                 ))}
                 {detectedBrowsers.length > 0 && <DropdownMenuSeparator />}
@@ -616,7 +634,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_EDITOR_SEARCH_ENTRIES) ? (
       <section key="editor" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Editor</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Editor
+          </h3>
           <p className="text-sm text-muted-foreground">Configure how Orca persists file edits.</p>
         </div>
 
@@ -724,7 +744,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_CACHE_TIMER_SEARCH_ENTRIES) ? (
       <section key="cache-timer" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Prompt Cache Timer</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Prompt Cache Timer
+          </h3>
           <p className="text-sm text-muted-foreground">
             Claude caches your conversation to reduce costs. When idle too long the cache expires
             and the next message resends full context at higher cost. This shows a countdown so you
@@ -805,7 +827,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_CODEX_ACCOUNTS_SEARCH_ENTRIES) ? (
       <section key="codex-accounts" id="general-codex-accounts" className="space-y-6 scroll-mt-6">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Codex Accounts</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Codex Accounts
+          </h3>
           <p className="text-sm text-muted-foreground">
             Add and switch between Codex accounts in Orca.
           </p>
@@ -988,7 +1012,9 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     matchesSettingsSearch(searchQuery, GENERAL_UPDATE_SEARCH_ENTRIES) ? (
       <section key="updates" className="space-y-6">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Updates</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Updates
+          </h3>
           <p className="text-sm text-muted-foreground">Current version: {appVersion ?? '…'}</p>
         </div>
 

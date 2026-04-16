@@ -168,6 +168,17 @@ export type BrowserSessionProfile = {
   source: BrowserSessionProfileSource | null
 }
 
+export type BrowserDetectedBrowser = {
+  family: BrowserSessionProfileSource['browserFamily']
+  label: string
+  // Why: browser detection should still surface installed browsers even when
+  // Orca cannot import from them on the current platform/version. The renderer
+  // uses this to show disabled options with an explanation instead of silently
+  // hiding Chrome/Edge and making it look like detection is broken.
+  available: boolean
+  unavailableReason?: string
+}
+
 export type BrowserCookieImportSummary = {
   totalCookies: number
   importedCookies: number

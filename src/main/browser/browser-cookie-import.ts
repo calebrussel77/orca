@@ -8,6 +8,7 @@ import {
   copyFileSync,
   existsSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   unlinkSync,
   writeFileSync
@@ -39,6 +40,7 @@ function diag(msg: string): void {
   console.log('[cookie-import]', msg)
 }
 import type {
+  BrowserDetectedBrowser,
   BrowserCookieImportResult,
   BrowserCookieImportSummary,
   BrowserSessionProfileSource
@@ -49,62 +51,319 @@ import { browserSessionRegistry } from './browser-session-registry'
 // Browser detection
 // ---------------------------------------------------------------------------
 
-export type DetectedBrowser = {
-  family: BrowserSessionProfileSource['browserFamily']
-  label: string
+export type DetectedBrowser = BrowserDetectedBrowser & {
   cookiesPath: string
-  keychainService: string
-  keychainAccount: string
+  localStatePath: string | null
 }
 
-const CHROMIUM_BROWSERS: Omit<DetectedBrowser, 'cookiesPath'>[] = [
+type BrowserDefinition = {
+  family: BrowserSessionProfileSource['browserFamily']
+  label: string
+  macKeychainService: string
+  macKeychainAccount: string
+}
+
+const CHROMIUM_BROWSERS: BrowserDefinition[] = [
   {
     family: 'chrome',
     label: 'Google Chrome',
-    keychainService: 'Chrome Safe Storage',
-    keychainAccount: 'Chrome'
+    macKeychainService: 'Chrome Safe Storage',
+    macKeychainAccount: 'Chrome'
   },
   {
     family: 'edge',
     label: 'Microsoft Edge',
-    keychainService: 'Microsoft Edge Safe Storage',
-    keychainAccount: 'Microsoft Edge'
+    macKeychainService: 'Microsoft Edge Safe Storage',
+    macKeychainAccount: 'Microsoft Edge'
   },
   {
     family: 'arc',
     label: 'Arc',
-    keychainService: 'Arc Safe Storage',
-    keychainAccount: 'Arc'
+    macKeychainService: 'Arc Safe Storage',
+    macKeychainAccount: 'Arc'
   },
   {
     family: 'chromium',
     label: 'Brave',
-    keychainService: 'Brave Safe Storage',
-    keychainAccount: 'Brave'
+    macKeychainService: 'Brave Safe Storage',
+    macKeychainAccount: 'Brave'
   }
 ]
 
-function cookiesPathForBrowser(family: BrowserSessionProfileSource['browserFamily']): string {
-  const home = process.env.HOME ?? ''
-  switch (family) {
-    case 'chrome':
-      return join(home, 'Library/Application Support/Google/Chrome/Default/Cookies')
-    case 'edge':
-      return join(home, 'Library/Application Support/Microsoft Edge/Default/Cookies')
-    case 'arc':
-      return join(home, 'Library/Application Support/Arc/User Data/Default/Cookies')
-    case 'chromium':
-      return join(home, 'Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies')
+function getHomeDir(): string {
+  return process.env.HOME ?? process.env.USERPROFILE ?? ''
+}
+
+function getLinuxConfigHome(): string {
+  return process.env.XDG_CONFIG_HOME ?? join(getHomeDir(), '.config')
+}
+
+// Why: Chromium moved cookies from `Default/Cookies` to
+// `Default/Network/Cookies` in newer builds. Probe both locations so Orca can
+// detect current installs without regressing older profiles or macOS builds
+// that still use the legacy path.
+export function getBrowserCookiePathCandidates(
+  family: BrowserSessionProfileSource['browserFamily'],
+  platform: NodeJS.Platform = process.platform
+): string[] {
+  const home = getHomeDir()
+  const localAppData = process.env.LOCALAPPDATA ?? ''
+  const linuxConfigHome = getLinuxConfigHome()
+
+  switch (platform) {
+    case 'darwin':
+      switch (family) {
+        case 'chrome':
+          return [
+            join(
+              home,
+              'Library',
+              'Application Support',
+              'Google',
+              'Chrome',
+              'Default',
+              'Network',
+              'Cookies'
+            ),
+            join(home, 'Library', 'Application Support', 'Google', 'Chrome', 'Default', 'Cookies')
+          ]
+        case 'edge':
+          return [
+            join(
+              home,
+              'Library',
+              'Application Support',
+              'Microsoft Edge',
+              'Default',
+              'Network',
+              'Cookies'
+            ),
+            join(home, 'Library', 'Application Support', 'Microsoft Edge', 'Default', 'Cookies')
+          ]
+        case 'arc':
+          return [
+            join(
+              home,
+              'Library',
+              'Application Support',
+              'Arc',
+              'User Data',
+              'Default',
+              'Network',
+              'Cookies'
+            ),
+            join(home, 'Library', 'Application Support', 'Arc', 'User Data', 'Default', 'Cookies')
+          ]
+        case 'chromium':
+          return [
+            join(
+              home,
+              'Library',
+              'Application Support',
+              'BraveSoftware',
+              'Brave-Browser',
+              'Default',
+              'Network',
+              'Cookies'
+            ),
+            join(
+              home,
+              'Library',
+              'Application Support',
+              'BraveSoftware',
+              'Brave-Browser',
+              'Default',
+              'Cookies'
+            )
+          ]
+        default:
+          return []
+      }
+    case 'win32':
+      switch (family) {
+        case 'chrome':
+          return [
+            join(localAppData, 'Google', 'Chrome', 'User Data', 'Default', 'Network', 'Cookies'),
+            join(localAppData, 'Google', 'Chrome', 'User Data', 'Default', 'Cookies')
+          ]
+        case 'edge':
+          return [
+            join(localAppData, 'Microsoft', 'Edge', 'User Data', 'Default', 'Network', 'Cookies'),
+            join(localAppData, 'Microsoft', 'Edge', 'User Data', 'Default', 'Cookies')
+          ]
+        case 'arc':
+          return []
+        case 'chromium':
+          return [
+            join(
+              localAppData,
+              'BraveSoftware',
+              'Brave-Browser',
+              'User Data',
+              'Default',
+              'Network',
+              'Cookies'
+            ),
+            join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data', 'Default', 'Cookies')
+          ]
+        default:
+          return []
+      }
     default:
-      return ''
+      switch (family) {
+        case 'chrome':
+          return [
+            join(linuxConfigHome, 'google-chrome', 'Default', 'Network', 'Cookies'),
+            join(linuxConfigHome, 'google-chrome', 'Default', 'Cookies')
+          ]
+        case 'edge':
+          return [
+            join(linuxConfigHome, 'microsoft-edge', 'Default', 'Network', 'Cookies'),
+            join(linuxConfigHome, 'microsoft-edge', 'Default', 'Cookies')
+          ]
+        case 'arc':
+          return []
+        case 'chromium':
+          return [
+            join(
+              linuxConfigHome,
+              'BraveSoftware',
+              'Brave-Browser',
+              'Default',
+              'Network',
+              'Cookies'
+            ),
+            join(linuxConfigHome, 'BraveSoftware', 'Brave-Browser', 'Default', 'Cookies')
+          ]
+        default:
+          return []
+      }
+  }
+}
+
+export function getBrowserLocalStateCandidates(
+  family: BrowserSessionProfileSource['browserFamily'],
+  platform: NodeJS.Platform = process.platform
+): string[] {
+  const home = getHomeDir()
+  const localAppData = process.env.LOCALAPPDATA ?? ''
+  const linuxConfigHome = getLinuxConfigHome()
+
+  switch (platform) {
+    case 'darwin':
+      switch (family) {
+        case 'chrome':
+          return [join(home, 'Library', 'Application Support', 'Google', 'Chrome', 'Local State')]
+        case 'edge':
+          return [join(home, 'Library', 'Application Support', 'Microsoft Edge', 'Local State')]
+        case 'arc':
+          return [join(home, 'Library', 'Application Support', 'Arc', 'User Data', 'Local State')]
+        case 'chromium':
+          return [
+            join(
+              home,
+              'Library',
+              'Application Support',
+              'BraveSoftware',
+              'Brave-Browser',
+              'Local State'
+            )
+          ]
+        default:
+          return []
+      }
+    case 'win32':
+      switch (family) {
+        case 'chrome':
+          return [join(localAppData, 'Google', 'Chrome', 'User Data', 'Local State')]
+        case 'edge':
+          return [join(localAppData, 'Microsoft', 'Edge', 'User Data', 'Local State')]
+        case 'arc':
+          return []
+        case 'chromium':
+          return [join(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data', 'Local State')]
+        default:
+          return []
+      }
+    default:
+      switch (family) {
+        case 'chrome':
+          return [join(linuxConfigHome, 'google-chrome', 'Local State')]
+        case 'edge':
+          return [join(linuxConfigHome, 'microsoft-edge', 'Local State')]
+        case 'arc':
+          return []
+        case 'chromium':
+          return [join(linuxConfigHome, 'BraveSoftware', 'Brave-Browser', 'Local State')]
+        default:
+          return []
+      }
+  }
+}
+
+function resolveFirstExistingPath(candidates: string[]): string | null {
+  return candidates.find((candidate) => existsSync(candidate)) ?? null
+}
+
+export function localStateUsesAppBoundEncryptionFromText(localStateText: string): boolean {
+  try {
+    const localState = JSON.parse(localStateText)
+    return typeof localState?.os_crypt?.app_bound_encrypted_key === 'string'
+  } catch {
+    return false
+  }
+}
+
+function localStateUsesAppBoundEncryption(localStatePath: string | null): boolean {
+  if (!localStatePath || !existsSync(localStatePath)) {
+    return false
+  }
+  try {
+    return localStateUsesAppBoundEncryptionFromText(readFileSync(localStatePath, 'utf-8'))
+  } catch {
+    return false
+  }
+}
+
+function getBrowserAvailability(
+  browser: Pick<DetectedBrowser, 'label' | 'localStatePath'>
+): Pick<DetectedBrowser, 'available' | 'unavailableReason'> {
+  if (process.platform === 'darwin') {
+    return { available: true }
+  }
+  if (process.platform === 'win32') {
+    if (localStateUsesAppBoundEncryption(browser.localStatePath)) {
+      return {
+        available: false,
+        unavailableReason: `${browser.label} uses Windows app-bound encryption, which Orca cannot import directly yet.`
+      }
+    }
+    return {
+      available: false,
+      unavailableReason: `Direct ${browser.label} cookie import is not available on Windows yet.`
+    }
+  }
+  return {
+    available: false,
+    unavailableReason: `Direct ${browser.label} cookie import is not available on ${process.platform} yet.`
   }
 }
 
 export function detectInstalledBrowsers(): DetectedBrowser[] {
-  return CHROMIUM_BROWSERS.map((browser) => ({
-    ...browser,
-    cookiesPath: cookiesPathForBrowser(browser.family)
-  })).filter((browser) => existsSync(browser.cookiesPath))
+  return CHROMIUM_BROWSERS.map((browser) => {
+    const cookiesPath = resolveFirstExistingPath(getBrowserCookiePathCandidates(browser.family))
+    if (!cookiesPath) {
+      return null
+    }
+    const localStatePath = resolveFirstExistingPath(getBrowserLocalStateCandidates(browser.family))
+    return {
+      family: browser.family,
+      label: browser.label,
+      cookiesPath,
+      localStatePath,
+      ...getBrowserAvailability({ label: browser.label, localStatePath })
+    }
+  }).filter((browser): browser is DetectedBrowser => browser !== null)
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +638,10 @@ export async function importCookiesFromFile(
 function getUserAgentForBrowser(
   family: BrowserSessionProfileSource['browserFamily']
 ): string | null {
+  if (process.platform !== 'darwin') {
+    return null
+  }
+
   const platform = 'Macintosh; Intel Mac OS X 10_15_7'
   const chromeBase = 'AppleWebKit/537.36 (KHTML, like Gecko)'
 
@@ -441,13 +704,24 @@ function chromiumTimestampToUnix(chromiumTs: string): number {
   }
 }
 
-function getEncryptionKey(keychainService: string, keychainAccount: string): Buffer | null {
+function getMacEncryptionKey(family: BrowserSessionProfileSource['browserFamily']): Buffer | null {
+  const browser = CHROMIUM_BROWSERS.find((entry) => entry.family === family)
+  if (!browser) {
+    return null
+  }
   try {
     // Why: execFileSync bypasses shell interpretation, preventing command
-    // injection if keychainService/keychainAccount ever come from user input.
+    // injection if the browser definition ever changes or becomes configurable.
     const raw = execFileSync(
       'security',
-      ['find-generic-password', '-s', keychainService, '-a', keychainAccount, '-w'],
+      [
+        'find-generic-password',
+        '-s',
+        browser.macKeychainService,
+        '-a',
+        browser.macKeychainAccount,
+        '-w'
+      ],
       { encoding: 'utf-8', timeout: 30_000 }
     ).trim()
     return pbkdf2Sync(raw, PBKDF2_SALT, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH, 'sha1')
@@ -504,6 +778,14 @@ export async function importCookiesFromBrowser(
   targetPartition: string
 ): Promise<BrowserCookieImportResult> {
   diag(`importCookiesFromBrowser: browser=${browser.family} partition="${targetPartition}"`)
+  if (!browser.available) {
+    return {
+      ok: false,
+      reason:
+        browser.unavailableReason ??
+        `Direct ${browser.label} cookie import is not available on ${process.platform}.`
+    }
+  }
   if (!existsSync(browser.cookiesPath)) {
     diag(`  cookies DB not found: ${browser.cookiesPath}`)
     return { ok: false, reason: `${browser.label} cookies database not found.` }
@@ -533,7 +815,7 @@ export async function importCookiesFromBrowser(
   // In packaged builds where os_crypt IS active, CookieMonster will re-encrypt
   // plaintext cookies on its next flush, so this approach is safe in both modes.
 
-  const sourceKey = getEncryptionKey(browser.keychainService, browser.keychainAccount)
+  const sourceKey = getMacEncryptionKey(browser.family)
   if (!sourceKey) {
     rmSync(tmpDir, { recursive: true, force: true })
     return {

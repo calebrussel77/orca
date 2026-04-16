@@ -11,7 +11,13 @@ vi.mock('electron', () => ({
   session: { fromPartition: sessionFromPartitionMock }
 }))
 
-import { importCookiesFromFile, detectInstalledBrowsers } from './browser-cookie-import'
+import {
+  importCookiesFromFile,
+  detectInstalledBrowsers,
+  getBrowserCookiePathCandidates,
+  getBrowserLocalStateCandidates,
+  localStateUsesAppBoundEncryptionFromText
+} from './browser-cookie-import'
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -221,8 +227,7 @@ describe('detectInstalledBrowsers', () => {
       expect(browser).toHaveProperty('family')
       expect(browser).toHaveProperty('label')
       expect(browser).toHaveProperty('cookiesPath')
-      expect(browser).toHaveProperty('keychainService')
-      expect(browser).toHaveProperty('keychainAccount')
+      expect(browser).toHaveProperty('available')
     }
   })
 
@@ -232,5 +237,52 @@ describe('detectInstalledBrowsers', () => {
     for (const browser of browsers) {
       expect(validFamilies).toContain(browser.family)
     }
+  })
+
+  it('uses the Windows Chromium Network/Cookies path candidates', () => {
+    expect(getBrowserCookiePathCandidates('chrome', 'win32')).toContain(
+      join(
+        process.env.LOCALAPPDATA ?? '',
+        'Google',
+        'Chrome',
+        'User Data',
+        'Default',
+        'Network',
+        'Cookies'
+      )
+    )
+    expect(getBrowserCookiePathCandidates('edge', 'win32')).toContain(
+      join(
+        process.env.LOCALAPPDATA ?? '',
+        'Microsoft',
+        'Edge',
+        'User Data',
+        'Default',
+        'Network',
+        'Cookies'
+      )
+    )
+  })
+
+  it('uses the Windows Local State candidates for Chromium browsers', () => {
+    expect(getBrowserLocalStateCandidates('chrome', 'win32')).toContain(
+      join(process.env.LOCALAPPDATA ?? '', 'Google', 'Chrome', 'User Data', 'Local State')
+    )
+    expect(getBrowserLocalStateCandidates('edge', 'win32')).toContain(
+      join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'Edge', 'User Data', 'Local State')
+    )
+  })
+
+  it('detects app-bound encryption from Local State', () => {
+    expect(
+      localStateUsesAppBoundEncryptionFromText(
+        JSON.stringify({ os_crypt: { app_bound_encrypted_key: 'abc' } })
+      )
+    ).toBe(true)
+    expect(
+      localStateUsesAppBoundEncryptionFromText(
+        JSON.stringify({ os_crypt: { encrypted_key: 'abc' } })
+      )
+    ).toBe(false)
   })
 })
