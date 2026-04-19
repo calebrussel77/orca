@@ -44,7 +44,8 @@ import type {
 } from '../../../../shared/types'
 import {
   normalizeBrowserNavigationUrl,
-  normalizeExternalBrowserUrl
+  normalizeExternalBrowserUrl,
+  resolveBrowserAddressBarUrl
 } from '../../../../shared/browser-url'
 import {
   clearLiveBrowserUrl,
@@ -1357,12 +1358,12 @@ function BrowserPagePane({
 
   const submitAddressBar = (): void => {
     keepAddressBarFocusRef.current = false
-    const nextUrl = normalizeBrowserNavigationUrl(addressBarValue)
+    const nextUrl = resolveBrowserAddressBarUrl(addressBarValue)
     if (!nextUrl) {
       onUpdatePageStateRef.current(browserTab.id, {
         loadError: {
           code: 0,
-          description: 'Enter a valid http(s) or localhost URL.',
+          description: 'Enter a valid http(s) URL, localhost address, or search query.',
           validatedUrl: addressBarValue.trim() || 'about:blank'
         }
       })
