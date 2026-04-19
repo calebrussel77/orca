@@ -4,23 +4,79 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Tag to release, for example v1.1.37
+        required: true
+        type: string
 
 jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+      release_ref: ${{ steps.resolve.outputs.release_ref }}
+      tag_name: ${{ steps.resolve.outputs.tag_name }}
+    steps:
+      - name: Resolve release metadata
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag_name="${{ inputs.tag_name }}"
+          else
+            tag_name="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ -z "$tag_name" || ! "$tag_name" =~ ^v[0-9] ]]; then
+            echo "Expected a version tag like v1.1.37, got '$tag_name'"
+            exit 1
+          fi
+
+          if [[ "$tag_name" == *rc* ]]; then
+            is_prerelease=true
+          else
+            is_prerelease=false
+          fi
+
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "release_ref=refs/tags/$tag_name" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
+
   create-release:
+    needs: prepare-release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
 
       - name: Create draft release with auto-generated notes
-        run: gh release create ${{ github.ref_name }} --draft --generate-notes --prerelease=${{ contains(github.ref_name, 'rc') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "${{ needs.prepare-release.outputs.tag_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh release create "${{ needs.prepare-release.outputs.tag_name }}" \
+            --draft \
+            --generate-notes \
+            --prerelease="${{ needs.prepare-release.outputs.is_prerelease }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release:
-    needs: create-release
+    needs:
+      - prepare-release
+      - create-release
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +96,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -68,7 +126,7 @@ jobs:
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: orca-${{ matrix.platform }}-${{ github.ref_name }}
+          name: orca-${{ matrix.platform }}-${{ needs.prepare-release.outputs.tag_name }}
           path: |
             dist/*.exe
             dist/*.AppImage
@@ -78,12 +136,28 @@ jobs:
           if-no-files-found: warn
 
   publish-release:
-    needs: release
+    needs:
+      - prepare-release
+      - release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Publish release
-        run: gh release edit ${{ github.ref_name }} --draft=false --repo ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          args=(
+            "${{ needs.prepare-release.outputs.tag_name }}"
+            --draft=false
+            --repo "${{ github.repository }}"
+          )
+
+          if [[ "${{ needs.prepare-release.outputs.is_prerelease }}" != "true" ]]; then
+            args+=(--latest)
+          fi
+
+          gh release edit "${args[@]}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

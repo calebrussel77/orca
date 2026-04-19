@@ -28,6 +28,7 @@ jobs:
   cut-release:
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
 
     steps:
@@ -76,3 +77,22 @@ jobs:
 
       - name: Push release commit and tag
         run: git push origin HEAD:${{ github.ref_name }} --follow-tags
+
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        run: |
+          tag_name="$(git describe --tags --abbrev=0)"
+          if [[ -z "$tag_name" ]]; then
+            echo "Unable to determine release tag after npm version"
+            exit 1
+          fi
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Release workflow explicitly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release.yml \
+            --ref "${{ github.ref_name }}" \
+            -f tag_name="${{ steps.release_tag.outputs.tag_name }}"
