@@ -31,12 +31,26 @@ describe('browser-url helpers', () => {
     )
   })
 
+  it('routes bang shortcuts through unduck', () => {
+    expect(resolveBrowserAddressBarUrl('!gh t3dotgg/unduck')).toBe(
+      'https://unduck.link?q=!gh%20t3dotgg%2Funduck'
+    )
+    expect(resolveBrowserAddressBarUrl('!yt lofi hip hop')).toBe(
+      'https://unduck.link?q=!yt%20lofi%20hip%20hop'
+    )
+    expect(resolveBrowserAddressBarUrl('!gh')).toBe('https://unduck.link?q=!gh')
+  })
+
   it('keeps direct destinations navigable from the address bar', () => {
     expect(resolveBrowserAddressBarUrl('facebook.com')).toBe('https://facebook.com/')
     expect(resolveBrowserAddressBarUrl('localhost:3000')).toBe('http://localhost:3000/')
     expect(resolveBrowserAddressBarUrl('https://example.com/docs')).toBe(
       'https://example.com/docs'
     )
+  })
+
+  it('does not treat malformed bangs as special URLs', () => {
+    expect(resolveBrowserAddressBarUrl('! example')).toBe('https://www.google.com/search?q=!%20example')
   })
 
   it('still rejects unsupported explicit schemes in the address bar', () => {

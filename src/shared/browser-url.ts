@@ -4,6 +4,8 @@ const LOCAL_ADDRESS_PATTERN =
   /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[[0-9a-f:]+\])(?::\d+)?(?:\/.*)?$/i
 const EXPLICIT_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:/i
 const GOOGLE_SEARCH_BASE_URL = 'https://www.google.com/search?q='
+const UNDUCK_BANG_BASE_URL = 'https://unduck.link?q='
+const ADDRESS_BAR_BANG_PATTERN = /^![^\s]+(?:\s+.*)?$/u
 
 export function normalizeBrowserNavigationUrl(rawUrl: string): string | null {
   const trimmed = rawUrl.trim()
@@ -53,6 +55,13 @@ export function resolveBrowserAddressBarUrl(rawInput: string): string | null {
   const trimmed = rawInput.trim()
   if (trimmed.length === 0 || trimmed === 'about:blank' || trimmed === ORCA_BROWSER_BLANK_URL) {
     return ORCA_BROWSER_BLANK_URL
+  }
+
+  if (ADDRESS_BAR_BANG_PATTERN.test(trimmed)) {
+    // Why: `!bang` shortcuts are intended as an omnibox power-user feature.
+    // Forward the raw query to Unduck so Orca gets DuckDuckGo-compatible bangs
+    // without embedding and maintaining the full redirect catalog locally.
+    return `${UNDUCK_BANG_BASE_URL}${encodeURIComponent(trimmed)}`
   }
 
   if (LOCAL_ADDRESS_PATTERN.test(trimmed) || EXPLICIT_SCHEME_PATTERN.test(trimmed)) {
