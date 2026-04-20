@@ -8,6 +8,7 @@ import { computeEditorFontSize } from '@/lib/editor-font-zoom'
 import { useContextualCopySetup } from './useContextualCopySetup'
 import { buildCodeFontFamily } from '@/lib/font-family'
 import { resolveDiffMonacoTheme } from '@/lib/monaco-setup'
+import { registerContextAwareCommentToggle } from './context-aware-comment-toggle'
 
 type DiffViewerProps = {
   modelKey: string
@@ -67,6 +68,7 @@ export default function DiffViewer({
 
       setupCopy(originalEditor, monaco, filePath, propsRef)
       setupCopy(modifiedEditor, monaco, filePath, propsRef)
+      registerContextAwareCommentToggle(modifiedEditor, monaco, filePath)
 
       // Why: restoring the full diff view state matches VS Code more closely
       // than replaying scrollTop alone, and avoids divergent cursor/selection

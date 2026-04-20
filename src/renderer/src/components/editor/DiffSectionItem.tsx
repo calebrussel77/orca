@@ -11,6 +11,7 @@ import { computeEditorFontSize } from '@/lib/editor-font-zoom'
 import { buildCodeFontFamily } from '@/lib/font-family'
 import { resolveDiffMonacoTheme } from '@/lib/monaco-setup'
 import type { GitDiffResult } from '../../../../shared/types'
+import { registerContextAwareCommentToggle } from './context-aware-comment-toggle'
 
 const ImageDiffViewer = lazy(() => import('./ImageDiffViewer'))
 
@@ -158,6 +159,7 @@ export function DiffSectionItem({
     }
 
     modifiedEditorsRef.current.set(index, modifiedEditor)
+    registerContextAwareCommentToggle(modifiedEditor, monaco, section.path)
     modifiedEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
       handleSectionSaveRef.current(index)
     )

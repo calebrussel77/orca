@@ -18,6 +18,7 @@ import { buildCodeFontFamily } from '@/lib/font-family'
 import { useContextualCopySetup } from './useContextualCopySetup'
 import { computeMonacoRevealRange } from './monaco-reveal-range'
 import { syncMonacoModelLanguage } from './monaco-language'
+import { registerContextAwareCommentToggle } from './context-aware-comment-toggle'
 
 type MonacoEditorProps = {
   filePath: string
@@ -138,6 +139,7 @@ export default function MonacoEditor({
       monacoRef.current = monaco
 
       syncMonacoModelLanguage(editorInstance, monaco, language)
+      registerContextAwareCommentToggle(editorInstance, monaco, filePath)
 
       setupCopy(editorInstance, monaco, filePath, propsRef)
 
@@ -223,7 +225,7 @@ export default function MonacoEditor({
         }
       }
     },
-    [queueReveal, setupCopy, filePath, setEditorCursorLine]
+    [queueReveal, setupCopy, filePath, language, setEditorCursorLine]
   )
 
   const handleChange = useCallback(
