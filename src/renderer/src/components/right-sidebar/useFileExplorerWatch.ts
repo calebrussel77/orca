@@ -5,7 +5,6 @@ import type { DirCache } from './file-explorer-types'
 import type { InlineInput } from './FileExplorerRow'
 import { normalizeAbsolutePath } from './file-explorer-paths'
 import { dirname } from '@/lib/path'
-import { getConnectionId } from '@/lib/connection-context'
 import {
   purgeDirCacheSubtree,
   purgeExpandedDirsSubtree,
@@ -76,21 +75,15 @@ export function useFileExplorerWatch({
   const deferredRef = useRef<FsChangedPayload[]>([])
 
   // ── Subscribe, process events, and unsubscribe in one atomic effect ──
-  // Why: merging the subscribe/unsubscribe effect and the event-processing
-  // effect into a single useEffect eliminates a race where events from a
-  // new watcher could be lost during rapid worktree switches. When they were
-  // separate effects with the same `worktreePath` dependency, React could
-  // run the event-listener cleanup before the unsubscribe cleanup, creating
-  // a window where events arrive with no handler (review issue §3).
+  // Why: the global FilesystemWatchController owns watchWorktree/unwatchWorktree
+  // so editor freshness does not depend on the Explorer being mounted. This
+  // hook now only consumes the shared fs:changed stream for tree reconciliation.
   useEffect(() => {
     if (!worktreePath) {
       return
     }
 
     const currentWorktreePath = worktreePath
-
-    const connectionId = getConnectionId(activeWorktreeId ?? null) ?? undefined
-    void window.api.fs.watchWorktree({ worktreePath, connectionId })
 
     function processPayload(payload: FsChangedPayload): void {
       // Why: during rapid worktree switches, in-flight batched events from
@@ -211,7 +204,6 @@ export function useFileExplorerWatch({
 
     return () => {
       unsubscribeListener()
-      void window.api.fs.unwatchWorktree({ worktreePath, connectionId })
       deferredRef.current = []
     }
   }, [worktreePath, activeWorktreeId, setDirCache, setSelectedPath])

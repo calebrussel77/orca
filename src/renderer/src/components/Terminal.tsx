@@ -25,6 +25,7 @@ import {
 } from './editor/editor-autosave'
 import { isUpdaterQuitAndInstallInProgress } from '@/lib/updater-beforeunload'
 import EditorAutosaveController from './editor/EditorAutosaveController'
+import FilesystemWatchController from './FilesystemWatchController'
 import BrowserPane, { destroyPersistentWebview } from './browser-pane/BrowserPane'
 import { reconcileTabOrder } from './tab-bar/reconcile-order'
 
@@ -773,6 +774,7 @@ function Terminal(): React.JSX.Element | null {
       className={`flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden${activeWorktreeId ? '' : ' hidden'}`}
     >
       <EditorAutosaveController />
+      <FilesystemWatchController />
 
       {/* Why: the tab bar is rendered into the titlebar via a portal so it
           shares the same visual row as the "Orca" title. The portal target
