@@ -31,6 +31,8 @@ function createSettings(overrides: Partial<GlobalSettings> = {}): GlobalSettings
     branchPrefix: 'git-username',
     branchPrefixCustom: '',
     theme: 'system',
+    appFontSize: 16,
+    appFontFamily: 'Geist',
     editorAutoSave: false,
     editorAutoSaveDelayMs: 1000,
     terminalFontSize: 14,

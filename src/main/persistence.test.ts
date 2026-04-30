@@ -72,6 +72,8 @@ describe('Store', () => {
     expect(settings.branchPrefix).toBe('git-username')
     expect(settings.refreshLocalBaseRefOnWorktreeCreate).toBe(false)
     expect(settings.theme).toBe('system')
+    expect(settings.appFontSize).toBe(16)
+    expect(settings.appFontFamily).toBe('Geist')
     expect(settings.editorAutoSave).toBe(false)
     expect(settings.editorAutoSaveDelayMs).toBe(1000)
     expect(settings.terminalFontSize).toBe(14)
@@ -144,6 +146,8 @@ describe('Store', () => {
     expect(store.getSettings().editorAutoSave).toBe(false)
     expect(store.getSettings().editorAutoSaveDelayMs).toBe(1000)
     expect(store.getSettings().refreshLocalBaseRefOnWorktreeCreate).toBe(false)
+    expect(store.getSettings().appFontSize).toBe(16)
+    expect(store.getSettings().appFontFamily).toBe('Geist')
     expect(store.getSettings().rightSidebarOpenByDefault).toBe(true)
     expect(store.getSettings().showTaskProviderIcons).toBe(true)
     // repos should be loaded
@@ -280,12 +284,16 @@ describe('Store', () => {
 
     const updated = store.updateSettings({
       theme: 'dark',
+      appFontSize: 18,
+      appFontFamily: 'Inter',
       editorAutoSave: true,
       editorAutoSaveDelayMs: 1500,
       terminalFontSize: 16,
       terminalFontWeight: 600
     })
     expect(updated.theme).toBe('dark')
+    expect(updated.appFontSize).toBe(18)
+    expect(updated.appFontFamily).toBe('Inter')
     expect(updated.editorAutoSave).toBe(true)
     expect(updated.editorAutoSaveDelayMs).toBe(1500)
     expect(updated.terminalFontSize).toBe(16)

@@ -43,6 +43,10 @@ function defaultTerminalFontFamily(): string {
   }
   return 'SF Mono' // macOS default
 }
+
+function defaultAppFontFamily(): string {
+  return 'Geist'
+}
 /**
  * Why: ProseMirror builds an in-memory tree for the entire document, so large
  * markdown files cause noticeable typing lag in the rich editor. Files above
@@ -119,6 +123,8 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     branchPrefixCustom: '',
     enableGitHubAttribution: false,
     theme: 'system',
+    appFontSize: 16,
+    appFontFamily: defaultAppFontFamily(),
     editorAutoSave: false,
     editorAutoSaveDelayMs: DEFAULT_EDITOR_AUTO_SAVE_DELAY_MS,
     terminalFontSize: 14,

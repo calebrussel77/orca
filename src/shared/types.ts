@@ -850,6 +850,8 @@ export type GlobalSettings = {
   branchPrefixCustom: string
   enableGitHubAttribution: boolean
   theme: 'system' | 'dark' | 'light'
+  appFontSize: number
+  appFontFamily: string
   editorAutoSave: boolean
   editorAutoSaveDelayMs: number
   terminalFontSize: number

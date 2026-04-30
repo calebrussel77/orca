@@ -37,6 +37,7 @@ import { registerUpdaterBeforeUnloadBypass } from './lib/updater-beforeunload'
 import { buildWorkspaceSessionPayload } from './lib/workspace-session'
 import { countWorkingAgents, getWorkingAgentsPerWorktree } from './lib/agent-status'
 import { activateAndRevealWorktree } from './lib/worktree-activation'
+import { buildAppFontFamily, buildCodeFontFamily } from './lib/font-family'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { findWorktreeById, getRepoIdFromWorktreeId } from '@/store/slices/worktree-helpers'
 import {
@@ -496,6 +497,27 @@ function App(): React.JSX.Element {
       mq.addEventListener('change', handler)
       return () => mq.removeEventListener('change', handler)
     }
+  }, [settings])
+
+  useEffect(() => {
+    if (!settings) {
+      return
+    }
+
+    const root = document.documentElement
+    // Why: rem-based Tailwind sizes read from the html font size, so updating
+    // the root variable lets Orca scale regular app text without also forcing
+    // Monaco/xterm/markdown surfaces to share that same sizing.
+    root.style.setProperty('--app-font-size', `${settings.appFontSize}px`)
+    // Why: Settings copy and most app UI text use Tailwind rem utilities
+    // (`text-sm`, `text-xs`, etc.). Setting html.fontSize directly guarantees
+    // those utilities recompute from the chosen app font size immediately.
+    root.style.fontSize = `${settings.appFontSize}px`
+    root.style.setProperty('--app-font-family', buildAppFontFamily(settings.appFontFamily))
+    root.style.setProperty('--font-sans', buildAppFontFamily(settings.appFontFamily))
+    root.style.setProperty('--code-font-size', `${settings.terminalFontSize}px`)
+    root.style.setProperty('--code-font-family', buildCodeFontFamily(settings.terminalFontFamily))
+    root.style.setProperty('--font-mono', buildCodeFontFamily(settings.terminalFontFamily))
   }, [settings])
 
   // Refresh GitHub data (PR/issue status) when window regains focus
