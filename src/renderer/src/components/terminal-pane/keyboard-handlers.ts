@@ -2,7 +2,8 @@ import { useEffect } from 'react'
 import type { PaneManager } from '@/lib/pane-manager/pane-manager'
 import type { PtyTransport } from './pty-transport'
 import { resolveTerminalShortcutAction } from './terminal-shortcut-policy'
-import { isWindowsUserAgent } from './pane-helpers'
+import type { MacOptionAsAlt } from './terminal-shortcut-policy'
+import { resolveSplitCwd, type PaneCwdMap } from './resolve-split-cwd'
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -66,6 +67,9 @@ type KeyboardHandlersDeps = {
   isActive: boolean
   managerRef: React.RefObject<PaneManager | null>
   paneTransportsRef: React.RefObject<Map<number, PtyTransport>>
+  paneCwdRef: React.RefObject<PaneCwdMap>
+  /** Worktree-root cwd used when OSC 7 and pty.getCwd both fail. */
+  fallbackCwd: string
   expandedPaneIdRef: React.RefObject<number | null>
   setExpandedPane: (paneId: number | null) => void
   restoreExpandedLayout: () => void
@@ -76,12 +80,15 @@ type KeyboardHandlersDeps = {
   onRequestClosePane: (paneId: number) => void
   searchOpenRef: React.RefObject<boolean>
   searchStateRef: React.RefObject<SearchState>
+  macOptionAsAltRef: React.RefObject<MacOptionAsAlt>
 }
 
 export function useTerminalKeyboardShortcuts({
   isActive,
   managerRef,
   paneTransportsRef,
+  paneCwdRef,
+  fallbackCwd,
   expandedPaneIdRef,
   setExpandedPane,
   restoreExpandedLayout,
@@ -91,16 +98,32 @@ export function useTerminalKeyboardShortcuts({
   setSearchOpen,
   onRequestClosePane,
   searchOpenRef,
-  searchStateRef
+  searchStateRef,
+  macOptionAsAltRef
 }: KeyboardHandlersDeps): void {
   useEffect(() => {
     if (!isActive) {
       return
     }
 
-    const userAgent = navigator.userAgent
-    const isMac = userAgent.includes('Mac')
-    const isWindows = isWindowsUserAgent(userAgent)
+    const isMac = navigator.userAgent.includes('Mac')
+
+    // Why: KeyboardEvent.location on a character key (e.g. Period) always
+    // reports that key's own position (0 = standard), not which modifier is
+    // held. To distinguish left vs right Option, we record the Option key's
+    // location from its own keydown event and clear it on keyup.
+    let optionKeyLocation = 0
+    const onModifierDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Alt') {
+        optionKeyLocation = e.location
+      }
+    }
+    const onModifierUp = (e: KeyboardEvent): void => {
+      if (e.key === 'Alt') {
+        optionKeyLocation = 0
+      }
+    }
+
     const onKeyDown = (e: KeyboardEvent): void => {
       const manager = managerRef.current
       if (!manager) {
@@ -136,7 +159,12 @@ export function useTerminalKeyboardShortcuts({
         return
       }
 
-      const action = resolveTerminalShortcutAction(e, isMac, isWindows)
+      const action = resolveTerminalShortcutAction(
+        e,
+        isMac,
+        macOptionAsAltRef.current,
+        optionKeyLocation
+      )
       if (!action) {
         return
       }
@@ -156,9 +184,8 @@ export function useTerminalKeyboardShortcuts({
         return
       }
 
-      // Cmd/Ctrl+Shift+C copies terminal selection everywhere, and on Windows
-      // Ctrl+C also copies when a selection is active. Returning early when the
-      // selection is empty keeps Ctrl+C available for SIGINT in the shell.
+      // Cmd/Ctrl+Shift+C copies terminal selection via Electron clipboard.
+      // This ensures Linux terminal copy works consistently.
       if (action.type === 'copySelection') {
         const pane = manager.getActivePane() ?? manager.getPanes()[0]
         if (!pane) {
@@ -272,18 +299,44 @@ export function useTerminalKeyboardShortcuts({
         if (!pane) {
           return
         }
-        manager.splitPane(pane.id, action.direction)
+        // Split-pane CWD inheritance (docs/ssh-split-pane-inherit-cwd.md):
+        // if we have a confirmed live OSC 7 for the source pane, split
+        // synchronously to preserve chaining on rapid Cmd+D. Otherwise fall
+        // back to an async resolve that queries pty.getCwd.
+        const cached = paneCwdRef.current.get(pane.id)
+        if (cached?.confirmed && cached.cwd) {
+          manager.splitPane(pane.id, action.direction, { cwd: cached.cwd })
+          return
+        }
+        const ptyId = paneTransportsRef.current.get(pane.id)?.getPtyId() ?? null
+        const paneIdAtDispatch = pane.id
+        const directionAtDispatch = action.direction
+        void (async () => {
+          const cwd = await resolveSplitCwd({
+            paneCwdMap: paneCwdRef.current,
+            sourcePaneId: paneIdAtDispatch,
+            sourcePtyId: ptyId,
+            fallbackCwd
+          })
+          managerRef.current?.splitPane(paneIdAtDispatch, directionAtDispatch, { cwd })
+        })()
       }
     }
 
+    window.addEventListener('keydown', onModifierDown, { capture: true })
+    window.addEventListener('keyup', onModifierUp, { capture: true })
     window.addEventListener('keydown', onKeyDown, { capture: true })
     return () => {
+      window.removeEventListener('keydown', onModifierDown, { capture: true })
+      window.removeEventListener('keyup', onModifierUp, { capture: true })
       window.removeEventListener('keydown', onKeyDown, { capture: true })
     }
   }, [
     isActive,
     managerRef,
     paneTransportsRef,
+    paneCwdRef,
+    fallbackCwd,
     expandedPaneIdRef,
     setExpandedPane,
     restoreExpandedLayout,
@@ -293,6 +346,7 @@ export function useTerminalKeyboardShortcuts({
     setSearchOpen,
     onRequestClosePane,
     searchOpenRef,
-    searchStateRef
+    searchStateRef,
+    macOptionAsAltRef
   ])
 }

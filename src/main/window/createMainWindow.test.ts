@@ -9,9 +9,13 @@ const { browserWindowMock, openExternalMock, attachGuestPoliciesMock, isMock } =
 }))
 
 vi.mock('electron', () => ({
+  app: { on: vi.fn(), removeListener: vi.fn() },
   BrowserWindow: browserWindowMock,
-  ipcMain: { on: vi.fn(), handle: vi.fn(), removeListener: vi.fn(), removeHandler: vi.fn() },
+  ipcMain: { on: vi.fn(), removeListener: vi.fn() },
   nativeTheme: { shouldUseDarkColors: false },
+  screen: {
+    getPrimaryDisplay: () => ({ workAreaSize: { width: 1440, height: 900 } })
+  },
   shell: { openExternal: openExternalMock }
 }))
 
@@ -43,9 +47,8 @@ describe('createMainWindow', () => {
     attachGuestPoliciesMock.mockReset()
     isMock.dev = false
     vi.mocked(ipcMain.on).mockReset()
-    vi.mocked(ipcMain.handle).mockReset()
     vi.mocked(ipcMain.removeListener).mockReset()
-    vi.mocked(ipcMain.removeHandler).mockReset()
+    vi.useRealTimers()
   })
 
   it('enables renderer sandboxing and opens external links safely', () => {
@@ -86,14 +89,17 @@ describe('createMainWindow', () => {
 
     expect(browserWindowMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        ...(process.platform === 'win32'
-          ? { frame: false, titleBarStyle: 'hidden' }
-          : process.platform === 'darwin'
-            ? { titleBarStyle: 'hiddenInset' }
-            : {}),
         webPreferences: expect.objectContaining({ sandbox: true })
       })
     )
+    const browserWindowOptions = browserWindowMock.mock.calls[0]?.[0]
+    if (process.platform === 'darwin') {
+      expect(browserWindowOptions).toMatchObject({
+        titleBarStyle: 'hiddenInset'
+      })
+    } else {
+      expect(browserWindowOptions.titleBarStyle).toBeUndefined()
+    }
 
     expect(windowHandlers.windowOpen({ url: 'https://example.com' })).toEqual({ action: 'deny' })
     expect(windowHandlers.windowOpen({ url: 'localhost:3000' })).toEqual({ action: 'deny' })
@@ -495,12 +501,346 @@ describe('createMainWindow', () => {
     expect(browserWindowInstance.setWindowButtonPosition).not.toHaveBeenCalled()
   })
 
-  it('registers custom window control IPC handlers and reports current window state', async () => {
+  it('intercepts Cmd+B for sidebar when the markdown editor is not focused', () => {
     const windowHandlers: Record<string, (...args: any[]) => void> = {}
     const webContents = {
       on: vi.fn((event, handler) => {
         windowHandlers[event] = handler
       }),
+      setZoomLevel: vi.fn(),
+      setBackgroundThrottling: vi.fn(),
+      invalidate: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      send: vi.fn(),
+      isDevToolsOpened: vi.fn(),
+      openDevTools: vi.fn(),
+      closeDevTools: vi.fn()
+    }
+    const browserWindowInstance = {
+      webContents,
+      on: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+      isMaximized: vi.fn(() => true),
+      isFullScreen: vi.fn(() => false),
+      getSize: vi.fn(() => [1200, 800]),
+      setSize: vi.fn(),
+      maximize: vi.fn(),
+      show: vi.fn(),
+      loadFile: vi.fn(),
+      loadURL: vi.fn()
+    }
+    browserWindowMock.mockImplementation(function () {
+      return browserWindowInstance
+    })
+
+    createMainWindow(null)
+
+    const preventDefault = vi.fn()
+    const isDarwin = process.platform === 'darwin'
+    windowHandlers['before-input-event'](
+      { preventDefault } as never,
+      {
+        type: 'keyDown',
+        code: 'KeyB',
+        key: 'b',
+        meta: isDarwin,
+        control: !isDarwin,
+        alt: false,
+        shift: false
+      } as never
+    )
+
+    expect(preventDefault).toHaveBeenCalledTimes(1)
+    expect(webContents.send).toHaveBeenCalledWith('ui:toggleLeftSidebar')
+  })
+
+  it('skips Cmd+B interception when the markdown editor is focused', () => {
+    const windowHandlers: Record<string, (...args: any[]) => void> = {}
+    const webContents = {
+      on: vi.fn((event, handler) => {
+        windowHandlers[event] = handler
+      }),
+      setZoomLevel: vi.fn(),
+      setBackgroundThrottling: vi.fn(),
+      invalidate: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      send: vi.fn(),
+      isDevToolsOpened: vi.fn(),
+      openDevTools: vi.fn(),
+      closeDevTools: vi.fn()
+    }
+    const browserWindowInstance = {
+      webContents,
+      on: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+      isMaximized: vi.fn(() => true),
+      isFullScreen: vi.fn(() => false),
+      getSize: vi.fn(() => [1200, 800]),
+      setSize: vi.fn(),
+      maximize: vi.fn(),
+      show: vi.fn(),
+      loadFile: vi.fn(),
+      loadURL: vi.fn()
+    }
+    browserWindowMock.mockImplementation(function () {
+      return browserWindowInstance
+    })
+
+    createMainWindow(null)
+
+    const setFocusedListener = vi
+      .mocked(ipcMain.on)
+      .mock.calls.find(([channel]) => channel === 'ui:setMarkdownEditorFocused')?.[1]
+    expect(setFocusedListener).toBeTypeOf('function')
+    setFocusedListener?.({ sender: webContents } as never, true)
+
+    const preventDefault = vi.fn()
+    const isDarwin = process.platform === 'darwin'
+    windowHandlers['before-input-event'](
+      { preventDefault } as never,
+      {
+        type: 'keyDown',
+        code: 'KeyB',
+        key: 'b',
+        meta: isDarwin,
+        control: !isDarwin,
+        alt: false,
+        shift: false
+      } as never
+    )
+
+    expect(preventDefault).not.toHaveBeenCalled()
+    expect(webContents.send).not.toHaveBeenCalledWith('ui:toggleLeftSidebar')
+  })
+
+  it('still intercepts Cmd+Shift+B and Cmd+Alt+B when the markdown editor is focused', () => {
+    const windowHandlers: Record<string, (...args: any[]) => void> = {}
+    const webContents = {
+      on: vi.fn((event, handler) => {
+        windowHandlers[event] = handler
+      }),
+      setZoomLevel: vi.fn(),
+      setBackgroundThrottling: vi.fn(),
+      invalidate: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      send: vi.fn(),
+      isDevToolsOpened: vi.fn(),
+      openDevTools: vi.fn(),
+      closeDevTools: vi.fn()
+    }
+    const browserWindowInstance = {
+      webContents,
+      on: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+      isMaximized: vi.fn(() => true),
+      isFullScreen: vi.fn(() => false),
+      getSize: vi.fn(() => [1200, 800]),
+      setSize: vi.fn(),
+      maximize: vi.fn(),
+      show: vi.fn(),
+      loadFile: vi.fn(),
+      loadURL: vi.fn()
+    }
+    browserWindowMock.mockImplementation(function () {
+      return browserWindowInstance
+    })
+
+    createMainWindow(null)
+
+    const setFocusedListener = vi
+      .mocked(ipcMain.on)
+      .mock.calls.find(([channel]) => channel === 'ui:setMarkdownEditorFocused')?.[1]
+    setFocusedListener?.({ sender: webContents } as never, true)
+
+    const isDarwin = process.platform === 'darwin'
+
+    // Cmd+Shift+B is not in the policy allowlist, so no action resolves and no
+    // preventDefault fires — but the carve-out must not be what lets it through.
+    const shiftPreventDefault = vi.fn()
+    windowHandlers['before-input-event'](
+      { preventDefault: shiftPreventDefault } as never,
+      {
+        type: 'keyDown',
+        code: 'KeyB',
+        key: 'B',
+        meta: isDarwin,
+        control: !isDarwin,
+        alt: false,
+        shift: true
+      } as never
+    )
+    expect(shiftPreventDefault).not.toHaveBeenCalled()
+
+    // Cmd+Alt+B is not a modifier chord in the policy (alt excluded), so the
+    // policy returns null and no preventDefault fires. Assert the carve-out
+    // is not what's short-circuiting this — it requires !alt.
+    const altPreventDefault = vi.fn()
+    windowHandlers['before-input-event'](
+      { preventDefault: altPreventDefault } as never,
+      {
+        type: 'keyDown',
+        code: 'KeyB',
+        key: 'b',
+        meta: isDarwin,
+        control: !isDarwin,
+        alt: true,
+        shift: false
+      } as never
+    )
+    expect(altPreventDefault).not.toHaveBeenCalled()
+  })
+
+  it('coerces non-boolean setMarkdownEditorFocused payloads to false', () => {
+    const windowHandlers: Record<string, (...args: any[]) => void> = {}
+    const webContents = {
+      on: vi.fn((event, handler) => {
+        windowHandlers[event] = handler
+      }),
+      setZoomLevel: vi.fn(),
+      setBackgroundThrottling: vi.fn(),
+      invalidate: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      send: vi.fn(),
+      isDevToolsOpened: vi.fn(),
+      openDevTools: vi.fn(),
+      closeDevTools: vi.fn()
+    }
+    const browserWindowInstance = {
+      webContents,
+      on: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+      isMaximized: vi.fn(() => true),
+      isFullScreen: vi.fn(() => false),
+      getSize: vi.fn(() => [1200, 800]),
+      setSize: vi.fn(),
+      maximize: vi.fn(),
+      show: vi.fn(),
+      loadFile: vi.fn(),
+      loadURL: vi.fn()
+    }
+    browserWindowMock.mockImplementation(function () {
+      return browserWindowInstance
+    })
+
+    createMainWindow(null)
+
+    const setFocusedListener = vi
+      .mocked(ipcMain.on)
+      .mock.calls.find(([channel]) => channel === 'ui:setMarkdownEditorFocused')?.[1]
+
+    // Seed to true with a legitimate payload, then send a non-boolean and
+    // assert the flag returns to false by checking Cmd+B resumes interception.
+    setFocusedListener?.({ sender: webContents } as never, true)
+    setFocusedListener?.({ sender: webContents } as never, { malicious: true } as never)
+
+    const preventDefault = vi.fn()
+    const isDarwin = process.platform === 'darwin'
+    windowHandlers['before-input-event'](
+      { preventDefault } as never,
+      {
+        type: 'keyDown',
+        code: 'KeyB',
+        key: 'b',
+        meta: isDarwin,
+        control: !isDarwin,
+        alt: false,
+        shift: false
+      } as never
+    )
+
+    expect(preventDefault).toHaveBeenCalledTimes(1)
+    expect(webContents.send).toHaveBeenCalledWith('ui:toggleLeftSidebar')
+  })
+
+  it('resets the markdown editor focus flag on renderer crash, navigation, and destroy', () => {
+    const windowHandlers: Record<string, (...args: any[]) => void> = {}
+    const webContents = {
+      on: vi.fn((event, handler) => {
+        windowHandlers[event] = handler
+      }),
+      setZoomLevel: vi.fn(),
+      setBackgroundThrottling: vi.fn(),
+      invalidate: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      send: vi.fn(),
+      isDevToolsOpened: vi.fn(),
+      openDevTools: vi.fn(),
+      closeDevTools: vi.fn()
+    }
+    const browserWindowInstance = {
+      webContents,
+      on: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+      isMaximized: vi.fn(() => true),
+      isFullScreen: vi.fn(() => false),
+      getSize: vi.fn(() => [1200, 800]),
+      setSize: vi.fn(),
+      maximize: vi.fn(),
+      show: vi.fn(),
+      loadFile: vi.fn(),
+      loadURL: vi.fn()
+    }
+    browserWindowMock.mockImplementation(function () {
+      return browserWindowInstance
+    })
+
+    createMainWindow(null)
+
+    const setFocusedListener = vi
+      .mocked(ipcMain.on)
+      .mock.calls.find(([channel]) => channel === 'ui:setMarkdownEditorFocused')?.[1]
+    const isDarwin = process.platform === 'darwin'
+
+    const cmdBInput = {
+      type: 'keyDown',
+      code: 'KeyB',
+      key: 'b',
+      meta: isDarwin,
+      control: !isDarwin,
+      alt: false,
+      shift: false
+    } as never
+
+    const assertInterceptsAfterReset = (): void => {
+      webContents.send.mockClear()
+      const preventDefault = vi.fn()
+      windowHandlers['before-input-event']({ preventDefault } as never, cmdBInput)
+      expect(preventDefault).toHaveBeenCalledTimes(1)
+      expect(webContents.send).toHaveBeenCalledWith('ui:toggleLeftSidebar')
+    }
+
+    // render-process-gone
+    setFocusedListener?.({ sender: webContents } as never, true)
+    windowHandlers['render-process-gone']?.()
+    assertInterceptsAfterReset()
+
+    // did-start-navigation (main frame)
+    setFocusedListener?.({ sender: webContents } as never, true)
+    windowHandlers['did-start-navigation']?.({} as never, 'https://example.com/', false, true)
+    assertInterceptsAfterReset()
+
+    // did-start-navigation (sub-frame) should NOT reset the flag
+    setFocusedListener?.({ sender: webContents } as never, true)
+    windowHandlers['did-start-navigation']?.({} as never, 'https://example.com/', false, false)
+    webContents.send.mockClear()
+    const subframePreventDefault = vi.fn()
+    windowHandlers['before-input-event'](
+      { preventDefault: subframePreventDefault } as never,
+      cmdBInput
+    )
+    expect(subframePreventDefault).not.toHaveBeenCalled()
+    expect(webContents.send).not.toHaveBeenCalledWith('ui:toggleLeftSidebar')
+
+    // destroyed
+    setFocusedListener?.({ sender: webContents } as never, true)
+    windowHandlers['destroyed']?.()
+    assertInterceptsAfterReset()
+  })
+
+  it('ignores duplicate ready-to-show events after startup maximize has already run', () => {
+    const windowHandlers: Record<string, (...args: any[]) => void> = {}
+    const webContents = {
+      on: vi.fn(),
       setZoomLevel: vi.fn(),
       setBackgroundThrottling: vi.fn(),
       invalidate: vi.fn(),
@@ -517,11 +857,9 @@ describe('createMainWindow', () => {
       isFullScreen: vi.fn(() => false),
       getSize: vi.fn(() => [1200, 800]),
       setSize: vi.fn(),
-      minimize: vi.fn(),
+      setWindowButtonPosition: vi.fn(),
       maximize: vi.fn(),
-      unmaximize: vi.fn(),
       show: vi.fn(),
-      close: vi.fn(),
       loadFile: vi.fn(),
       loadURL: vi.fn()
     }
@@ -529,40 +867,19 @@ describe('createMainWindow', () => {
       return browserWindowInstance
     })
 
-    createMainWindow(null)
+    createMainWindow({
+      getUI: () =>
+        ({
+          windowMaximized: true
+        }) as never,
+      getSettings: () => ({ windowBackgroundBlur: false }) as never,
+      updateUI: vi.fn()
+    } as never)
 
-    const minimizeListener = vi
-      .mocked(ipcMain.on)
-      .mock.calls.find(([channel]) => channel === 'window:minimize')?.[1]
-    const toggleMaximizeListener = vi
-      .mocked(ipcMain.on)
-      .mock.calls.find(([channel]) => channel === 'window:toggle-maximize')?.[1]
-    const closeListener = vi
-      .mocked(ipcMain.on)
-      .mock.calls.find(([channel]) => channel === 'window:close')?.[1]
-    const stateHandler = vi
-      .mocked(ipcMain.handle)
-      .mock.calls.find(([channel]) => channel === 'window:get-state')?.[1]
+    windowHandlers['ready-to-show']()
+    windowHandlers['ready-to-show']()
 
-    expect(minimizeListener).toBeTypeOf('function')
-    expect(toggleMaximizeListener).toBeTypeOf('function')
-    expect(closeListener).toBeTypeOf('function')
-    expect(stateHandler).toBeTypeOf('function')
-
-    minimizeListener?.({} as never)
-    expect(browserWindowInstance.minimize).toHaveBeenCalledTimes(1)
-
-    toggleMaximizeListener?.({} as never)
     expect(browserWindowInstance.maximize).toHaveBeenCalledTimes(1)
-
-    browserWindowInstance.isMaximized.mockReturnValue(true)
-    toggleMaximizeListener?.({} as never)
-    expect(browserWindowInstance.unmaximize).toHaveBeenCalledTimes(1)
-
-    closeListener?.({} as never)
-    expect(browserWindowInstance.close).toHaveBeenCalledTimes(1)
-
-    const state = await stateHandler?.({} as never)
-    expect(state).toEqual({ isFullScreen: false, isMaximized: true })
+    expect(browserWindowInstance.show).toHaveBeenCalledTimes(1)
   })
 })

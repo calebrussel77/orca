@@ -2,7 +2,7 @@
    splitting individual settings into separate files would scatter related controls without a
    meaningful abstraction boundary. Mirrors the same decision made for GeneralPane.tsx. */
 import { useState } from 'react'
-import type { GlobalSettings } from '../../../../shared/types'
+import type { GlobalSettings, SetupScriptLaunchMode } from '../../../../shared/types'
 import {
   DEFAULT_TERMINAL_FONT_WEIGHT,
   TERMINAL_FONT_WEIGHT_MAX,
@@ -10,6 +10,10 @@ import {
   TERMINAL_FONT_WEIGHT_STEP,
   normalizeTerminalFontWeight
 } from '../../../../shared/terminal-fonts'
+import {
+  fontFamilyHasKnownLigatures,
+  resolveTerminalLigaturesEnabled
+} from '../../../../shared/terminal-ligatures'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -21,40 +25,60 @@ import {
   resolveEffectiveTerminalAppearance,
   resolvePaneStyleOptions
 } from '@/lib/terminal-theme'
-import { NumberField } from './SettingsFormControls'
+import { NumberField, FontAutocomplete } from './SettingsFormControls'
 import { SCROLLBACK_PRESETS_MB } from './SettingsConstants'
 import { SearchableSetting } from './SearchableSetting'
 import { matchesSettingsSearch } from './settings-search'
 import { useAppStore } from '../../store'
-import { isWindowsUserAgent } from '@/components/terminal-pane/pane-helpers'
+import { isMacUserAgent, isWindowsUserAgent } from '@/components/terminal-pane/pane-helpers'
 import {
   TERMINAL_ADVANCED_SEARCH_ENTRIES,
   TERMINAL_CURSOR_SEARCH_ENTRIES,
   TERMINAL_DARK_THEME_SEARCH_ENTRIES,
   TERMINAL_LIGHT_THEME_SEARCH_ENTRIES,
+  TERMINAL_MAC_OPTION_SEARCH_ENTRIES,
   TERMINAL_PANE_STYLE_SEARCH_ENTRIES,
   TERMINAL_RIGHT_CLICK_TO_PASTE_SEARCH_ENTRY,
-  TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES
+  TERMINAL_SETUP_SCRIPT_SEARCH_ENTRIES,
+  TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES,
+  TERMINAL_WINDOW_SEARCH_ENTRIES,
+  TERMINAL_WINDOWS_SHELL_SEARCH_ENTRY
 } from './terminal-search'
+import { useDetectedOptionAsAlt } from '@/lib/keyboard-layout/use-effective-mac-option-as-alt'
+import { detectedCategoryToDefault } from '@/lib/keyboard-layout/detect-option-as-alt'
 import { DarkTerminalThemeSection, LightTerminalThemeSection } from './TerminalThemeSections'
+import { TerminalWindowSection } from './TerminalWindowSection'
+import { GhosttyImportModal } from './GhosttyImportModal'
+import type { UseGhosttyImportReturn } from './useGhosttyImport'
 
 type TerminalPaneProps = {
   settings: GlobalSettings
   updateSettings: (updates: Partial<GlobalSettings>) => void
   systemPrefersDark: boolean
+  terminalFontSuggestions: string[]
   scrollbackMode: 'preset' | 'custom'
   setScrollbackMode: (mode: 'preset' | 'custom') => void
+  /** Ghostty import modal state + handlers. Lifted to the Settings shell so
+   *  the section header can render the trigger button as a headerAction
+   *  instead of taking its own row inside the settings list. */
+  ghostty: UseGhosttyImportReturn
+  /** Whether WSL is installed on this Windows machine. */
+  wslAvailable?: boolean
 }
 
 export function TerminalPane({
   settings,
   updateSettings,
   systemPrefersDark,
+  terminalFontSuggestions,
   scrollbackMode,
-  setScrollbackMode
+  setScrollbackMode,
+  ghostty,
+  wslAvailable
 }: TerminalPaneProps): React.JSX.Element {
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
   const isWindows = isWindowsUserAgent()
+  const isMac = isMacUserAgent()
   const [themeSearchDark, setThemeSearchDark] = useState('')
   const [themeSearchLight, setThemeSearchLight] = useState('')
 
@@ -67,6 +91,14 @@ export function TerminalPane({
     systemPrefersDark
   )
   const paneStyleOptions = resolvePaneStyleOptions(settings)
+  const detectedLayout = useDetectedOptionAsAlt()
+  const autoDetectedDefault = detectedCategoryToDefault(detectedLayout)
+  const detectedLayoutLabel =
+    detectedLayout === 'us'
+      ? 'US English — Option sends Alt/Esc sequences'
+      : detectedLayout === 'non-us'
+        ? 'non-US layout — Option composes characters like @, €, [, ]'
+        : 'unknown layout — Option composes characters (safe default)'
   const scrollbackMb = Math.max(1, Math.round(settings.terminalScrollbackBytes / 1_000_000))
   const isPreset = SCROLLBACK_PRESETS_MB.includes(
     scrollbackMb as (typeof SCROLLBACK_PRESETS_MB)[number]
@@ -75,19 +107,61 @@ export function TerminalPane({
     scrollbackMode === 'custom' ? 'custom' : isPreset ? `${scrollbackMb}` : 'custom'
 
   const visibleSections = [
+    isWindows && matchesSettingsSearch(searchQuery, TERMINAL_WINDOWS_SHELL_SEARCH_ENTRY) ? (
+      <section key="windows-shell" className="space-y-4">
+        <SearchableSetting
+          title="Default Shell"
+          description="Choose the default shell for new terminal panes on Windows."
+          keywords={[
+            'terminal',
+            'windows',
+            'shell',
+            'powershell',
+            'cmd',
+            'command prompt',
+            'default'
+          ]}
+          className="space-y-2"
+        >
+          <Label>Default Shell</Label>
+          <div className="flex w-fit gap-1 rounded-md border border-border/50 p-1">
+            {[
+              { label: 'PowerShell', value: 'powershell.exe' },
+              { label: 'Command Prompt', value: 'cmd.exe' },
+              ...(wslAvailable ? [{ label: 'WSL', value: 'wsl.exe' }] : [])
+            ].map(({ label, value }) => (
+              <button
+                key={value}
+                onClick={() => updateSettings({ terminalWindowsShell: value })}
+                className={`rounded-sm px-3 py-1 text-sm transition-colors ${
+                  (settings.terminalWindowsShell ?? 'powershell.exe') === value
+                    ? 'bg-accent font-medium text-accent-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Shell used when opening a new terminal pane. Takes effect for new terminals.
+          </p>
+        </SearchableSetting>
+      </section>
+    ) : null,
     matchesSettingsSearch(searchQuery, TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES) ? (
       <section key="typography" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Code & Terminal Typography</h3>
-          <p className="text-sm text-muted-foreground">
-            Shared typography for terminal panes, Monaco editors, diff views, and file previews.
+          <h3 className="text-sm font-semibold">Typography</h3>
+          <p className="text-xs text-muted-foreground">
+            Default terminal typography for new panes and live updates.
           </p>
         </div>
 
         <SearchableSetting
           title="Font Size"
-          description="Shared font size for terminal panes, diff views, and code/file previews."
-          keywords={['terminal', 'typography', 'text size', 'code', 'diff', 'preview', 'editor']}
+          description="Default terminal font size for new panes and live updates."
+          keywords={['terminal', 'typography', 'text size']}
           className="space-y-2"
         >
           <Label>Font Size</Label>
@@ -127,33 +201,28 @@ export function TerminalPane({
             >
               <Plus className="size-3" />
             </Button>
-            <span className="text-sm text-muted-foreground">px</span>
+            <span className="text-xs text-muted-foreground">px</span>
           </div>
         </SearchableSetting>
 
         <SearchableSetting
           title="Font Family"
-          description="Shared font family for terminal panes, diff views, and code/file previews."
-          keywords={['terminal', 'typography', 'font', 'code', 'diff', 'preview', 'editor']}
+          description="Default terminal font family for new panes and live updates."
+          keywords={['terminal', 'typography', 'font']}
           className="space-y-2"
         >
           <Label>Font Family</Label>
-          <Input
+          <FontAutocomplete
             value={settings.terminalFontFamily}
-            onChange={(event) => updateSettings({ terminalFontFamily: event.target.value })}
-            placeholder="SF Mono"
-            className="max-w-sm"
+            suggestions={terminalFontSuggestions}
+            onChange={(value) => updateSettings({ terminalFontFamily: value })}
           />
-          <p className="text-sm text-muted-foreground">
-            Enter any installed font family or CSS stack. Orca uses it for terminal and code
-            surfaces when available on this machine.
-          </p>
         </SearchableSetting>
 
         <SearchableSetting
           title="Font Weight"
           description="Controls the terminal text font weight."
-          keywords={['terminal', 'typography', 'weight', 'code']}
+          keywords={['terminal', 'typography', 'weight']}
         >
           <NumberField
             label="Font Weight"
@@ -171,13 +240,93 @@ export function TerminalPane({
             }
           />
         </SearchableSetting>
+
+        <SearchableSetting
+          title="Line Height"
+          description="Controls the terminal line height multiplier."
+          keywords={['terminal', 'typography', 'line height', 'spacing']}
+        >
+          <NumberField
+            label="Line Height"
+            description="Controls the terminal line height multiplier."
+            value={settings.terminalLineHeight}
+            defaultValue={1}
+            min={1}
+            max={3}
+            step={0.1}
+            suffix="1 to 3"
+            onChange={(value) =>
+              updateSettings({
+                terminalLineHeight: clampNumber(value, 1, 3)
+              })
+            }
+          />
+        </SearchableSetting>
+
+        <SearchableSetting
+          title="Font Ligatures"
+          description='Render programming ligatures (e.g. =>, !=, ===) for fonts that ship them. "Auto" enables ligatures only for known ligature fonts (Fira Code, JetBrains Mono, Cascadia Code, Iosevka, etc.).'
+          keywords={[
+            'terminal',
+            'typography',
+            'ligatures',
+            'ligature',
+            'fira code',
+            'jetbrains mono',
+            'cascadia code',
+            'iosevka',
+            'calt',
+            'font features'
+          ]}
+          className="space-y-2"
+        >
+          <Label>Font Ligatures</Label>
+          <div className="flex w-fit gap-1 rounded-md border border-border/50 p-1">
+            {(['auto', 'on', 'off'] as const).map((option) => (
+              <button
+                key={option}
+                onClick={() => updateSettings({ terminalLigatures: option })}
+                className={`rounded-sm px-3 py-1 text-sm capitalize transition-colors ${
+                  (settings.terminalLigatures ?? 'auto') === option
+                    ? 'bg-accent font-medium text-accent-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {option === 'auto' ? 'Auto' : option === 'on' ? 'On' : 'Off'}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {settings.terminalLigatures === 'on'
+              ? 'Ligatures are always on. Fonts without ligatures simply render as-is.'
+              : settings.terminalLigatures === 'off'
+                ? 'Ligatures are always off, even for fonts that ship them.'
+                : fontFamilyHasKnownLigatures(settings.terminalFontFamily)
+                  ? `Auto — enabled because "${settings.terminalFontFamily}" is a known ligature font. Switch to "Off" to disable.`
+                  : `Auto — disabled because "${
+                      settings.terminalFontFamily || 'the current font'
+                    }" is not a known ligature font. Switch to "On" to enable anyway.`}
+          </p>
+          {/* Why: surface the resolved state explicitly so the "Auto" label
+              isn't ambiguous when a user is staring at it. */}
+          <p className="sr-only" aria-live="polite">
+            Ligatures are currently{' '}
+            {resolveTerminalLigaturesEnabled(
+              settings.terminalLigatures,
+              settings.terminalFontFamily
+            )
+              ? 'enabled'
+              : 'disabled'}
+            .
+          </p>
+        </SearchableSetting>
       </section>
     ) : null,
     matchesSettingsSearch(searchQuery, TERMINAL_CURSOR_SEARCH_ENTRIES) ? (
       <section key="cursor" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Cursor</h3>
-          <p className="text-sm text-muted-foreground">
+          <h3 className="text-sm font-semibold">Cursor</h3>
+          <p className="text-xs text-muted-foreground">
             Default cursor appearance for Orca terminal panes.
           </p>
         </div>
@@ -215,7 +364,7 @@ export function TerminalPane({
           >
             <div className="space-y-0.5">
               <Label>Blinking Cursor</Label>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 Uses the blinking variant of the selected cursor shape.
               </p>
             </div>
@@ -238,6 +387,28 @@ export function TerminalPane({
               />
             </button>
           </SearchableSetting>
+
+          <SearchableSetting
+            title="Cursor Opacity"
+            description="Opacity of the terminal cursor."
+            keywords={['terminal', 'cursor', 'opacity', 'transparency']}
+          >
+            <NumberField
+              label="Cursor Opacity"
+              description="Opacity of the terminal cursor."
+              value={settings.terminalCursorOpacity ?? 1}
+              defaultValue={1}
+              min={0}
+              max={1}
+              step={0.05}
+              suffix="0 to 1"
+              onChange={(value) =>
+                updateSettings({
+                  terminalCursorOpacity: clampNumber(value, 0, 1)
+                })
+              }
+            />
+          </SearchableSetting>
         </div>
       </section>
     ) : null,
@@ -246,8 +417,8 @@ export function TerminalPane({
       matchesSettingsSearch(searchQuery, TERMINAL_RIGHT_CLICK_TO_PASTE_SEARCH_ENTRY)) ? (
       <section key="pane-styling" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Pane Styling</h3>
-          <p className="text-sm text-muted-foreground">
+          <h3 className="text-sm font-semibold">Pane Styling</h3>
+          <p className="text-xs text-muted-foreground">
             Control inactive pane dimming, divider thickness, mouse behavior, and transition timing.
           </p>
         </div>
@@ -310,7 +481,7 @@ export function TerminalPane({
             >
               <div className="space-y-0.5">
                 <Label>Right-click to paste</Label>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   On Windows, right-click pastes the clipboard into the terminal. Use
                   Ctrl+right-click to open the context menu.
                 </p>
@@ -344,7 +515,7 @@ export function TerminalPane({
         >
           <div className="space-y-0.5">
             <Label>Focus Follows Mouse</Label>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Hovering a terminal pane activates it without needing to click. Mirrors Ghostty&apos;s
               focus-follows-mouse setting. Selections and window switching stay safe.
             </p>
@@ -368,7 +539,99 @@ export function TerminalPane({
             />
           </button>
         </SearchableSetting>
+
+        <SearchableSetting
+          title="Copy on Select"
+          description="Automatically copy terminal selections to the clipboard as soon as a selection is made."
+          keywords={[
+            'clipboard',
+            'copy',
+            'select',
+            'selection',
+            'auto',
+            'automatic',
+            'x11',
+            'linux',
+            'gnome',
+            'paste'
+          ]}
+          className="flex items-center justify-between gap-4 px-1 py-2"
+        >
+          <div className="space-y-0.5">
+            <Label>Copy on Select</Label>
+            <p className="text-xs text-muted-foreground">
+              Automatically copy terminal selections to the clipboard as soon as a selection is
+              made.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={settings.terminalClipboardOnSelect}
+            onClick={() =>
+              updateSettings({
+                terminalClipboardOnSelect: !settings.terminalClipboardOnSelect
+              })
+            }
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
+              settings.terminalClipboardOnSelect ? 'bg-foreground' : 'bg-muted-foreground/30'
+            }`}
+          >
+            <span
+              className={`pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform ${
+                settings.terminalClipboardOnSelect ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </SearchableSetting>
+
+        <SearchableSetting
+          title="Allow TUI Clipboard Writes (OSC 52)"
+          description="Let terminal programs like tmux, Neovim, and fzf copy to the system clipboard over the PTY (including over SSH). Off by default because untrusted output piped into the terminal could silently overwrite your clipboard."
+          keywords={[
+            'osc 52',
+            'osc52',
+            'clipboard',
+            'tmux',
+            'neovim',
+            'nvim',
+            'fzf',
+            'ssh',
+            'remote',
+            'copy',
+            'paste'
+          ]}
+          className="flex items-center justify-between gap-4 px-1 py-2"
+        >
+          <div className="space-y-0.5">
+            <Label>Allow TUI Clipboard Writes (OSC 52)</Label>
+            <p className="text-xs text-muted-foreground">
+              Let programs running inside the terminal (tmux, Neovim, fzf, ssh sessions) copy to
+              your system clipboard. Disabled by default for safety.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={settings.terminalAllowOsc52Clipboard}
+            onClick={() =>
+              updateSettings({
+                terminalAllowOsc52Clipboard: !settings.terminalAllowOsc52Clipboard
+              })
+            }
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
+              settings.terminalAllowOsc52Clipboard ? 'bg-foreground' : 'bg-muted-foreground/30'
+            }`}
+          >
+            <span
+              className={`pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform ${
+                settings.terminalAllowOsc52Clipboard ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </SearchableSetting>
       </section>
+    ) : null,
+    matchesSettingsSearch(searchQuery, TERMINAL_WINDOW_SEARCH_ENTRIES) ? (
+      <TerminalWindowSection key="window" settings={settings} updateSettings={updateSettings} />
     ) : null,
     matchesSettingsSearch(searchQuery, TERMINAL_DARK_THEME_SEARCH_ENTRIES) ? (
       <DarkTerminalThemeSection
@@ -393,11 +656,83 @@ export function TerminalPane({
         lightPreviewAppearance={lightPreviewAppearance}
       />
     ) : null,
-    matchesSettingsSearch(searchQuery, TERMINAL_ADVANCED_SEARCH_ENTRIES) ? (
+    matchesSettingsSearch(searchQuery, TERMINAL_SETUP_SCRIPT_SEARCH_ENTRIES) ? (
+      <section key="setup-script" className="space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold">Workspace Setup Script</h3>
+          <p className="text-xs text-muted-foreground">
+            Where the repository setup script runs when a new workspace is created.
+          </p>
+        </div>
+
+        <SearchableSetting
+          title="Setup Script Location"
+          description="Where the repository setup script runs when a new workspace is created."
+          keywords={[
+            'setup',
+            'script',
+            'workspace',
+            'split',
+            'horizontal',
+            'vertical',
+            'tab',
+            'new',
+            'location',
+            'launch'
+          ]}
+          className="space-y-2"
+        >
+          <Label>Setup Script Location</Label>
+          <ToggleGroup
+            type="single"
+            value={settings.setupScriptLaunchMode}
+            onValueChange={(value) => {
+              if (!value) {
+                return
+              }
+              updateSettings({
+                setupScriptLaunchMode: value as SetupScriptLaunchMode
+              })
+            }}
+            variant="outline"
+            size="sm"
+            className="h-8 flex-wrap"
+          >
+            <ToggleGroupItem
+              value="new-tab"
+              className="h-8 px-3 text-xs"
+              aria-label="Run in a new tab"
+            >
+              New Tab
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="split-vertical"
+              className="h-8 px-3 text-xs"
+              aria-label="Split vertically"
+            >
+              Split Vertically
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="split-horizontal"
+              className="h-8 px-3 text-xs"
+              aria-label="Split horizontally"
+            >
+              Split Horizontally
+            </ToggleGroupItem>
+          </ToggleGroup>
+          <p className="text-xs text-muted-foreground">
+            &quot;New Tab&quot; opens the setup command in a background tab titled &quot;Setup&quot;
+            without stealing focus from your main terminal.
+          </p>
+        </SearchableSetting>
+      </section>
+    ) : null,
+    matchesSettingsSearch(searchQuery, TERMINAL_ADVANCED_SEARCH_ENTRIES) ||
+    (isMac && matchesSettingsSearch(searchQuery, TERMINAL_MAC_OPTION_SEARCH_ENTRIES)) ? (
       <section key="advanced" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Advanced</h3>
-          <p className="text-sm text-muted-foreground">
+          <h3 className="text-sm font-semibold">Advanced</h3>
+          <p className="text-xs text-muted-foreground">
             Scrollback is bounded for stability. This setting applies to new terminal panes.
           </p>
         </div>
@@ -434,13 +769,13 @@ export function TerminalPane({
               <ToggleGroupItem
                 key={preset}
                 value={`${preset}`}
-                className="h-8 px-3 text-sm"
+                className="h-8 px-3 text-xs"
                 aria-label={`${preset} megabytes`}
               >
                 {preset} MB
               </ToggleGroupItem>
             ))}
-            <ToggleGroupItem value="custom" className="h-8 px-3 text-sm" aria-label="Custom">
+            <ToggleGroupItem value="custom" className="h-8 px-3 text-xs" aria-label="Custom">
               Custom
             </ToggleGroupItem>
           </ToggleGroup>
@@ -463,6 +798,87 @@ export function TerminalPane({
             />
           ) : null}
         </SearchableSetting>
+
+        <SearchableSetting
+          title="Word Separators"
+          description="Characters treated as word boundaries for double-click selection."
+          keywords={['word', 'separator', 'boundary', 'double-click', 'selection']}
+          className="space-y-2"
+        >
+          <Label>Word Separators</Label>
+          <Input
+            value={settings.terminalWordSeparator ?? ''}
+            onChange={(e) => {
+              const value = e.target.value
+              updateSettings({ terminalWordSeparator: value || undefined })
+            }}
+            placeholder={` ()[]{},'"\``}
+            className="max-w-sm"
+          />
+          <p className="text-xs text-muted-foreground">
+            Characters treated as word boundaries for double-click selection.
+          </p>
+        </SearchableSetting>
+        {isMac ? (
+          <SearchableSetting
+            title="Option as Alt"
+            description="Controls whether the macOS Option key sends Alt/Esc sequences or composes characters. Mirrors Ghostty's macos-option-as-alt."
+            keywords={[
+              'terminal',
+              'option',
+              'alt',
+              'key',
+              'meta',
+              'compose',
+              'mac',
+              'macos',
+              'keyboard',
+              'german',
+              'international',
+              'readline',
+              'ghostty'
+            ]}
+            className="space-y-2"
+          >
+            <Label>Option as Alt</Label>
+            <div className="flex w-fit gap-1 rounded-md border border-border/50 p-1">
+              {(['auto', 'true', 'left', 'right', 'false'] as const).map((option) => (
+                <button
+                  key={option}
+                  onClick={() => updateSettings({ terminalMacOptionAsAlt: option })}
+                  className={`rounded-sm px-3 py-1 text-sm transition-colors ${
+                    settings.terminalMacOptionAsAlt === option
+                      ? 'bg-accent font-medium text-accent-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {option === 'auto'
+                    ? 'Auto'
+                    : option === 'false'
+                      ? 'Off'
+                      : option === 'true'
+                        ? 'Both'
+                        : option === 'left'
+                          ? 'Left'
+                          : 'Right'}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {settings.terminalMacOptionAsAlt === 'auto'
+                ? `Auto — detected: ${detectedLayoutLabel}. ${
+                    autoDetectedDefault === 'true'
+                      ? 'Both Option keys act as Alt, matching macOS power-user readline expectations. Switch to "Off" if you need to type Option-layer characters.'
+                      : 'Option composes your keyboard layout’s special characters (@, €, [, ], etc.). Core readline shortcuts (Option+B/F/D) are handled automatically.'
+                  }`
+                : settings.terminalMacOptionAsAlt === 'false'
+                  ? 'Option composes special characters for your keyboard layout. Core readline shortcuts (Option+B/F/D) are handled automatically.'
+                  : settings.terminalMacOptionAsAlt === 'true'
+                    ? 'Both Option keys send Alt/Esc sequences for full readline and shell support. Special character input via Option is unavailable.'
+                    : `The ${settings.terminalMacOptionAsAlt} Option key sends Alt/Esc sequences; the other composes special characters.`}
+            </p>
+          </SearchableSetting>
+        ) : null}
       </section>
     ) : null
   ].filter(Boolean)
@@ -475,6 +891,15 @@ export function TerminalPane({
           {section}
         </div>
       ))}
+      <GhosttyImportModal
+        open={ghostty.open}
+        onOpenChange={ghostty.handleOpenChange}
+        preview={ghostty.preview}
+        loading={ghostty.loading}
+        onApply={ghostty.handleApply}
+        applied={ghostty.applied}
+        applyError={ghostty.applyError}
+      />
     </div>
   )
 }

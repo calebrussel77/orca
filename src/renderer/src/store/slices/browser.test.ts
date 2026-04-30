@@ -1,9 +1,68 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { createTestStore, makeTabGroup, makeWorktree, seedStore } from './store-test-helpers'
 
 describe('browser slice', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
+  it('places a new tab in the target group when targetGroupId is provided', () => {
+    const store = createTestStore()
+    const worktreeId = 'repo1::/tmp/wt-1'
+    seedStore(store, {
+      activeRepoId: 'repo1',
+      activeWorktreeId: worktreeId,
+      activeTabType: 'terminal',
+      worktreesByRepo: {
+        repo1: [makeWorktree({ id: worktreeId, repoId: 'repo1', path: '/tmp/wt-1' })]
+      },
+      groupsByWorktree: {
+        [worktreeId]: [
+          makeTabGroup({ id: 'terminal-group', worktreeId, activeTabId: null, tabOrder: [] }),
+          makeTabGroup({ id: 'browser-group', worktreeId, activeTabId: null, tabOrder: [] })
+        ]
+      },
+      activeGroupIdByWorktree: { [worktreeId]: 'terminal-group' },
+      browserTabsByWorktree: {},
+      unifiedTabsByWorktree: {}
+    })
+
+    const created = store.getState().createBrowserTab(worktreeId, 'https://example.com', {
+      title: 'Example',
+      targetGroupId: 'browser-group'
+    })
+
+    const unifiedTab = (store.getState().unifiedTabsByWorktree[worktreeId] ?? []).find(
+      (t) => t.contentType === 'browser' && t.entityId === created.id
+    )
+    expect(unifiedTab?.groupId).toBe('browser-group')
+  })
+
+  it('falls back to active group when targetGroupId is not provided', () => {
+    const store = createTestStore()
+    const worktreeId = 'repo1::/tmp/wt-1'
+    seedStore(store, {
+      activeRepoId: 'repo1',
+      activeWorktreeId: worktreeId,
+      activeTabType: 'terminal',
+      worktreesByRepo: {
+        repo1: [makeWorktree({ id: worktreeId, repoId: 'repo1', path: '/tmp/wt-1' })]
+      },
+      groupsByWorktree: {
+        [worktreeId]: [
+          makeTabGroup({ id: 'terminal-group', worktreeId, activeTabId: null, tabOrder: [] }),
+          makeTabGroup({ id: 'browser-group', worktreeId, activeTabId: null, tabOrder: [] })
+        ]
+      },
+      activeGroupIdByWorktree: { [worktreeId]: 'terminal-group' },
+      browserTabsByWorktree: {},
+      unifiedTabsByWorktree: {}
+    })
+
+    const created = store.getState().createBrowserTab(worktreeId, 'https://example.com', {
+      title: 'Example'
+    })
+
+    const unifiedTab = (store.getState().unifiedTabsByWorktree[worktreeId] ?? []).find(
+      (t) => t.contentType === 'browser' && t.entityId === created.id
+    )
+    expect(unifiedTab?.groupId).toBe('terminal-group')
   })
 
   it('reopens the most recently closed browser tab in the same worktree', () => {
@@ -57,18 +116,19 @@ describe('browser slice', () => {
     expect(store.getState().recentlyClosedBrowserTabsByWorktree[worktreeId]).toHaveLength(0)
   })
 
-  it('assigns a session profile to the current browser workspace', () => {
+  it('reopens a multi-page workspace without duplicating the active URL (page order ≠ active first)', () => {
     const store = createTestStore()
-    const worktreeId = 'repo1::/tmp/wt-2'
+    const worktreeId = 'repo1::/tmp/wt-1'
     seedStore(store, {
       activeRepoId: 'repo1',
       activeWorktreeId: worktreeId,
+      activeTabType: 'browser',
       worktreesByRepo: {
         repo1: [
           makeWorktree({
             id: worktreeId,
             repoId: 'repo1',
-            path: '/tmp/wt-2'
+            path: '/tmp/wt-1'
           })
         ]
       },
@@ -84,74 +144,87 @@ describe('browser slice', () => {
       },
       activeGroupIdByWorktree: {
         [worktreeId]: 'group-1'
-      }
+      },
+      browserTabsByWorktree: {},
+      unifiedTabsByWorktree: {}
     })
 
-    const created = store.getState().createBrowserTab(worktreeId, 'https://example.com')
-    store.getState().assignBrowserSessionProfile(created.id, 'profile-1')
+    const ws = store.getState().createBrowserTab(worktreeId, 'https://example.com/a', {
+      title: 'A'
+    })
+    store
+      .getState()
+      .createBrowserPage(ws.id, 'https://example.com/b', { title: 'B', activate: true })
+    const beforeClose = store.getState().browserPagesByWorkspace[ws.id] ?? []
+    expect(beforeClose).toHaveLength(2)
+    expect(store.getState().browserTabsByWorktree[worktreeId]?.[0]?.url).toBe(
+      'https://example.com/b'
+    )
 
-    expect(store.getState().browserTabsByWorktree[worktreeId]?.[0]?.sessionProfileId).toBe(
-      'profile-1'
+    store.getState().closeBrowserTab(ws.id)
+    const reopened = store.getState().reopenClosedBrowserTab(worktreeId)
+    expect(reopened).not.toBeNull()
+    const pages = store.getState().browserPagesByWorkspace[reopened!.id] ?? []
+    expect(pages).toHaveLength(2)
+    const urls = new Set(pages.map((p) => p.url))
+    expect(urls.has('https://example.com/a')).toBe(true)
+    expect(urls.has('https://example.com/b')).toBe(true)
+    expect(store.getState().browserTabsByWorktree[worktreeId]?.[0]?.url).toBe(
+      'https://example.com/b'
     )
   })
 
-  it('clears deleted session profiles from persisted browser workspaces', async () => {
-    vi.stubGlobal('window', {
-      api: {
-        browser: {
-          sessionDeleteProfile: vi.fn().mockResolvedValue(true)
-        }
-      }
-    })
-
+  it('sets pending address-bar focus when focusAddressBar is true even for non-blank URLs', () => {
     const store = createTestStore()
-    const worktreeId = 'repo1::/tmp/wt-3'
+    const worktreeId = 'repo1::/tmp/wt-1'
     seedStore(store, {
       activeRepoId: 'repo1',
       activeWorktreeId: worktreeId,
+      activeTabType: 'terminal',
       worktreesByRepo: {
-        repo1: [
-          makeWorktree({
-            id: worktreeId,
-            repoId: 'repo1',
-            path: '/tmp/wt-3'
-          })
-        ]
+        repo1: [makeWorktree({ id: worktreeId, repoId: 'repo1', path: '/tmp/wt-1' })]
       },
       groupsByWorktree: {
-        [worktreeId]: [
-          makeTabGroup({
-            id: 'group-1',
-            worktreeId,
-            activeTabId: null,
-            tabOrder: []
-          })
-        ]
+        [worktreeId]: [makeTabGroup({ id: 'group-1', worktreeId, activeTabId: null, tabOrder: [] })]
       },
-      activeGroupIdByWorktree: {
-        [worktreeId]: 'group-1'
-      },
-      browserSessionProfiles: [
-        {
-          id: 'profile-2',
-          scope: 'imported',
-          partition: 'persist:orca-browser-session-profile-2',
-          label: 'Imported Session',
-          source: null
-        }
-      ]
+      activeGroupIdByWorktree: { [worktreeId]: 'group-1' },
+      browserTabsByWorktree: {},
+      unifiedTabsByWorktree: {}
     })
 
-    const created = store.getState().createBrowserTab(worktreeId, 'https://example.com', {
-      sessionProfileId: 'profile-2'
+    const created = store.getState().createBrowserTab(worktreeId, 'https://example.com/home', {
+      title: 'Home',
+      focusAddressBar: true
     })
 
-    await store.getState().deleteBrowserSessionProfile('profile-2')
+    const pageId = store.getState().browserPagesByWorkspace[created.id]?.[0]?.id
+    expect(pageId).toBeDefined()
+    expect(store.getState().pendingAddressBarFocusByTabId[created.id]).toBe(true)
+    expect(store.getState().pendingAddressBarFocusByPageId[pageId!]).toBe(true)
+  })
 
-    expect(store.getState().browserSessionProfiles).toEqual([])
-    expect(
-      store.getState().browserTabsByWorktree[worktreeId]?.find((tab) => tab.id === created.id)
-        ?.sessionProfileId
-    ).toBeNull()
+  it('does not set pending address-bar focus for non-blank URLs when focusAddressBar is not set', () => {
+    const store = createTestStore()
+    const worktreeId = 'repo1::/tmp/wt-1'
+    seedStore(store, {
+      activeRepoId: 'repo1',
+      activeWorktreeId: worktreeId,
+      activeTabType: 'terminal',
+      worktreesByRepo: {
+        repo1: [makeWorktree({ id: worktreeId, repoId: 'repo1', path: '/tmp/wt-1' })]
+      },
+      groupsByWorktree: {
+        [worktreeId]: [makeTabGroup({ id: 'group-1', worktreeId, activeTabId: null, tabOrder: [] })]
+      },
+      activeGroupIdByWorktree: { [worktreeId]: 'group-1' },
+      browserTabsByWorktree: {},
+      unifiedTabsByWorktree: {}
+    })
+
+    const created = store.getState().createBrowserTab(worktreeId, 'https://example.com/home', {
+      title: 'Home'
+    })
+
+    expect(store.getState().pendingAddressBarFocusByTabId[created.id]).toBeUndefined()
   })
 })

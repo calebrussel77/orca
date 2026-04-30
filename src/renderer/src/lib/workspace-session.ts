@@ -22,9 +22,15 @@ type WorkspaceSessionSnapshot = Pick<
   | 'browserTabsByWorktree'
   | 'browserPagesByWorkspace'
   | 'activeBrowserTabIdByWorktree'
+  | 'browserUrlHistory'
   | 'unifiedTabsByWorktree'
   | 'groupsByWorktree'
+  | 'layoutByWorktree'
   | 'activeGroupIdByWorktree'
+  | 'sshConnectionStates'
+  | 'repos'
+  | 'worktreesByRepo'
+  | 'lastKnownRelayPtyIdByTabId'
 >
 
 /** Build the editor-file portion of the workspace session for persistence.
@@ -39,6 +45,7 @@ export function buildEditorSessionData(
 > {
   const editFiles = openFiles.filter((f) => f.mode === 'edit')
   const byWorktree: Record<string, PersistedOpenFile[]> = {}
+  const editFileIdsByWorktree: Record<string, Set<string>> = {}
   for (const f of editFiles) {
     const arr = byWorktree[f.worktreeId] ?? (byWorktree[f.worktreeId] = [])
     arr.push({
@@ -48,11 +55,48 @@ export function buildEditorSessionData(
       language: f.language,
       isPreview: f.isPreview || undefined
     })
+    const ids =
+      editFileIdsByWorktree[f.worktreeId] ?? (editFileIdsByWorktree[f.worktreeId] = new Set())
+    ids.add(f.id)
   }
+
+  const activeFileEntries: [string, string][] = []
+  for (const [worktreeId, fileId] of Object.entries(activeFileIdByWorktree)) {
+    if (!fileId) {
+      continue
+    }
+    if (editFileIdsByWorktree[worktreeId]?.has(fileId)) {
+      activeFileEntries.push([worktreeId, fileId])
+    }
+  }
+  const persistedActiveFileIdByWorktree = Object.fromEntries(activeFileEntries) as Record<
+    string,
+    string
+  >
+
+  const activeTabTypeEntries: [string, WorkspaceVisibleTabType][] = []
+  for (const [worktreeId, tabType] of Object.entries(activeTabTypeByWorktree)) {
+    if (tabType !== 'editor') {
+      activeTabTypeEntries.push([worktreeId, tabType])
+      continue
+    }
+    // Why: restart only restores edit-mode files. Persisting "editor" with a
+    // transient diff/conflict file ID creates a session payload that cannot be
+    // satisfied on startup and leaves the UI with no real editor tab to select.
+    // Only keep the editor marker when it points at a restored file.
+    if (persistedActiveFileIdByWorktree[worktreeId]) {
+      activeTabTypeEntries.push([worktreeId, tabType])
+    }
+  }
+  const persistedActiveTabTypeByWorktree = Object.fromEntries(activeTabTypeEntries) as Record<
+    string,
+    WorkspaceVisibleTabType
+  >
+
   return {
     openFilesByWorktree: byWorktree,
-    activeFileIdByWorktree,
-    activeTabTypeByWorktree
+    activeFileIdByWorktree: persistedActiveFileIdByWorktree,
+    activeTabTypeByWorktree: persistedActiveTabTypeByWorktree
   }
 }
 
@@ -87,15 +131,68 @@ export function buildBrowserSessionData(
 export function buildWorkspaceSessionPayload(
   snapshot: WorkspaceSessionSnapshot
 ): WorkspaceSessionState {
+  // Why: lastKnownRelayPtyIdByTabId preserves session IDs across relay
+  // disconnect/reconnect cycles. tab.ptyId is cleared on disconnect, but
+  // the relay keeps the PTY alive — using the lastKnown fallback ensures
+  // the session save captures the ID even when the mux is temporarily down.
+  const lastKnown = snapshot.lastKnownRelayPtyIdByTabId
+
   const activeWorktreeIdsOnShutdown = Object.entries(snapshot.tabsByWorktree)
-    .filter(([, tabs]) => tabs.some((tab) => tab.ptyId))
+    .filter(([, tabs]) => tabs.some((tab) => tab.ptyId || lastKnown[tab.id]))
     .map(([worktreeId]) => worktreeId)
+
+  // Why: sshConnectionStates is a Map<string, SshConnectionState>, not a plain
+  // object. Object.entries() on a Map returns [] — must use Array.from().
+  const connectedTargetIds = Array.from(snapshot.sshConnectionStates.entries())
+    .filter(([, state]) => state.status === 'connected')
+    .map(([targetId]) => targetId)
+
+  // Why: the renderer already has tab.ptyId for every terminal tab and knows
+  // which worktrees are SSH-backed via repo.connectionId. Deriving the map
+  // here avoids a sync IPC round-trip during beforeunload, which is fragile
+  // (can be dropped by Chromium under shutdown time pressure).
+  const remoteSessionIdsByTabId: Record<string, string> = {}
+  for (const [worktreeId, tabs] of Object.entries(snapshot.tabsByWorktree)) {
+    const worktree = Object.values(snapshot.worktreesByRepo)
+      .flat()
+      .find((w) => w.id === worktreeId)
+    const repo = worktree ? snapshot.repos.find((r) => r.id === worktree.repoId) : null
+    if (!repo?.connectionId) {
+      continue
+    }
+    for (const tab of tabs) {
+      const sessionId = tab.ptyId || lastKnown[tab.id]
+      if (sessionId) {
+        remoteSessionIdsByTabId[tab.id] = sessionId
+      }
+    }
+  }
+
+  // Why: pendingActivationSpawn is documented on TerminalTab as a transient
+  // renderer-only handoff between setActiveWorktree and the next updateTabPtyId
+  // — it must never be persisted. The main-process session:set handler writes
+  // the payload to disk without re-parsing it against the Zod schema, so if
+  // the flag were ever set and not consumed before a save (e.g. app quits
+  // mid-handoff), it would round-trip to disk and the next session would
+  // start with a stale suppression flag that drops the first legitimate PTY
+  // spawn from the sidebar's recency sort. Strip it here to enforce the
+  // type-level invariant at the persistence boundary.
+  const sanitizedTabsByWorktree = Object.fromEntries(
+    Object.entries(snapshot.tabsByWorktree).map(([worktreeId, tabs]) => [
+      worktreeId,
+      tabs.map((tab) => {
+        const { pendingActivationSpawn: _unused, ...rest } = tab
+        void _unused
+        return rest
+      })
+    ])
+  )
 
   return {
     activeRepoId: snapshot.activeRepoId,
     activeWorktreeId: snapshot.activeWorktreeId,
     activeTabId: snapshot.activeTabId,
-    tabsByWorktree: snapshot.tabsByWorktree,
+    tabsByWorktree: sanitizedTabsByWorktree,
     terminalLayoutsByTabId: snapshot.terminalLayoutsByTabId,
     // Why: session:set fully replaces the persisted object, so every write path
     // must carry forward which worktrees still had live PTYs. Dropping this
@@ -112,7 +209,13 @@ export function buildWorkspaceSessionPayload(
       snapshot.browserPagesByWorkspace,
       snapshot.activeBrowserTabIdByWorktree
     ),
+    browserUrlHistory: snapshot.browserUrlHistory,
     unifiedTabs: snapshot.unifiedTabsByWorktree,
-    tabGroups: snapshot.groupsByWorktree
+    tabGroups: snapshot.groupsByWorktree,
+    tabGroupLayouts: snapshot.layoutByWorktree,
+    activeGroupIdByWorktree: snapshot.activeGroupIdByWorktree,
+    activeConnectionIdsAtShutdown: connectedTargetIds.length > 0 ? connectedTargetIds : undefined,
+    remoteSessionIdsByTabId:
+      Object.keys(remoteSessionIdsByTabId).length > 0 ? remoteSessionIdsByTabId : undefined
   }
 }

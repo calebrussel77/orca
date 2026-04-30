@@ -1,11 +1,4 @@
-import {
-  ArrowLeft,
-  FolderGit2,
-  Globe,
-  Search,
-  type LucideIcon,
-  type LucideProps
-} from 'lucide-react'
+import { ArrowLeft, Search, Server, type LucideIcon, type LucideProps } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 
@@ -29,7 +22,10 @@ type SettingsSidebarProps = {
   searchQuery: string
   onBack: () => void
   onSearchChange: (query: string) => void
-  onSelectSection: (sectionId: string) => void
+  onSelectSection: (
+    sectionId: string,
+    modifiers: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }
+  ) => void
 }
 
 export function SettingsSidebar({
@@ -49,7 +45,7 @@ export function SettingsSidebar({
           variant="ghost"
           size="sm"
           onClick={onBack}
-          className="w-full justify-start gap-2 text-sm text-muted-foreground"
+          className="w-full justify-start gap-2 text-muted-foreground"
         >
           <ArrowLeft className="size-4" />
           Back to app
@@ -63,15 +59,12 @@ export function SettingsSidebar({
             value={searchQuery}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder="Search settings"
-            className="pl-9 text-sm md:text-sm"
+            className="pl-9"
           />
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-sleek px-3 py-4">
-        {/* Why: The settings sidebar shares the same typographic hierarchy as the
-        content pane so application font scaling does not leave navigation chrome
-        looking smaller than the settings content on desktop. */}
         <div className="space-y-5">
           <div className="space-y-1">
             {generalSections.map((section) => {
@@ -81,7 +74,14 @@ export function SettingsSidebar({
               return (
                 <button
                   key={section.id}
-                  onClick={() => onSelectSection(section.id)}
+                  onClick={(event) =>
+                    onSelectSection(section.id, {
+                      metaKey: event.metaKey,
+                      ctrlKey: event.ctrlKey,
+                      shiftKey: event.shiftKey,
+                      altKey: event.altKey
+                    })
+                  }
                   className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                     isActive
                       ? 'bg-accent font-medium text-accent-foreground'
@@ -91,7 +91,7 @@ export function SettingsSidebar({
                   <Icon className="mr-2 size-4" />
                   {section.title}
                   {section.badge ? (
-                    <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
                       {section.badge}
                     </span>
                   ) : null}
@@ -101,8 +101,8 @@ export function SettingsSidebar({
           </div>
 
           <div className="space-y-2">
-            <p className="px-3 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Your Repositories
+            <p className="px-3 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              Repositories
             </p>
 
             {repoSections.length > 0 ? (
@@ -113,18 +113,28 @@ export function SettingsSidebar({
                   return (
                     <button
                       key={section.id}
-                      onClick={() => onSelectSection(section.id)}
-                      className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                      onClick={(event) =>
+                        onSelectSection(section.id, {
+                          metaKey: event.metaKey,
+                          ctrlKey: event.ctrlKey,
+                          shiftKey: event.shiftKey,
+                          altKey: event.altKey
+                        })
+                      }
+                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                         isActive
                           ? 'bg-accent font-medium text-accent-foreground'
                           : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
                       }`}
                     >
-                      <FolderGit2 className="mr-2 size-4 shrink-0" />
-                      <span className="min-w-0 flex-1 truncate text-sm">{section.title}</span>
+                      <span
+                        className="size-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: section.badgeColor ?? '#6b7280' }}
+                      />
+                      <span className="truncate">{section.title}</span>
                       {section.isRemote && (
-                        <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-                          <Globe className="size-3" />
+                        <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+                          <Server className="size-3" />
                           SSH
                         </span>
                       )}
@@ -133,7 +143,7 @@ export function SettingsSidebar({
                 })}
               </div>
             ) : (
-              <p className="px-3 text-sm text-muted-foreground">
+              <p className="px-3 text-xs text-muted-foreground">
                 {hasRepos ? 'No matching repository settings.' : 'No repositories added yet.'}
               </p>
             )}

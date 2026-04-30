@@ -1,8 +1,9 @@
 import type { Worktree, Repo, TerminalTab } from '../../../../shared/types'
 import type { AppState } from '@/store/types'
 import { matchesSearch } from './worktree-list-groups'
-import { buildWorktreeComparator, sortWorktreesRecent } from './smart-sort'
+import { buildWorktreeComparator, sortWorktreesSmart } from './smart-sort'
 import { useAppStore } from '@/store'
+import { getAllWorktreesFromState, getRepoMapFromState } from '@/store/selectors'
 
 /**
  * Shared pure utility that computes the ordered list of visible (non-archived,
@@ -29,7 +30,7 @@ export function computeVisibleWorktreeIds(
     issueCache: AppState['issueCache'] | null
   }
 ): string[] {
-  let all: Worktree[] = Object.values(worktreesByRepo).flat()
+  let all: Worktree[] = getAllWorktreesFromState({ worktreesByRepo })
 
   // Filter archived
   all = all.filter((w) => !w.isArchived)
@@ -111,21 +112,25 @@ export function getVisibleWorktreeIds(): string[] {
 
   // Fallback: live recomputation for the window before WorktreeList renders.
   const state = useAppStore.getState()
-  const allWorktrees: Worktree[] = Object.values(state.worktreesByRepo)
-    .flat()
-    .filter((w) => !w.isArchived)
+  const allWorktrees = getAllWorktreesFromState(state).filter((w) => !w.isArchived)
 
   // Hoist repoMap so it's built once and reused across all branches below.
-  const repoMap = new Map(state.repos.map((r) => [r.id, r]))
+  const repoMap = getRepoMapFromState(state)
 
   let sortedIds: string[]
 
-  if (state.sortBy === 'recent') {
-    sortedIds = sortWorktreesRecent(
+  // Why: matches WorktreeList's gate — when the experimental agent-activity
+  // feature is off, the agent-status map is not populated, so fall back to
+  // the non-status sort heuristics instead of scoring against an empty map.
+  const agentStatusForSort =
+    state.settings?.experimentalAgentDashboard === true ? state.agentStatusByPaneKey : undefined
+  if (state.sortBy === 'smart') {
+    sortedIds = sortWorktreesSmart(
       allWorktrees,
       state.tabsByWorktree,
       repoMap,
-      state.prCache
+      state.prCache,
+      agentStatusForSort
     ).map((w) => w.id)
   } else {
     const sorted = [...allWorktrees].sort(
@@ -134,7 +139,9 @@ export function getVisibleWorktreeIds(): string[] {
         state.tabsByWorktree,
         repoMap,
         state.prCache,
-        Date.now()
+        Date.now(),
+        null,
+        agentStatusForSort
       )
     )
     sortedIds = sorted.map((w) => w.id)

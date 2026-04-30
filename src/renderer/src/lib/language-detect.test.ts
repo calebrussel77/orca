@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { detectLanguage } from './language-detect'
 
 describe('detectLanguage', () => {
-  it('maps tsx files to the Monaco typescript language id', () => {
-    expect(detectLanguage('src/components/college-card.tsx')).toBe('typescript')
+  it('maps .vue files to the custom vue language id', () => {
+    expect(detectLanguage('src/components/App.vue')).toBe('vue')
   })
 
-  it('maps jsx files to the Monaco javascript language id', () => {
-    expect(detectLanguage('src/components/widget.jsx')).toBe('javascript')
+  it('maps .svelte files to the custom svelte language id', () => {
+    expect(detectLanguage('src/components/Widget.svelte')).toBe('svelte')
+  })
+
+  it('keeps .astro mapped to html until its grammar ships', () => {
+    expect(detectLanguage('src/routes/index.astro')).toBe('html')
   })
 })

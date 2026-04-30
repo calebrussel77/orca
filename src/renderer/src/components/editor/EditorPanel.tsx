@@ -5,11 +5,12 @@ across multiple components. Autosave now lives in a smaller headless controller
 so hidden editor UI no longer participates in shutdown. */
 import React, { useCallback, useEffect, useRef, useState, Suspense } from 'react'
 import * as monaco from 'monaco-editor'
-import { Columns2, Copy, ExternalLink, FileText, Rows2 } from 'lucide-react'
+import { Columns2, Copy, Eye, ExternalLink, FileText, MoreHorizontal, Rows2 } from 'lucide-react'
 import { useAppStore } from '@/store'
 import { findWorktreeById } from '@/store/slices/worktree-helpers'
 import { getConnectionId } from '@/lib/connection-context'
 import { detectLanguage } from '@/lib/language-detect'
+import { canPreviewLanguage, openFilePreviewToSide } from '@/lib/file-preview'
 import { getEditorHeaderCopyState, getEditorHeaderOpenFileState } from './editor-header'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -17,6 +18,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { CLOSE_ALL_CONTEXT_MENUS_EVENT } from '../tab-bar/SortableTab'
@@ -36,6 +38,14 @@ import {
   type EditorPathMutationTarget
 } from './editor-autosave'
 import { UntitledFileRenameDialog } from './UntitledFileRenameDialog'
+import { exportActiveMarkdownToPdf } from './export-active-markdown'
+import {
+  canOpenMarkdownPreview,
+  getDefaultMarkdownViewMode,
+  getMarkdownPreviewShortcutLabel,
+  getMarkdownViewModes,
+  isMarkdownPreviewShortcut
+} from './markdown-preview-controls'
 
 const isMac = navigator.userAgent.includes('Mac')
 const isLinux = navigator.userAgent.includes('Linux')
@@ -46,6 +56,7 @@ const revealLabel = isMac
   : isLinux
     ? 'Open Containing Folder'
     : 'Reveal in File Explorer'
+const markdownPreviewShortcutLabel = getMarkdownPreviewShortcutLabel(isMac)
 
 type FileContent = {
   content: string
@@ -56,10 +67,69 @@ type FileContent = {
 
 type DiffContent = GitDiffResult
 
+// Why: split-pane layouts mount one EditorPanel per pane, and each panel
+// attaches its own listener to `ORCA_EDITOR_EXTERNAL_FILE_CHANGE_EVENT`.
+// Without coordination, a single external write fans out into N concurrent
+// `readFile` IPCs for the same path plus N independent `setContent`
+// transactions on the downstream rich editors — a meaningful contributor to
+// the black-window wedge reported in issue #826. Sharing a module-level
+// in-flight promise per (connectionId, filePath) collapses those N reads
+// into one round-trip while still letting each panel update its own local
+// state with the result.
+const inFlightFileReads = new Map<string, Promise<FileContent>>()
+const inFlightDiffReads = new Map<string, Promise<DiffContent>>()
+
+// Why: the "File → Export as PDF..." menu IPC fans out to every EditorPanel
+// instance, and split-pane layouts mount N panels concurrently. Without a
+// guard, a single menu click would spawn N concurrent exports — each racing
+// its own save dialog, toast, and printToPDF — producing duplicate output
+// files and confusing UX. This module-level ref-counted singleton installs
+// exactly one IPC subscription the first time any panel mounts, and tears
+// it down only when the last panel unmounts. A simple "first mounter wins"
+// counter would go dead if the first-mounting panel unmounted while others
+// were still mounted — survivors never re-subscribed and the menu silently
+// stopped working. The singleton pattern avoids that handoff bug entirely.
+let exportPdfListenerOwners = 0
+let exportPdfListenerUnsubscribe: (() => void) | null = null
+function acquireExportPdfListener(): () => void {
+  exportPdfListenerOwners += 1
+  if (exportPdfListenerOwners === 1) {
+    exportPdfListenerUnsubscribe = window.api.ui.onExportPdfRequested(() => {
+      void exportActiveMarkdownToPdf()
+    })
+  }
+  return () => {
+    exportPdfListenerOwners -= 1
+    if (exportPdfListenerOwners === 0 && exportPdfListenerUnsubscribe) {
+      exportPdfListenerUnsubscribe()
+      exportPdfListenerUnsubscribe = null
+    }
+  }
+}
+
+function inFlightReadKey(connectionId: string | undefined, filePath: string): string {
+  return `${connectionId ?? ''}::${filePath}`
+}
+
+function inFlightDiffKey(file: OpenFile, connectionId: string | undefined): string {
+  // Why: diff content depends on the file path AND which diff source is
+  // being rendered (unstaged/staged/branch). Branch diffs further depend
+  // on the base+head oids so switching compare points doesn't alias, and
+  // on branchOldPath so rename-detected diffs don't alias with the same
+  // post-rename path viewed without rename metadata.
+  const branch =
+    file.diffSource === 'branch' && file.branchCompare
+      ? `${file.branchCompare.baseOid ?? ''}..${file.branchCompare.headOid ?? ''}::${file.branchOldPath ?? ''}`
+      : ''
+  return `${connectionId ?? ''}::${file.diffSource ?? ''}::${file.filePath}::${branch}`
+}
+
 function EditorPanelInner({
-  activeFileId: activeFileIdProp
+  activeFileId: activeFileIdProp,
+  activeViewStateId: activeViewStateIdProp
 }: {
   activeFileId?: string | null
+  activeViewStateId?: string | null
 } = {}): React.JSX.Element | null {
   const openFiles = useAppStore((s) => s.openFiles)
   const globalActiveFileId = useAppStore((s) => s.activeFileId)
@@ -71,6 +141,7 @@ function EditorPanelInner({
   const markdownViewMode = useAppStore((s) => s.markdownViewMode)
   const setMarkdownViewMode = useAppStore((s) => s.setMarkdownViewMode)
   const openFile = useAppStore((s) => s.openFile)
+  const openMarkdownPreview = useAppStore((s) => s.openMarkdownPreview)
   const closeFile = useAppStore((s) => s.closeFile)
   const clearUntitled = useAppStore((s) => s.clearUntitled)
   const editorDrafts = useAppStore((s) => s.editorDrafts)
@@ -78,6 +149,12 @@ function EditorPanelInner({
   const settings = useAppStore((s) => s.settings)
 
   const activeFile = openFiles.find((f) => f.id === activeFileId) ?? null
+  const activeFilePath = activeFile?.filePath ?? null
+  const activeFileRelativePath = activeFile?.relativePath ?? null
+  const activeFileWorktreeId = activeFile?.worktreeId ?? null
+  const activeFileMode = activeFile?.mode ?? null
+  const activeFileDiffSource = activeFile?.diffSource
+  const activeViewStateId = activeViewStateIdProp ?? activeFileId
 
   const [fileContents, setFileContents] = useState<Record<string, FileContent>>({})
   const [diffContents, setDiffContents] = useState<Record<string, DiffContent>>({})
@@ -92,6 +169,15 @@ function EditorPanelInner({
   const [prevDiffView, setPrevDiffView] = useState(settings?.diffDefaultView)
   const [pathMenuOpen, setPathMenuOpen] = useState(false)
   const [pathMenuPoint, setPathMenuPoint] = useState({ x: 0, y: 0 })
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  const deleteCacheEntriesByPrefix = useCallback(<T,>(cache: Map<string, T>, prefix: string) => {
+    for (const key of cache.keys()) {
+      if (key.startsWith(prefix)) {
+        cache.delete(key)
+      }
+    }
+  }, [])
 
   // Why: When the user changes their global diff-view preference in Settings,
   // sync the local toggle to match during render (avoids flash of stale diff mode).
@@ -110,6 +196,18 @@ function EditorPanelInner({
     window.addEventListener(CLOSE_ALL_CONTEXT_MENUS_EVENT, closeMenu)
     return () => window.removeEventListener(CLOSE_ALL_CONTEXT_MENUS_EVENT, closeMenu)
   }, [])
+
+  // Why: the system "File → Export as PDF..." menu item sends a one-way IPC
+  // event that reaches whichever renderer has focus. The EditorPanel is the
+  // natural owner of the active markdown surface, so the listener lives here
+  // and delegates to the shared export helper. Both entry points (menu and
+  // overflow button) funnel through exportActiveMarkdownToPdf so toasts and
+  // no-op gating stay consistent.
+  // Why (guard): split-pane layouts mount multiple EditorPanelInner instances.
+  // We ref-count via `acquireExportPdfListener` so exactly one IPC subscription
+  // exists regardless of how many panels are mounted — and it survives panel
+  // churn as long as at least one panel is still mounted.
+  useEffect(() => acquireExportPdfListener(), [])
 
   // Why: keepCurrentModel / keepCurrent*Model retain Monaco models after unmount
   // so undo history survives tab switches. When a tab is *closed*, the user has
@@ -133,13 +231,26 @@ function EditorPanelInner({
             // prop is provided. This convention is version-dependent.
             monaco.editor.getModel(monaco.Uri.parse(prevFile.filePath))?.dispose()
             scrollTopCache.delete(prevFile.filePath)
-            // Why: markdown edit tabs cycle through three view modes (source, rich,
-            // preview), each caching scroll under a mode-scoped key. All must be
-            // evicted so a reopened file starts fresh regardless of which mode was
-            // last active.
+            deleteCacheEntriesByPrefix(scrollTopCache, `${prevFile.filePath}::`)
+            // Why: markdown edit tabs keep separate source/rich scroll caches,
+            // and older sessions may still have the legacy in-place preview key.
+            // Clear all of them so reopened files never inherit stale viewport
+            // state from a prior tab incarnation.
             scrollTopCache.delete(`${prevFile.filePath}:rich`)
             scrollTopCache.delete(`${prevFile.filePath}:preview`)
+            // Why: mermaid files use a mode-scoped cache key just like markdown.
+            // Without this, a reopened .mmd file would restore a stale scroll
+            // position from the previous session even if the content changed.
+            scrollTopCache.delete(`${prevFile.filePath}:mermaid-diagram`)
             cursorPositionCache.delete(prevFile.filePath)
+            deleteCacheEntriesByPrefix(cursorPositionCache, `${prevFile.filePath}::`)
+            break
+          case 'markdown-preview':
+            // Why: preview tabs have no retained Monaco models, but they do
+            // own pane-scoped preview scroll cache entries that should be
+            // dropped on close so reopening the preview starts fresh.
+            scrollTopCache.delete(`${prevFile.id}:preview`)
+            deleteCacheEntriesByPrefix(scrollTopCache, `${prevFile.id}::`)
             break
           case 'diff':
             // Why: kept diff models are keyed by tab id, not file path, because the
@@ -147,6 +258,13 @@ function EditorPanelInner({
             monaco.editor.getModel(monaco.Uri.parse(`diff:original:${prevId}`))?.dispose()
             monaco.editor.getModel(monaco.Uri.parse(`diff:modified:${prevId}`))?.dispose()
             diffViewStateCache.delete(prevId)
+            deleteCacheEntriesByPrefix(diffViewStateCache, `${prevId}::`)
+            // Why: single-file markdown diffs now have a rendered preview mode
+            // whose scroll position is keyed off the diff tab identity rather
+            // than a Monaco view-state cache entry. Clear those mode-scoped
+            // keys alongside the diff models so reopened diff tabs start fresh.
+            scrollTopCache.delete(`${prevId}:preview`)
+            deleteCacheEntriesByPrefix(scrollTopCache, `${prevId}::`)
             break
           case 'conflict-review':
             break
@@ -154,7 +272,7 @@ function EditorPanelInner({
       }
     }
     prevOpenFilesRef.current = currentFilesById
-  }, [openFiles])
+  }, [deleteCacheEntriesByPrefix, openFiles])
 
   // Load file content when active file changes
   useEffect(() => {
@@ -164,7 +282,7 @@ function EditorPanelInner({
     if (activeFile.mode === 'conflict-review') {
       return
     }
-    if (activeFile.mode === 'edit') {
+    if (activeFile.mode === 'edit' || activeFile.mode === 'markdown-preview') {
       if (activeFile.conflict?.kind === 'conflict-placeholder') {
         return
       }
@@ -197,7 +315,27 @@ function EditorPanelInner({
     async (filePath: string, id: string, worktreeId?: string): Promise<void> => {
       try {
         const connectionId = getConnectionId(worktreeId ?? null) ?? undefined
-        const result = (await window.api.fs.readFile({ filePath, connectionId })) as FileContent
+        const key = inFlightReadKey(connectionId, filePath)
+        // Why: share the IPC round-trip across split-pane EditorPanels viewing
+        // the same file. The first caller starts the read and registers the
+        // promise; concurrent callers (triggered by the same external-change
+        // event) await it instead of firing duplicate reads and duplicate
+        // downstream setContent transactions.
+        let pending = inFlightFileReads.get(key)
+        if (!pending) {
+          pending = window.api.fs.readFile({ filePath, connectionId }) as Promise<FileContent>
+          inFlightFileReads.set(key, pending)
+          // Why: limit deduplication to synchronous callers (like N split panes
+          // responding to the exact same event loop dispatch). Caching the promise
+          // across time (e.g. until the IPC returns) means a new change event that
+          // fires while the read is in-flight would receive stale content.
+          queueMicrotask(() => {
+            if (inFlightFileReads.get(key) === pending) {
+              inFlightFileReads.delete(key)
+            }
+          })
+        }
+        const result = await pending
         setFileContents((prev) => ({ ...prev, [id]: result }))
       } catch (err) {
         setFileContents((prev) => ({
@@ -224,26 +362,42 @@ function EditorPanelInner({
           ? file.branchCompare
           : null
       const connectionId = getConnectionId(file.worktreeId) ?? undefined
-      const result =
-        file.diffSource === 'branch' && branchCompare
-          ? ((await window.api.git.branchDiff({
-              worktreePath,
-              compare: {
-                baseRef: branchCompare.baseRef,
-                baseOid: branchCompare.baseOid!,
-                headOid: branchCompare.headOid!,
-                mergeBase: branchCompare.mergeBase!
-              },
-              filePath: file.relativePath,
-              oldPath: file.branchOldPath,
-              connectionId
-            })) as DiffContent)
-          : ((await window.api.git.diff({
-              worktreePath,
-              filePath: file.relativePath,
-              staged: file.diffSource === 'staged',
-              connectionId
-            })) as DiffContent)
+      const key = inFlightDiffKey(file, connectionId)
+      // Why: same rationale as inFlightFileReads above — a single external
+      // change fans out to every mounted EditorPanel, and two split panes
+      // showing the same diff tab should share one git.diff IPC instead of
+      // racing two identical calls through the same git repo lock.
+      let pending = inFlightDiffReads.get(key)
+      if (!pending) {
+        pending = (
+          file.diffSource === 'branch' && branchCompare
+            ? window.api.git.branchDiff({
+                worktreePath,
+                compare: {
+                  baseRef: branchCompare.baseRef,
+                  baseOid: branchCompare.baseOid!,
+                  headOid: branchCompare.headOid!,
+                  mergeBase: branchCompare.mergeBase!
+                },
+                filePath: file.relativePath,
+                oldPath: file.branchOldPath,
+                connectionId
+              })
+            : window.api.git.diff({
+                worktreePath,
+                filePath: file.relativePath,
+                staged: file.diffSource === 'staged',
+                connectionId
+              })
+        ) as Promise<DiffContent>
+        inFlightDiffReads.set(key, pending)
+        queueMicrotask(() => {
+          if (inFlightDiffReads.get(key) === pending) {
+            inFlightDiffReads.delete(key)
+          }
+        })
+      }
+      const result = await pending
       setDiffContents((prev) => ({ ...prev, [file.id]: result }))
     } catch (err) {
       setDiffContents((prev) => ({
@@ -265,15 +419,21 @@ function EditorPanelInner({
         return
       }
       setEditorDraft(activeFile.id, content)
+      // Why: TipTap's getMarkdown() always appends a trailing newline to the
+      // serialized output. If the file on disk lacks that newline the naive
+      // strict-equality check treats the file as dirty even though no user edit
+      // occurred. Normalising trailing whitespace for markdown files mirrors the
+      // same trimEnd() used in the round-trip checker (markdown-round-trip.ts).
+      const isMarkdown = activeFile.language === 'markdown'
+      const normalize = isMarkdown ? (s: string): string => s.trimEnd() : (s: string): string => s
       if (activeFile.mode === 'edit') {
-        // Compare against saved content to determine dirty state
         const saved = fileContents[activeFile.id]?.content ?? ''
-        markFileDirty(activeFile.id, content !== saved)
+        markFileDirty(activeFile.id, normalize(content) !== normalize(saved))
       } else {
         // Diff mode: compare against the original modified content from git
         const dc = diffContents[activeFile.id]
         const original = dc?.kind === 'text' ? dc.modifiedContent : ''
-        markFileDirty(activeFile.id, content !== original)
+        markFileDirty(activeFile.id, normalize(content) !== normalize(original))
       }
     },
     [activeFile, diffContents, fileContents, markFileDirty, setEditorDraft]
@@ -299,19 +459,29 @@ function EditorPanelInner({
       if (!activeFile) {
         return
       }
+      const saveTargetFile =
+        activeFile.mode === 'markdown-preview'
+          ? (openFiles.find(
+              (openFile) =>
+                openFile.id === activeFile.markdownPreviewSourceFileId && openFile.mode === 'edit'
+            ) ?? null)
+          : activeFile
+      if (!saveTargetFile) {
+        return
+      }
       // Why: for untitled files, Cmd+S should prompt for a name before
       // writing anything. Saving first would make Cancel misleading since
       // the write already happened. Show the dialog and let the confirm
       // handler do the save + rename atomically.
-      if (activeFile.isUntitled) {
-        setRenameDialogFileId(activeFile.id)
+      if (saveTargetFile.isUntitled) {
+        setRenameDialogFileId(saveTargetFile.id)
         return
       }
       try {
-        await requestEditorFileSave({ fileId: activeFile.id, fallbackContent: content })
+        await requestEditorFileSave({ fileId: saveTargetFile.id, fallbackContent: content })
       } catch {}
     },
-    [activeFile]
+    [activeFile, openFiles]
   )
 
   // Why: global Cmd+S (from Terminal.tsx) dispatches this event when
@@ -322,19 +492,32 @@ function EditorPanelInner({
       if (!activeFile) {
         return
       }
-      // Why: untitled files need the dialog even when there's no draft yet.
-      // For regular files, skip the save if there's no draft — the file on
-      // disk is already up-to-date, and passing an empty fallback would
-      // overwrite it with nothing.
-      const draft = useAppStore.getState().editorDrafts[activeFile.id]
-      if (!draft && !activeFile.isUntitled) {
+      const saveTargetFile =
+        activeFile.mode === 'markdown-preview'
+          ? (openFilesRef.current.find(
+              (openFile) =>
+                openFile.id === activeFile.markdownPreviewSourceFileId && openFile.mode === 'edit'
+            ) ?? null)
+          : activeFile
+      if (!saveTargetFile) {
         return
       }
-      void handleSave(draft ?? '')
+      // Why: a markdown preview tab is read-only but still fronts the same
+      // underlying document. Cmd/Ctrl+S should save that source editor's draft
+      // instead of no-oping just because the preview tab currently has focus.
+      const state = useAppStore.getState()
+      const draft = state.editorDrafts[saveTargetFile.id]
+      if (!draft && !saveTargetFile.isUntitled && !saveTargetFile.isDirty) {
+        return
+      }
+      const fallbackContent =
+        draft ??
+        (activeFile.mode === 'markdown-preview' ? fileContents[activeFile.id]?.content : '')
+      void handleSave(fallbackContent ?? '')
     }
     window.addEventListener(ORCA_EDITOR_REQUEST_CMD_SAVE_EVENT, handler)
     return () => window.removeEventListener(ORCA_EDITOR_REQUEST_CMD_SAVE_EVENT, handler)
-  }, [activeFile, handleSave])
+  }, [activeFile, fileContents, handleSave])
 
   useEffect(() => {
     const handler = (event: Event): void => {
@@ -347,27 +530,16 @@ function EditorPanelInner({
       if (matchingFiles.length === 0) {
         return
       }
-      setFileContents((prev) => {
-        const next = { ...prev }
-        for (const file of matchingFiles) {
-          if (file.mode === 'edit') {
-            delete next[file.id]
-          }
-        }
-        return next
-      })
-      setDiffContents((prev) => {
-        const next = { ...prev }
-        for (const file of matchingFiles) {
-          if (file.mode === 'diff') {
-            delete next[file.id]
-          }
-        }
-        return next
-      })
-
+      // Why: do NOT delete fileContents[file.id] here before the reload
+      // completes. Dropping the entry renders EditorContent's "Loading..."
+      // placeholder and unmounts MonacoEditor. On remount, @monaco-editor/react
+      // skips its value-sync effect on the first render, and `keepCurrentModel`
+      // retains the prior model — so the new content prop never reaches the
+      // editor and the user sees the pre-external-edit text linger.
+      // loadFileContent / loadDiffContent overwrite the entry atomically once
+      // the fresh read returns, which is what Monaco's value-sync can observe.
       for (const file of matchingFiles) {
-        if (file.mode === 'edit') {
+        if (file.mode === 'edit' || file.mode === 'markdown-preview') {
           void loadFileContent(file.filePath, file.id, file.worktreeId)
         } else if (
           file.mode === 'diff' &&
@@ -418,11 +590,29 @@ function EditorPanelInner({
         return
       }
 
-      if (file.mode === 'edit') {
+      if (file.mode === 'edit' || file.mode === 'markdown-preview') {
         setFileContents((prev) => ({
           ...prev,
           [file.id]: { content: detail.content, isBinary: false }
         }))
+      }
+
+      const previewTabs = openFilesRef.current.filter(
+        (openFile) =>
+          openFile.mode === 'markdown-preview' &&
+          openFile.markdownPreviewSourceFileId === detail.fileId
+      )
+      if (previewTabs.length > 0) {
+        setFileContents((prev) => {
+          const next = { ...prev }
+          for (const previewTab of previewTabs) {
+            next[previewTab.id] = { content: detail.content, isBinary: false }
+          }
+          return next
+        })
+      }
+
+      if (file.mode === 'edit' || file.mode === 'markdown-preview') {
         return
       }
 
@@ -544,6 +734,58 @@ function EditorPanelInner({
     }
   }, [activeFile])
 
+  useEffect(() => {
+    if (!activeFilePath || !activeFileRelativePath || !activeFileWorktreeId || !activeFileMode) {
+      return
+    }
+
+    const shortcutLanguage =
+      activeFileMode === 'diff'
+        ? detectLanguage(activeFileRelativePath)
+        : detectLanguage(activeFilePath)
+    const canShowMarkdownPreview = canOpenMarkdownPreview({
+      language: shortcutLanguage,
+      mode: activeFileMode,
+      diffSource: activeFileDiffSource
+    })
+    if (!canShowMarkdownPreview) {
+      return
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || !isMarkdownPreviewShortcut(event, isMac)) {
+        return
+      }
+      const root = panelRef.current
+      if (!root) {
+        return
+      }
+      const target = event.target
+      const targetInsidePanel = target instanceof Node && root.contains(target)
+      if (!targetInsidePanel) {
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      openMarkdownPreview({
+        filePath: activeFilePath,
+        relativePath: activeFileRelativePath,
+        worktreeId: activeFileWorktreeId,
+        language: shortcutLanguage
+      })
+    }
+
+    window.addEventListener('keydown', handleKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true })
+  }, [
+    activeFileDiffSource,
+    activeFileMode,
+    activeFilePath,
+    activeFileRelativePath,
+    activeFileWorktreeId,
+    openMarkdownPreview
+  ])
+
   if (!activeFile) {
     return null
   }
@@ -585,10 +827,52 @@ function EditorPanelInner({
   )
 
   const isMarkdown = resolvedLanguage === 'markdown'
+  const isMermaid = resolvedLanguage === 'mermaid'
+  // Why: "Open Preview to the Side" only applies to edit-mode tabs whose
+  // language has a registered renderer. Diff tabs already have their own
+  // toggle set and there is no clear semantic for previewing a diff.
+  const canOpenPreviewToSide = activeFile.mode === 'edit' && canPreviewLanguage(resolvedLanguage)
+  const handleOpenPreviewToSide = (): void => {
+    // Split-pane layouts mount one EditorPanel per pane, each with its own
+    // activeViewStateId (the unified-tab id). Resolve the owning group from
+    // that tab so the preview lands beside *this* pane rather than whichever
+    // group happens to be the ambient active one.
+    const state = useAppStore.getState()
+    const sourceGroupId = activeViewStateId
+      ? ((state.unifiedTabsByWorktree[activeFile.worktreeId] ?? []).find(
+          (t) => t.id === activeViewStateId
+        )?.groupId ?? null)
+      : null
+    openFilePreviewToSide({
+      language: resolvedLanguage,
+      filePath: activeFile.filePath,
+      worktreeId: activeFile.worktreeId,
+      sourceGroupId
+    })
+  }
+  const markdownViewModes = getMarkdownViewModes({
+    language: resolvedLanguage,
+    mode: activeFile.mode,
+    diffSource: activeFile.diffSource
+  })
+  const hasViewModeToggle = markdownViewModes.length > 0
+  const defaultMarkdownViewMode = getDefaultMarkdownViewMode({
+    language: resolvedLanguage,
+    mode: activeFile.mode,
+    diffSource: activeFile.diffSource
+  })
+  const storedMarkdownViewMode = markdownViewMode[activeFile.id]
   const mdViewMode: MarkdownViewMode =
-    isMarkdown && activeFile.mode === 'edit'
-      ? (markdownViewMode[activeFile.id] ?? 'rich')
-      : 'source'
+    hasViewModeToggle &&
+    storedMarkdownViewMode !== undefined &&
+    markdownViewModes.includes(storedMarkdownViewMode)
+      ? storedMarkdownViewMode
+      : defaultMarkdownViewMode
+  const canShowMarkdownPreview = canOpenMarkdownPreview({
+    language: resolvedLanguage,
+    mode: activeFile.mode,
+    diffSource: activeFile.diffSource
+  })
 
   const handleOpenDiffTargetFile = (): void => {
     if (!openFileState.canOpen) {
@@ -610,7 +894,7 @@ function EditorPanelInner({
   )
 
   return (
-    <div className="flex flex-col flex-1 min-w-0 min-h-0">
+    <div ref={panelRef} className="flex flex-col flex-1 min-w-0 min-h-0">
       {!isCombinedDiff && (
         <div className="editor-header">
           <div className="editor-header-text">
@@ -665,6 +949,23 @@ function EditorPanelInner({
                   Copy Relative Path
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                {canShowMarkdownPreview && (
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      openMarkdownPreview({
+                        filePath: activeFile.filePath,
+                        relativePath: activeFile.relativePath,
+                        worktreeId: activeFile.worktreeId,
+                        language: resolvedLanguage
+                      })
+                    }
+                  >
+                    <Eye className="w-3.5 h-3.5 mr-1.5" />
+                    Open Markdown Preview
+                    <DropdownMenuShortcut>{markdownPreviewShortcutLabel}</DropdownMenuShortcut>
+                  </DropdownMenuItem>
+                )}
+                {canShowMarkdownPreview && <DropdownMenuSeparator />}
                 <DropdownMenuItem
                   onSelect={() => {
                     window.api.shell.openPath(activeFile.filePath)
@@ -700,6 +1001,25 @@ function EditorPanelInner({
               </Tooltip>
             </TooltipProvider>
           )}
+          {canOpenPreviewToSide && (
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                    onClick={handleOpenPreviewToSide}
+                    aria-label="Open Preview to the Side"
+                  >
+                    <Eye size={14} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" sideOffset={4}>
+                  Open Preview to the Side
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
           {isSingleDiff && (
             <TooltipProvider delayDuration={300}>
               <Tooltip>
@@ -717,23 +1037,57 @@ function EditorPanelInner({
               </Tooltip>
             </TooltipProvider>
           )}
-          {isMarkdown && activeFile.mode === 'edit' && (
+          {hasViewModeToggle && (
             <MarkdownViewToggle
               mode={mdViewMode}
+              modes={markdownViewModes}
               onChange={(mode) => setMarkdownViewMode(activeFile.id, mode)}
             />
+          )}
+          {hasViewModeToggle && isMarkdown && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                  aria-label="More actions"
+                  title="More actions"
+                >
+                  <MoreHorizontal size={14} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" sideOffset={4}>
+                <DropdownMenuItem
+                  // Why: the item is disabled (not hidden) only in source/Monaco
+                  // mode, which has no document DOM to export. We intentionally
+                  // don't poll the DOM (canExportActiveMarkdown) at render time:
+                  // the Radix content renders in a Portal and the lookup can
+                  // race with the active surface's paint, producing a stuck
+                  // disabled state. exportActiveMarkdownToPdf is a safe no-op
+                  // when no subtree is found.
+                  disabled={mdViewMode === 'source'}
+                  onSelect={() => {
+                    void exportActiveMarkdownToPdf()
+                  }}
+                >
+                  Export as PDF
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       )}
       <Suspense fallback={loadingFallback}>
         <EditorContent
           activeFile={activeFile}
+          viewStateScopeId={activeViewStateId ?? activeFile.id}
           fileContents={fileContents}
           diffContents={diffContents}
           editBuffers={editorDrafts}
           worktreeEntries={worktreeEntries}
           resolvedLanguage={resolvedLanguage}
           isMarkdown={isMarkdown}
+          isMermaid={isMermaid}
           mdViewMode={mdViewMode}
           sideBySide={sideBySide}
           pendingEditorReveal={pendingEditorReveal}

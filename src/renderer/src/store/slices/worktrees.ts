@@ -1,14 +1,14 @@
 /* eslint-disable max-lines */
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
-import type { Worktree, WorkspaceVisibleTabType } from '../../../../shared/types'
+import type { Worktree, WorkspaceVisibleTabType, WorktreeMeta } from '../../../../shared/types'
 import {
   findWorktreeById,
   applyWorktreeUpdates,
-  applySidebarOrder,
   getRepoIdFromWorktreeId,
   type WorktreeSlice
 } from './worktree-helpers'
+import { ensureHooksConfirmed } from '@/lib/ensure-hooks-confirmed'
 export type { WorktreeSlice, WorktreeDeleteState } from './worktree-helpers'
 
 function areWorktreesEqual(current: Worktree[] | undefined, next: Worktree[]): boolean {
@@ -32,11 +32,15 @@ function areWorktreesEqual(current: Worktree[] | undefined, next: Worktree[]): b
       worktree.linkedPR === candidate.linkedPR &&
       worktree.isArchived === candidate.isArchived &&
       worktree.isUnread === candidate.isUnread &&
-      worktree.sidebarOrder === candidate.sidebarOrder &&
+      worktree.isPinned === candidate.isPinned &&
       worktree.sortOrder === candidate.sortOrder &&
       worktree.lastActivityAt === candidate.lastActivityAt
     )
   })
+}
+
+function toVisibleTabType(contentType: string): WorkspaceVisibleTabType {
+  return contentType === 'browser' ? 'browser' : contentType === 'terminal' ? 'terminal' : 'editor'
 }
 
 export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> = (set, get) => ({
@@ -44,6 +48,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
   activeWorktreeId: null,
   deleteStateByWorktreeId: {},
   sortEpoch: 0,
+  everActivatedWorktreeIds: new Set<string>(),
 
   fetchWorktrees: async (repoId) => {
     try {
@@ -82,16 +87,42 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
   },
 
   createWorktree: async (repoId, name, baseBranch, setupDecision = 'inherit') => {
+    const retryableConflictPatterns = [
+      /already exists locally/i,
+      /already exists on a remote/i,
+      /already has pr #\d+/i
+    ]
+    const nextCandidateName = (current: string, attempt: number): string =>
+      attempt === 0 ? current : `${current}-${attempt + 1}`
+
     try {
-      const result = await window.api.worktrees.create({ repoId, name, baseBranch, setupDecision })
-      set((s) => ({
-        worktreesByRepo: {
-          ...s.worktreesByRepo,
-          [repoId]: [...(s.worktreesByRepo[repoId] ?? []), result.worktree]
-        },
-        sortEpoch: s.sortEpoch + 1
-      }))
-      return result
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        const candidateName = nextCandidateName(name, attempt)
+        try {
+          const result = await window.api.worktrees.create({
+            repoId,
+            name: candidateName,
+            baseBranch,
+            setupDecision
+          })
+          set((s) => ({
+            worktreesByRepo: {
+              ...s.worktreesByRepo,
+              [repoId]: [...(s.worktreesByRepo[repoId] ?? []), result.worktree]
+            },
+            sortEpoch: s.sortEpoch + 1
+          }))
+          return result
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const shouldRetry = retryableConflictPatterns.some((pattern) => pattern.test(message))
+          if (!shouldRetry || attempt === 24) {
+            throw error
+          }
+        }
+      }
+
+      throw new Error('Failed to create worktree after retrying branch conflicts.')
     } catch (err) {
       console.error('Failed to create worktree:', err)
       throw err
@@ -111,12 +142,16 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     }))
 
     try {
+      const repoIdForTrust = getRepoIdFromWorktreeId(worktreeId)
+      const trustDecision = await ensureHooksConfirmed(get(), repoIdForTrust, 'archive')
+      const skipArchive = trustDecision === 'skip'
+
       // Why: setup-enabled worktrees now commonly have a live shell open as soon as
       // they are created. We must tear those PTYs down before asking Git to remove
       // the working tree or Windows and some shells can keep the directory in use
       // and make delete look broken even though the git state itself is fine.
       await get().shutdownWorktreeTerminals(worktreeId)
-      await window.api.worktrees.remove({ worktreeId, force })
+      await window.api.worktrees.remove({ worktreeId, force, skipArchive })
       const tabs = get().tabsByWorktree[worktreeId] ?? []
       const tabIds = new Set(tabs.map((t) => t.id))
 
@@ -164,6 +199,8 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         delete nextUnifiedTabsByWorktree[worktreeId]
         const nextGroupsByWorktree = { ...s.groupsByWorktree }
         delete nextGroupsByWorktree[worktreeId]
+        const nextLayoutByWorktree = { ...s.layoutByWorktree }
+        delete nextLayoutByWorktree[worktreeId]
         const nextActiveGroupIdByWorktree = { ...s.activeGroupIdByWorktree }
         delete nextActiveGroupIdByWorktree[worktreeId]
         // Why: git status / compare caches are keyed by worktree and stop being
@@ -205,6 +242,9 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           ? s.openFiles.some((f) => f.id === s.activeFileId && f.worktreeId === worktreeId)
           : false
         const removedActiveWorktree = s.activeWorktreeId === worktreeId
+        const nextEverActivatedWorktreeIds = s.everActivatedWorktreeIds.has(worktreeId)
+          ? new Set([...s.everActivatedWorktreeIds].filter((id) => id !== worktreeId))
+          : s.everActivatedWorktreeIds
         return {
           worktreesByRepo: next,
           tabsByWorktree: nextTabs,
@@ -232,6 +272,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           pendingReconnectTabByWorktree: nextPendingReconnectTabByWorktree,
           unifiedTabsByWorktree: nextUnifiedTabsByWorktree,
           groupsByWorktree: nextGroupsByWorktree,
+          layoutByWorktree: nextLayoutByWorktree,
           activeGroupIdByWorktree: nextActiveGroupIdByWorktree,
           editorDrafts: nextEditorDrafts,
           markdownViewMode: nextMarkdownViewMode,
@@ -245,6 +286,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           activeFileId: activeFileCleared ? null : s.activeFileId,
           activeBrowserTabId: removedActiveWorktree ? null : s.activeBrowserTabId,
           activeTabType: removedActiveWorktree || activeFileCleared ? 'terminal' : s.activeTabType,
+          everActivatedWorktreeIds: nextEverActivatedWorktreeIds,
           sortEpoch: s.sortEpoch + 1
         }
       })
@@ -300,27 +342,12 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     }
   },
 
-  reorderSidebarWorktrees: (orderedIds) => {
-    set((s) => {
-      const nextWorktrees = applySidebarOrder(s.worktreesByRepo, orderedIds)
-      return nextWorktrees === s.worktreesByRepo
-        ? {}
-        : { worktreesByRepo: nextWorktrees, sortEpoch: s.sortEpoch + 1 }
-    })
-
-    void window.api.worktrees.persistSidebarOrder({ orderedIds }).catch((err) => {
-      console.error('Failed to persist sidebar order:', err)
-      const repoIds = new Set(orderedIds.map((id) => getRepoIdFromWorktreeId(id)))
-      void Promise.all([...repoIds].map((repoId) => get().fetchWorktrees(repoId)))
-    })
-  },
-
   markWorktreeUnread: (worktreeId) => {
-    const activeWorktreeId = get().activeWorktreeId
-    if (activeWorktreeId === worktreeId) {
-      return
-    }
-
+    // Why: BEL must fire regardless of focus (ghostty semantics — "show
+    // until interact"). Interaction with a pane inside the worktree
+    // dismisses the dot via clearWorktreeUnread. Worktree activation via
+    // setActiveWorktree also clears isUnread as a side-effect; that path
+    // predates this PR and is unaffected here.
     let shouldPersist = false
     const now = Date.now()
     set((s) => {
@@ -350,6 +377,37 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       })
   },
 
+  clearWorktreeUnread: (worktreeId) => {
+    let shouldPersist = false
+    set((s) => {
+      const worktree = findWorktreeById(s.worktreesByRepo, worktreeId)
+      if (!worktree || !worktree.isUnread) {
+        // Why: return `s` (not `{}`) to preserve the exact object reference
+        // on no-op. This matches the sibling `clearTerminalTabUnread` in
+        // terminals.ts and avoids downstream selector churn on the hot path
+        // (called on every keystroke and pointerdown).
+        return s
+      }
+      shouldPersist = true
+      return {
+        worktreesByRepo: applyWorktreeUpdates(s.worktreesByRepo, worktreeId, {
+          isUnread: false
+        })
+      }
+    })
+
+    if (!shouldPersist) {
+      return
+    }
+
+    void window.api.worktrees
+      .updateMeta({ worktreeId, updates: { isUnread: false } })
+      .catch((err) => {
+        console.error('Failed to persist cleared unread worktree state:', err)
+        void get().fetchWorktrees(getRepoIdFromWorktreeId(worktreeId))
+      })
+  },
+
   bumpWorktreeActivity: (worktreeId) => {
     const now = Date.now()
     set((s) => {
@@ -365,7 +423,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       // after generation bump triggers updateTabPtyId → here).
       // The lastActivityAt timestamp is still persisted so that the NEXT
       // meaningful sortEpoch bump (from a background worktree event) will
-      // include this worktree's updated score.
+      // include this worktree's updated smart-sort score.
       const isActive = s.activeWorktreeId === worktreeId
       return {
         worktreesByRepo: applyWorktreeUpdates(s.worktreesByRepo, worktreeId, {
@@ -384,6 +442,9 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
   },
 
   setActiveWorktree: (worktreeId) => {
+    const reconciledActiveTabId = worktreeId
+      ? get().reconcileWorktreeTabModel(worktreeId).activeRenderableTabId
+      : null
     let shouldClearUnread = false
     set((s) => {
       if (!worktreeId) {
@@ -399,6 +460,20 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       const restoredFileId = s.activeFileIdByWorktree[worktreeId] ?? null
       const restoredBrowserTabId = s.activeBrowserTabIdByWorktree[worktreeId] ?? null
       const restoredTabType = s.activeTabTypeByWorktree[worktreeId] ?? 'terminal'
+      const activeGroupId =
+        s.activeGroupIdByWorktree[worktreeId] ?? s.groupsByWorktree[worktreeId]?.[0]?.id ?? null
+      const activeGroup = activeGroupId
+        ? ((s.groupsByWorktree[worktreeId] ?? []).find((group) => group.id === activeGroupId) ??
+          null)
+        : null
+      const activeUnifiedTabId = reconciledActiveTabId ?? activeGroup?.activeTabId ?? null
+      const activeUnifiedTab =
+        activeUnifiedTabId != null
+          ? ((s.unifiedTabsByWorktree[worktreeId] ?? []).find(
+              (tab) =>
+                tab.id === activeUnifiedTabId && (!activeGroup || tab.groupId === activeGroup.id)
+            ) ?? null)
+          : null
       // Verify the restored file still exists in openFiles
       const fileStillOpen = restoredFileId
         ? s.openFiles.some((f) => f.id === restoredFileId && f.worktreeId === worktreeId)
@@ -407,16 +482,40 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       const browserTabStillOpen = restoredBrowserTabId
         ? browserTabs.some((tab) => tab.id === restoredBrowserTabId)
         : false
+      const hasGroupOwnedSurface =
+        (s.groupsByWorktree[worktreeId]?.length ?? 0) > 0 || Boolean(s.layoutByWorktree[worktreeId])
 
-      // Why: restore the visible tab surface the user last had active in this
-      // worktree.  The 'terminal' case must be handled explicitly — without it,
-      // the fallback branches below see that a file is still open and promote
-      // the surface to 'editor', so the user always lands on a file tab instead
-      // of the terminal they were working in.
+      // Why: worktree activation must restore from the reconciled tab-group
+      // model first. Split groups are now the ownership model for visible
+      // content; if we prefer the legacy activeTabType/browser/file fallbacks
+      // when the two models disagree, the renderer can reopen a surface that
+      // has no backing unified tab and show a blank worktree.
       let activeFileId: string | null
       let activeBrowserTabId: string | null
       let activeTabType: WorkspaceVisibleTabType
-      if (restoredTabType === 'terminal') {
+      if (activeUnifiedTab) {
+        activeFileId =
+          activeUnifiedTab.contentType === 'editor' ||
+          activeUnifiedTab.contentType === 'diff' ||
+          activeUnifiedTab.contentType === 'conflict-review'
+            ? activeUnifiedTab.entityId
+            : fileStillOpen
+              ? restoredFileId
+              : null
+        activeBrowserTabId =
+          activeUnifiedTab.contentType === 'browser'
+            ? activeUnifiedTab.entityId
+            : browserTabStillOpen
+              ? restoredBrowserTabId
+              : (browserTabs[0]?.id ?? null)
+        activeTabType = toVisibleTabType(activeUnifiedTab.contentType)
+      } else if (hasGroupOwnedSurface) {
+        activeFileId = fileStillOpen ? restoredFileId : null
+        activeBrowserTabId = browserTabStillOpen
+          ? restoredBrowserTabId
+          : (browserTabs[0]?.id ?? null)
+        activeTabType = 'terminal'
+      } else if (restoredTabType === 'terminal') {
         activeFileId = fileStillOpen ? restoredFileId : null
         activeBrowserTabId = browserTabStillOpen
           ? restoredBrowserTabId
@@ -457,7 +556,64 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       const tabStillExists = restoredTabId
         ? worktreeTabs.some((t) => t.id === restoredTabId)
         : false
-      const activeTabId = tabStillExists ? restoredTabId : (worktreeTabs[0]?.id ?? null)
+      const activeTabId =
+        activeUnifiedTab?.contentType === 'terminal'
+          ? activeUnifiedTab.entityId
+          : tabStillExists
+            ? restoredTabId
+            : (worktreeTabs[0]?.id ?? null)
+
+      // Why: focusing a worktree is not meaningful background activity for the
+      // smart sort. Writing lastActivityAt here makes the next unrelated
+      // sortEpoch bump reshuffle cards based on what the user merely looked at,
+      // which is the "jump after focus" bug reported in Slack. Keep selection
+      // side-effects limited to unread clearing; true activity signals such as
+      // PTY lifecycle and explicit edits still flow through bumpWorktreeActivity.
+      const metaUpdates: Partial<WorktreeMeta> = shouldClearUnread ? { isUnread: false } : {}
+
+      // Why: the generation bump for dead-PTY tabs MUST happen in the same
+      // set() as the activation. Two separate set() calls let React/Zustand
+      // render the old (dead-transport) TerminalPane as visible for one frame
+      // before the generation bump unmounts it — that intermediate render
+      // resumes the pane with a transport stuck at connected=false/ptyId=null,
+      // and user input is silently dropped.
+      //
+      // Why pendingActivationSpawn + first-activation check: the first time a
+      // worktree is activated in this session, its TerminalPane mounts and
+      // each tab's PTY either reattaches (restored session) or fresh-spawns
+      // (never visited). Both paths call updateTabPtyId; neither is real
+      // activity — they are side-effects of the click. Tag every tab on the
+      // FIRST activation so the resulting updateTabPtyId suppresses both the
+      // activity bump and the sortEpoch bump.
+      //
+      // We can't use tab.ptyId==null as the guard (what the old `allDead`
+      // check did): reconnectPersistedTerminals re-populates tab.ptyId with
+      // restored daemon session IDs *before* the pane mounts, so tabs look
+      // live to allDead even though the next updateTabPtyId is a reattach.
+      // Tracking first-activation per worktree is the reliable signal.
+      //
+      // Generation is still only bumped when tabs are allDead — a live tab
+      // remount would kill the user's running shell.
+      const tabs = s.tabsByWorktree[worktreeId ?? ''] ?? []
+      const allDead = worktreeId && tabs.length > 0 && tabs.every((tab) => !tab.ptyId)
+      const isFirstActivation = worktreeId != null && !s.everActivatedWorktreeIds.has(worktreeId)
+      const shouldTagTabs = worktreeId != null && tabs.length > 0 && isFirstActivation
+      const nextEverActivated = isFirstActivation
+        ? new Set([...s.everActivatedWorktreeIds, worktreeId!])
+        : s.everActivatedWorktreeIds
+      const tabsByWorktreeUpdate =
+        allDead || shouldTagTabs
+          ? {
+              tabsByWorktree: {
+                ...s.tabsByWorktree,
+                [worktreeId!]: tabs.map((tab) => ({
+                  ...tab,
+                  ...(allDead ? { generation: (tab.generation ?? 0) + 1 } : {}),
+                  ...(shouldTagTabs ? { pendingActivationSpawn: true } : {})
+                }))
+              }
+            }
+          : {}
 
       return {
         activeWorktreeId: worktreeId,
@@ -466,31 +622,13 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         activeTabType,
         activeTabTypeByWorktree: { ...s.activeTabTypeByWorktree, [worktreeId]: activeTabType },
         activeTabId,
-        worktreesByRepo: applyWorktreeUpdates(
-          s.worktreesByRepo,
-          worktreeId,
-          shouldClearUnread ? { isUnread: false } : {}
-        )
+        everActivatedWorktreeIds: nextEverActivated,
+        ...(shouldClearUnread
+          ? { worktreesByRepo: applyWorktreeUpdates(s.worktreesByRepo, worktreeId, metaUpdates) }
+          : {}),
+        ...tabsByWorktreeUpdate
       }
     })
-
-    // If the worktree has tabs but all PTYs are dead (e.g. after shutdown),
-    // bump generation so TerminalPanes remount with fresh PTY connections.
-    if (worktreeId) {
-      const tabs = get().tabsByWorktree[worktreeId] ?? []
-      const allDead = tabs.length > 0 && tabs.every((tab) => !tab.ptyId)
-      if (allDead) {
-        set((s) => ({
-          tabsByWorktree: {
-            ...s.tabsByWorktree,
-            [worktreeId]: (s.tabsByWorktree[worktreeId] ?? []).map((tab) => ({
-              ...tab,
-              generation: (tab.generation ?? 0) + 1
-            }))
-          }
-        }))
-      }
-    }
 
     // Why: force-refreshing GitHub data on every switch burned API rate limit
     // quota and added 200-800ms latency. Only refresh when cache is actually
@@ -503,19 +641,16 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       return
     }
 
-    const updates: Parameters<typeof window.api.worktrees.updateMeta>[0]['updates'] = {}
     if (shouldClearUnread) {
-      updates.isUnread = false
-    }
+      const updates: Parameters<typeof window.api.worktrees.updateMeta>[0]['updates'] = {
+        isUnread: false
+      }
 
-    if (Object.keys(updates).length === 0) {
-      return
+      void window.api.worktrees.updateMeta({ worktreeId, updates }).catch((err) => {
+        console.error('Failed to persist worktree activation state:', err)
+        void get().fetchWorktrees(getRepoIdFromWorktreeId(worktreeId))
+      })
     }
-
-    void window.api.worktrees.updateMeta({ worktreeId, updates }).catch((err) => {
-      console.error('Failed to persist worktree activation state:', err)
-      void get().fetchWorktrees(getRepoIdFromWorktreeId(worktreeId))
-    })
   },
 
   allWorktrees: () => Object.values(get().worktreesByRepo).flat()

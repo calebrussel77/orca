@@ -14,6 +14,7 @@ import { fetchChangelog } from './updater-changelog'
 import { buildReleaseTagUrl, type GitHubReleaseInfo } from '../shared/github-release'
 
 type UpdaterHandlerContext = {
+  clearBackgroundCheckLaunchPending: () => void
   clearAvailableUpdateContext: () => void
   getCurrentStatus: () => UpdateStatus
   getKnownReleaseUrl: () => string | undefined
@@ -33,6 +34,7 @@ type UpdaterHandlerContext = {
 }
 
 export function registerAutoUpdaterHandlers({
+  clearBackgroundCheckLaunchPending,
   clearAvailableUpdateContext,
   getCurrentStatus,
   getKnownReleaseUrl,
@@ -91,12 +93,14 @@ export function registerAutoUpdaterHandlers({
   })
 
   autoUpdater.on('checking-for-update', () => {
+    clearBackgroundCheckLaunchPending()
     resetMacInstallState()
     clearAvailableUpdateContext()
     sendStatus({ state: 'checking', userInitiated: getUserInitiatedCheck() || undefined })
   })
 
   autoUpdater.on('update-available', (info) => {
+    clearBackgroundCheckLaunchPending()
     // --- synchronous preamble (runs before any await) ---
     const wasUserInitiated = getUserInitiatedCheck()
     setUserInitiatedCheck(false)
@@ -104,6 +108,10 @@ export function registerAutoUpdaterHandlers({
     // Guard: don't show an update that isn't actually newer than what's running.
     if (compareVersions(info.version, app.getVersion()) <= 0) {
       clearAvailableUpdateContext()
+      recordCompletedUpdateCheck()
+      if (!wasUserInitiated) {
+        scheduleAutomaticUpdateCheck(24 * 60 * 60 * 1000)
+      }
       sendStatus({ state: 'not-available', userInitiated: wasUserInitiated || undefined })
       return
     }
@@ -146,6 +154,7 @@ export function registerAutoUpdaterHandlers({
   })
 
   autoUpdater.on('update-not-available', () => {
+    clearBackgroundCheckLaunchPending()
     resetMacInstallState()
     const wasUserInitiated = getUserInitiatedCheck()
     setUserInitiatedCheck(false)
@@ -158,6 +167,7 @@ export function registerAutoUpdaterHandlers({
   })
 
   autoUpdater.on('download-progress', (progress) => {
+    clearBackgroundCheckLaunchPending()
     sendStatus({
       state: 'downloading',
       percent: Math.round(progress.percent),
@@ -166,6 +176,7 @@ export function registerAutoUpdaterHandlers({
   })
 
   autoUpdater.on('update-downloaded', (info) => {
+    clearBackgroundCheckLaunchPending()
     // Don't show the banner if the downloaded version isn't actually newer
     // than what's running. This catches the exact-same-version case as well
     // as stale cached updates from an older release.
@@ -187,6 +198,7 @@ export function registerAutoUpdaterHandlers({
   })
 
   autoUpdater.on('error', (err) => {
+    clearBackgroundCheckLaunchPending()
     resetMacInstallState()
     const wasUserInitiated = getUserInitiatedCheck()
     setUserInitiatedCheck(false)

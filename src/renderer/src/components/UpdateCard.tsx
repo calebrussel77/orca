@@ -6,14 +6,19 @@ import { useAppStore } from '../store'
 import { Card } from './ui/card'
 import { Button } from './ui/button'
 import { Progress } from './ui/progress'
-import { AlertCircle, Check, Loader2, X } from 'lucide-react'
+import { AlertCircle, Check, Loader2, Minus, X } from 'lucide-react'
 import type { ChangelogData } from '../../../shared/types'
-import { buildReleaseTagUrl, DEFAULT_GITHUB_RELEASE_INFO } from '../../../shared/github-release'
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function releaseUrlForVersion(version: string | null): string {
-  return buildReleaseTagUrl(version, DEFAULT_GITHUB_RELEASE_INFO)
+  // Why: when no version is cached (typically a failed check), point at the
+  // plain releases listing rather than /releases/latest — /latest also breaks
+  // when GitHub's release API is degraded, and the listing is the most
+  // reliable manual fallback.
+  return version
+    ? `https://github.com/stablyai/orca/releases/tag/v${version}`
+    : 'https://github.com/stablyai/orca/releases'
 }
 
 function isAnimatedGif(url: string | undefined): boolean {
@@ -84,12 +89,22 @@ export function UpdateCard() {
   const storeChangelog = useAppStore((s) => s.updateChangelog)
   const dismissedVersion = useAppStore((s) => s.dismissedUpdateVersion)
   const dismissUpdate = useAppStore((s) => s.dismissUpdate)
+  const collapsed = useAppStore((s) => s.updateCardCollapsed)
+  const setCollapsed = useAppStore((s) => s.setUpdateCardCollapsed)
   const reassuranceSeen = useAppStore((s) => s.updateReassuranceSeen)
   const markReassuranceSeen = useAppStore((s) => s.markUpdateReassuranceSeen)
   const hasStartedDownload = useRef(false)
   const [mediaFailed, setMediaFailed] = useState(false)
   const [mediaLoaded, setMediaLoaded] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+  // Why: the version-based dismiss gate at the bottom of the visibility
+  // section intentionally keeps error cards visible so a download failure
+  // still surfaces even if the user previously dismissed the "available"
+  // card for the same version.  But this means the error card's own X
+  // button cannot hide the card via dismissUpdate alone.  A separate
+  // local flag tracks whether the user has explicitly closed the error
+  // card in this render cycle.
+  const [errorDismissed, setErrorDismissed] = useState(false)
   // Why: "not-available" is transient feedback ("You're up to date") that
   // should auto-dismiss. A local flag avoids polluting the store with
   // timer state that no other component cares about.
@@ -147,6 +162,9 @@ export function UpdateCard() {
     }
     if (exiting) {
       setExiting(false)
+    }
+    if (errorDismissed) {
+      setErrorDismissed(false)
     }
   }
 
@@ -228,16 +246,34 @@ export function UpdateCard() {
     return null
   }
 
+  // Why: the version-based dismiss gate below intentionally keeps error cards
+  // visible, but when the user explicitly clicks X on the error card itself
+  // the card must disappear. This gate handles that case.
+  if (status.state === 'error' && errorDismissed) {
+    return null
+  }
+
   // Dismiss gate: if the user previously dismissed this version, hide the card
   // for passive reminder states. Keep active in-progress/error states visible so
   // explicit install actions can still surface progress and failures.
   // Why: bypass the gate when the current cycle was user-initiated — the user
   // explicitly asked to check, so they expect to see the result even if they
   // dismissed the same version earlier.
-  if (versionRef.current && dismissedVersion === versionRef.current && !userInitiatedCycleRef.current) {
+  if (
+    versionRef.current &&
+    dismissedVersion === versionRef.current &&
+    !userInitiatedCycleRef.current
+  ) {
     if (status.state !== 'downloading' && status.state !== 'error') {
       return null
     }
+  }
+
+  if (
+    collapsed &&
+    (status.state === 'downloading' || status.state === 'downloaded' || status.state === 'error')
+  ) {
+    return null
   }
 
   // ── Shared helpers ────────────────────────────────────────────────
@@ -261,8 +297,11 @@ export function UpdateCard() {
     // immediately — otherwise the card would reappear on the next render
     // because the bypass ref still overrides the persisted dismissal.
     userInitiatedCycleRef.current = false
-    if (status.state === 'error' && cachedVersion) {
-      dismissUpdate(cachedVersion)
+    if (status.state === 'error') {
+      setErrorDismissed(true)
+      if (cachedVersion) {
+        dismissUpdate(cachedVersion)
+      }
       return
     }
     dismissUpdate()
@@ -277,8 +316,12 @@ export function UpdateCard() {
   const errorCard: ErrorCardModel | null =
     status.state === 'error'
       ? {
-          title: 'Update Error',
-          summary: cachedVersion ? 'Could not complete the update.' : 'Could not check for updates.',
+          // Why: title is scoped to the operation that failed so check-time
+          // failures (commonly GitHub-side) don't read as a bug in Orca.
+          title: cachedVersion ? 'Update Error' : 'Update Check Failed',
+          summary: cachedVersion
+            ? 'Could not complete the update.'
+            : 'Could not check for updates.',
           message: status.message,
           releaseUrl: releaseUrlForVersion(cachedVersion),
           primaryAction: cachedVersion
@@ -310,10 +353,33 @@ export function UpdateCard() {
     setTimeout(handleClose, 150)
   }
 
-  // Escape key handler for accessibility
+  // Why: long-running phases (downloading, downloaded, error) minimize to the
+  // status bar instead of persistently dismissing. A dismiss during an active
+  // download would orphan the in-flight download with no surfaced recovery.
+  const handleCollapseWithAnimation = () => {
+    if (prefersReducedMotion) {
+      setCollapsed(true)
+      return
+    }
+    setExiting(true)
+    setTimeout(() => {
+      setCollapsed(true)
+      setExiting(false)
+    }, 150)
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.preventDefault()
+    if (e.key !== 'Escape') {
+      return
+    }
+    e.preventDefault()
+    if (
+      status.state === 'downloading' ||
+      status.state === 'downloaded' ||
+      status.state === 'error'
+    ) {
+      handleCollapseWithAnimation()
+    } else {
       handleDismissWithAnimation()
     }
   }
@@ -364,7 +430,7 @@ export function UpdateCard() {
           message={errorCard.message}
           releaseUrl={errorCard.releaseUrl}
           primaryAction={errorCard.primaryAction}
-          onClose={handleDismissWithAnimation}
+          onClose={handleCollapseWithAnimation}
         />
       )
     }
@@ -384,7 +450,7 @@ export function UpdateCard() {
         <ReadyToInstallContent
           version={status.version}
           onRestart={handleInstallRetry}
-          onClose={handleDismissWithAnimation}
+          onClose={handleCollapseWithAnimation}
         />
       )
     }
@@ -402,6 +468,7 @@ export function UpdateCard() {
           mediaLoaded={mediaLoaded}
           onMediaError={() => setMediaFailed(true)}
           onMediaLoad={() => setMediaLoaded(true)}
+          onCollapse={handleCollapseWithAnimation}
         />
       )
     }
@@ -449,12 +516,12 @@ export function UpdateCard() {
     !reassuranceSeen && (status.state === 'available' || status.state === 'downloading')
 
   return (
-    <div className="fixed bottom-10 right-4 z-40 w-[360px] max-w-[calc(100vw-32px)] flex flex-col gap-2
-      max-[480px]:left-4 max-[480px]:right-4 max-[480px]:w-auto">
+    <div
+      className="fixed bottom-10 right-4 z-40 w-[360px] max-w-[calc(100vw-32px)] flex flex-col gap-2
+      max-[480px]:left-4 max-[480px]:right-4 max-[480px]:w-auto"
+    >
       {showReassurance && (
-        <Card
-          className={`py-0 gap-0 ${animationClass}`}
-        >
+        <Card className={`py-0 gap-0 ${animationClass}`}>
           <div className="flex items-center gap-3 p-3">
             <div className="flex-1 min-w-0">
               <p className="text-xs text-muted-foreground">
@@ -610,9 +677,7 @@ function SimpleCardContent({
         </Button>
       </div>
 
-      <p className="text-sm text-muted-foreground">
-        Orca v{version} is ready.
-      </p>
+      <p className="text-sm text-muted-foreground">Orca v{version} is ready.</p>
 
       <p className="text-xs leading-relaxed text-muted-foreground">
         Sessions won&apos;t be interrupted.
@@ -642,7 +707,8 @@ function DownloadingContent({
   mediaFailed,
   mediaLoaded,
   onMediaError,
-  onMediaLoad
+  onMediaLoad,
+  onCollapse
 }: {
   version: string
   percent: number
@@ -652,12 +718,11 @@ function DownloadingContent({
   mediaLoaded: boolean
   onMediaError: () => void
   onMediaLoad: () => void
+  onCollapse: () => void
 }) {
   const release = changelog?.release
   const showMedia =
-    release?.mediaUrl &&
-    !mediaFailed &&
-    !(prefersReducedMotion && isAnimatedGif(release.mediaUrl))
+    release?.mediaUrl && !mediaFailed && !(prefersReducedMotion && isAnimatedGif(release.mediaUrl))
 
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -667,7 +732,15 @@ function DownloadingContent({
         ) : (
           <h3 className="text-sm font-semibold">Downloading Update</h3>
         )}
-        <div className="size-7 shrink-0 min-w-[44px] min-h-[44px] -m-2" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 shrink-0 min-w-[44px] min-h-[44px] -m-2"
+          onClick={onCollapse}
+          aria-label="Minimize to status bar"
+        >
+          <Minus className="size-3.5" />
+        </Button>
       </div>
 
       {showMedia && release?.mediaUrl && (
@@ -741,9 +814,9 @@ function ErrorCardContent({
           size="icon"
           className="size-7 shrink-0 min-w-[44px] min-h-[44px] -m-2"
           onClick={onClose}
-          aria-label="Dismiss"
+          aria-label="Minimize to status bar"
         >
-          <X className="size-3.5" />
+          <Minus className="size-3.5" />
         </Button>
       </div>
 
@@ -790,9 +863,9 @@ function ReadyToInstallContent({
           size="icon"
           className="size-7 shrink-0 min-w-[44px] min-h-[44px] -m-2"
           onClick={onClose}
-          aria-label="Dismiss"
+          aria-label="Minimize to status bar"
         >
-          <X className="size-3.5" />
+          <Minus className="size-3.5" />
         </Button>
       </div>
 

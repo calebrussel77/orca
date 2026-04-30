@@ -50,20 +50,37 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<EditingTarget>(EMPTY_FORM)
-  const [testing, setTesting] = useState<string | null>(null)
+  const [testingIds, setTestingIds] = useState<Set<string>>(new Set())
   const [pendingRemove, setPendingRemove] = useState<{ id: string; label: string } | null>(null)
 
-  const loadTargets = useCallback(async () => {
-    try {
-      const result = (await window.api.ssh.listTargets()) as SshTarget[]
-      setTargets(result)
-    } catch {
-      toast.error('Failed to load SSH targets')
-    }
-  }, [])
+  const setSshTargetLabels = useAppStore((s) => s.setSshTargetLabels)
+
+  const loadTargets = useCallback(
+    async (opts?: { signal?: AbortSignal }) => {
+      try {
+        const result = (await window.api.ssh.listTargets()) as SshTarget[]
+        if (opts?.signal?.aborted) {
+          return
+        }
+        setTargets(result)
+        const labels = new Map<string, string>()
+        for (const t of result) {
+          labels.set(t.id, t.label)
+        }
+        setSshTargetLabels(labels)
+      } catch {
+        if (!opts?.signal?.aborted) {
+          toast.error('Failed to load SSH targets')
+        }
+      }
+    },
+    [setSshTargetLabels]
+  )
 
   useEffect(() => {
-    void loadTargets()
+    const abortController = new AbortController()
+    void loadTargets({ signal: abortController.signal })
+    return () => abortController.abort()
   }, [loadTargets])
 
   const handleSave = async (): Promise<void> => {
@@ -78,11 +95,19 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       return
     }
 
+    const graceSeconds = parseInt(form.relayGracePeriodSeconds, 10)
+    if (isNaN(graceSeconds) || graceSeconds < 60 || graceSeconds > 3600) {
+      toast.error('Relay grace period must be between 60 and 3600 seconds')
+      return
+    }
+
     const target = {
       label: form.label.trim() || `${form.username}@${form.host}`,
+      configHost: form.configHost.trim() || form.host.trim(),
       host: form.host.trim(),
       port,
       username: form.username.trim(),
+      relayGracePeriodSeconds: graceSeconds,
       ...(form.identityFile.trim() ? { identityFile: form.identityFile.trim() } : {}),
       ...(form.proxyCommand.trim() ? { proxyCommand: form.proxyCommand.trim() } : {}),
       ...(form.jumpHost.trim() ? { jumpHost: form.jumpHost.trim() } : {})
@@ -126,12 +151,14 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
     setEditingId(target.id)
     setForm({
       label: target.label,
+      configHost: target.configHost ?? target.host,
       host: target.host,
       port: String(target.port),
       username: target.username,
       identityFile: target.identityFile ?? '',
       proxyCommand: target.proxyCommand ?? '',
-      jumpHost: target.jumpHost ?? ''
+      jumpHost: target.jumpHost ?? '',
+      relayGracePeriodSeconds: String(target.relayGracePeriodSeconds ?? 300)
     })
     setShowForm(true)
   }
@@ -153,7 +180,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
   }
 
   const handleTest = async (targetId: string): Promise<void> => {
-    setTesting(targetId)
+    setTestingIds((prev) => new Set(prev).add(targetId))
     try {
       const result = await window.api.ssh.testConnection({ targetId })
       if (result.success) {
@@ -164,7 +191,11 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Test failed')
     } finally {
-      setTesting(null)
+      setTestingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(targetId)
+        return next
+      })
     }
   }
 
@@ -193,25 +224,25 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
       {/* Header row */}
       <div className="flex items-center justify-between gap-3">
         <div className="space-y-0.5">
-          <p className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Targets</p>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm font-medium">Targets</p>
+          <p className="text-xs text-muted-foreground">
             Add a remote host to connect to it in Orca.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <Button
             variant="outline"
-            size="sm"
+            size="xs"
             onClick={() => void handleImport()}
             className="gap-1.5"
           >
-            <Upload className="size-4" />
+            <Upload className="size-3" />
             Import
           </Button>
           {!showForm ? (
             <Button
               variant="outline"
-              size="sm"
+              size="xs"
               onClick={() => {
                 setEditingId(null)
                 setForm(EMPTY_FORM)
@@ -219,7 +250,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
               }}
               className="gap-1.5"
             >
-              <Plus className="size-4" />
+              <Plus className="size-3" />
               Add Target
             </Button>
           ) : null}
@@ -228,7 +259,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
 
       {/* Target list */}
       {targets.length === 0 && !showForm ? (
-        <div className="flex items-center justify-center rounded-lg border border-dashed border-border/60 bg-card/30 px-4 py-5 text-base text-muted-foreground">
+        <div className="flex items-center justify-center rounded-lg border border-dashed border-border/60 bg-card/30 px-4 py-5 text-sm text-muted-foreground">
           No SSH targets configured.
         </div>
       ) : (
@@ -238,7 +269,7 @@ export function SshPane(_props: SshPaneProps): React.JSX.Element {
               key={target.id}
               target={target}
               state={sshConnectionStates.get(target.id)}
-              testing={testing === target.id}
+              testing={testingIds.has(target.id)}
               onConnect={(id) => void handleConnect(id)}
               onDisconnect={(id) => void handleDisconnect(id)}
               onTest={(id) => void handleTest(id)}

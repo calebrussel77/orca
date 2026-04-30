@@ -72,13 +72,12 @@ describe('Store', () => {
     expect(settings.branchPrefix).toBe('git-username')
     expect(settings.refreshLocalBaseRefOnWorktreeCreate).toBe(false)
     expect(settings.theme).toBe('system')
-    expect(settings.appFontSize).toBe(16)
-    expect(settings.appFontFamily).toBe('Geist')
     expect(settings.editorAutoSave).toBe(false)
     expect(settings.editorAutoSaveDelayMs).toBe(1000)
     expect(settings.terminalFontSize).toBe(14)
     expect(settings.terminalFontWeight).toBe(500)
     expect(settings.rightSidebarOpenByDefault).toBe(true)
+    expect(settings.showTaskProviderIcons).toBe(true)
   })
 
   it('returns default UI state when no data file exists', async () => {
@@ -144,10 +143,9 @@ describe('Store', () => {
     // new fields get defaults when missing from persisted data
     expect(store.getSettings().editorAutoSave).toBe(false)
     expect(store.getSettings().editorAutoSaveDelayMs).toBe(1000)
-    expect(store.getSettings().appFontSize).toBe(16)
-    expect(store.getSettings().appFontFamily).toBe('Geist')
     expect(store.getSettings().refreshLocalBaseRefOnWorktreeCreate).toBe(false)
     expect(store.getSettings().rightSidebarOpenByDefault).toBe(true)
+    expect(store.getSettings().showTaskProviderIcons).toBe(true)
     // repos should be loaded
     expect(store.getRepos()).toHaveLength(1)
   })
@@ -282,16 +280,12 @@ describe('Store', () => {
 
     const updated = store.updateSettings({
       theme: 'dark',
-      appFontSize: 18,
-      appFontFamily: 'Aptos',
       editorAutoSave: true,
       editorAutoSaveDelayMs: 1500,
       terminalFontSize: 16,
       terminalFontWeight: 600
     })
     expect(updated.theme).toBe('dark')
-    expect(updated.appFontSize).toBe(18)
-    expect(updated.appFontFamily).toBe('Aptos')
     expect(updated.editorAutoSave).toBe(true)
     expect(updated.editorAutoSaveDelayMs).toBe(1500)
     expect(updated.terminalFontSize).toBe(16)
@@ -393,7 +387,7 @@ describe('Store', () => {
     expect(ui.lastUpdateCheckAt).toBe(1234)
   })
 
-  it('migrates persisted smart sort to recent', async () => {
+  it('preserves persisted smart sort value', async () => {
     writeDataFile({
       schemaVersion: 1,
       repos: [],
@@ -405,7 +399,138 @@ describe('Store', () => {
     })
 
     const store = await createStore()
+    expect(store.getUI().sortBy).toBe('smart')
+  })
+
+  it('migrates legacy recent sort to smart on first load', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {},
+      ui: { sortBy: 'recent' },
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const store = await createStore()
+    expect(store.getUI().sortBy).toBe('smart')
+    expect(store.getUI()._sortBySmartMigrated).toBe(true)
+  })
+
+  it('preserves new recent sort after migration flag is set', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {},
+      ui: { sortBy: 'recent', _sortBySmartMigrated: true },
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const store = await createStore()
     expect(store.getUI().sortBy).toBe('recent')
+  })
+
+  // ── terminalMacOptionAsAlt migration (issue #903) ───────────────────
+
+  it('migrates legacy "true" terminalMacOptionAsAlt to "auto" on first load', async () => {
+    // Why: before the 'auto' mode shipped, 'true' was the global default.
+    // A persisted 'true' on an un-migrated install is indistinguishable
+    // from an explicit choice, so we flip to 'auto' and let detection pick
+    // the right value per keyboard layout. Non-US users stop losing their
+    // @ / € / [ ] characters.
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: { terminalMacOptionAsAlt: 'true' },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+    const store = await createStore()
+    expect(store.getSettings().terminalMacOptionAsAlt).toBe('auto')
+    expect(store.getSettings().terminalMacOptionAsAltMigrated).toBe(true)
+  })
+
+  it('preserves explicit "false" terminalMacOptionAsAlt through migration', async () => {
+    // 'false' never matched the old default — it was an explicit choice.
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: { terminalMacOptionAsAlt: 'false' },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+    const store = await createStore()
+    expect(store.getSettings().terminalMacOptionAsAlt).toBe('false')
+    expect(store.getSettings().terminalMacOptionAsAltMigrated).toBe(true)
+  })
+
+  it('preserves explicit "left" / "right" terminalMacOptionAsAlt through migration', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: { terminalMacOptionAsAlt: 'left' },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+    const store = await createStore()
+    expect(store.getSettings().terminalMacOptionAsAlt).toBe('left')
+    expect(store.getSettings().terminalMacOptionAsAltMigrated).toBe(true)
+  })
+
+  it('respects already-migrated settings with explicit "true"', async () => {
+    // After migration, if a user deliberately picks 'Both' in the UI,
+    // their choice is preserved on subsequent launches.
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: { terminalMacOptionAsAlt: 'true', terminalMacOptionAsAltMigrated: true },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+    const store = await createStore()
+    expect(store.getSettings().terminalMacOptionAsAlt).toBe('true')
+    expect(store.getSettings().terminalMacOptionAsAltMigrated).toBe(true)
+  })
+
+  it('fresh install defaults terminalMacOptionAsAlt to "auto" and marks migrated', async () => {
+    // No data file at all: auto is the new default; migration is considered
+    // complete since there's nothing legacy to migrate.
+    const store = await createStore()
+    expect(store.getSettings().terminalMacOptionAsAlt).toBe('auto')
+    // Fresh install: default is migrated=false (nothing loaded, so the
+    // migration code didn't run). On first persisted write, the flag stays
+    // false, which is fine — next load with legacy 'true' would still
+    // migrate correctly. Only loaded files flip the flag.
+    expect(store.getSettings().terminalMacOptionAsAltMigrated).toBe(false)
+  })
+
+  it('missing terminalMacOptionAsAlt in persisted file defaults to "auto" and flags migrated', async () => {
+    // Existing file predates the setting entirely. Treat like upgrade from
+    // pre-Option-as-Alt Orca: land on 'auto' and mark migrated so we don't
+    // re-examine.
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {},
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+    const store = await createStore()
+    expect(store.getSettings().terminalMacOptionAsAlt).toBe('auto')
+    expect(store.getSettings().terminalMacOptionAsAltMigrated).toBe(true)
   })
 
   // ── GitHub Cache ───────────────────────────────────────────────────

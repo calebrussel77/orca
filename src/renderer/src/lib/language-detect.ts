@@ -8,10 +8,11 @@ function extname(filePath: string): string {
 }
 
 const EXT_TO_LANGUAGE: Record<string, string> = {
+  // Why: Monaco's built-in language registry maps .tsx/.cts/.mts onto the
+  // 'typescript' language id and .jsx/.mjs/.cjs onto 'javascript' — there is
+  // no separate 'typescriptreact'/'javascriptreact' id. Returning the base id
+  // is what gives .tsx/.jsx files syntax highlighting in the editor.
   '.ts': 'typescript',
-  // Why: Monaco registers `typescript`/`javascript` language ids and uses the
-  // model URI extension (`.tsx`/`.jsx`) to enable the JSX/TSX grammar. Using
-  // VS Code-style ids like `typescriptreact` falls back to plaintext here.
   '.tsx': 'typescript',
   '.js': 'javascript',
   '.jsx': 'javascript',
@@ -21,6 +22,8 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
   '.jsonc': 'json',
   '.md': 'markdown',
   '.mdx': 'markdown',
+  '.mmd': 'mermaid',
+  '.mermaid': 'mermaid',
   '.css': 'css',
   '.scss': 'scss',
   '.less': 'less',
@@ -71,8 +74,9 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
   '.hrl': 'erlang',
   '.hs': 'haskell',
   '.clj': 'clojure',
-  '.vue': 'html',
-  '.svelte': 'html',
+  '.vue': 'vue',
+  '.svelte': 'svelte',
+  '.astro': 'html',
   '.tf': 'hcl',
   '.hcl': 'hcl',
   '.prisma': 'graphql'

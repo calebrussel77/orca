@@ -14,13 +14,10 @@ import {
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import type { GitHubViewer } from '../../../../shared/types'
-import { DEFAULT_GITHUB_RELEASE_INFO } from '../../../../shared/github-release'
 
-const GITHUB_ISSUES_URL = `${DEFAULT_GITHUB_RELEASE_INFO.issuesUrl}/`
+const GITHUB_ISSUES_URL = 'https://github.com/stablyai/orca/issues/'
 const DISCORD_URL = 'https://discord.gg/fzjDKHxv8Q'
 const X_URL = 'https://x.com/orca_build'
-const FEEDBACK_API_URL = 'https://api.onorca.dev/v1/feedback'
-const FEEDBACK_API_FALLBACK_URL = 'https://www.onorca.dev/v1/feedback'
 
 type SubmitIdentity = {
   githubLogin: string | null
@@ -42,37 +39,6 @@ function getSubmitIdentity(viewer: GitHubViewer | null, anonymous: boolean): Sub
   return {
     githubLogin: viewer.login,
     githubEmail: viewer.email
-  }
-}
-
-async function submitFeedback(body: {
-  feedback: string
-  githubLogin: string | null
-  githubEmail: string | null
-}): Promise<Response> {
-  try {
-    return await fetch(FEEDBACK_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    // Why: DNS for the dedicated api.onorca.dev host can lag behind a deploy.
-    // Falling back to the verified website-hosted versioned endpoint keeps
-    // feedback submission working instead of forcing users to wait on DNS.
-    if (
-      message.includes('ERR_NAME_NOT_RESOLVED') ||
-      message.includes('ENOTFOUND') ||
-      message.includes('Failed to fetch')
-    ) {
-      return fetch(FEEDBACK_API_FALLBACK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      })
-    }
-    throw error
   }
 }
 
@@ -130,17 +96,19 @@ function FeedbackDialog({
     setIsSubmitting(true)
     try {
       const identity = getSubmitIdentity(viewer, submitAnonymously)
-      const response = await submitFeedback({
-        // Why: showing the exact GitHub identity in the dialog makes the
-        // default attribution explicit, and this flag lets users opt out
-        // without having to disconnect gh for the rest of Orca.
+      // Why: submission is proxied through the main process via IPC because
+      // the packaged Mac build loads the renderer from file://, which makes
+      // cross-origin fetch() fail CORS preflight. Electron's net module in
+      // the main process has no CORS restrictions and works uniformly in dev
+      // and prod.
+      const result = await window.api.feedback.submit({
         feedback: trimmed,
         githubLogin: identity.githubLogin,
         githubEmail: identity.githubEmail
       })
 
-      if (!response.ok) {
-        throw new Error(`Feedback request failed with status ${response.status}`)
+      if (!result.ok) {
+        throw new Error(`Feedback request failed: ${result.error}`)
       }
 
       toast.success('Thanks for the feedback.')
@@ -264,43 +232,38 @@ function FeedbackDialog({
 
 const SidebarToolbar = React.memo(function SidebarToolbar() {
   const openModal = useAppStore((s) => s.openModal)
-  const setActiveView = useAppStore((s) => s.setActiveView)
+  const openSettingsPage = useAppStore((s) => s.openSettingsPage)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
 
   return (
     <div className="mt-auto shrink-0">
-      <div className="flex items-center justify-between gap-1 border-t border-sidebar-border px-2 py-1.5">
+      <div className="flex items-center justify-between border-t border-sidebar-border px-2 py-1.5">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
-              size="sm"
+              size="xs"
               onClick={() => openModal('add-repo')}
-              // Why a subtle tonal surface instead of the default ghost: the
-              // toolbar is the primary creation affordance when the sidebar is
-              // empty, and a whisper of background weight separates it from
-              // the icon-only utility buttons that follow without introducing
-              // a brand colour into the neutral palette.
-              className="h-8 gap-1.5 rounded-md border border-transparent px-2.5 text-foreground hover:bg-accent/70 hover:border-border/50"
+              className="gap-1.5 text-muted-foreground"
             >
-              <FolderPlus className="size-4 text-foreground/80" />
-              <span className="text-sm font-medium">Add Repo</span>
+              <FolderPlus className="size-3.5" />
+              <span className="text-[11px]">Add Project</span>
             </Button>
           </TooltipTrigger>
           <TooltipContent side="top" sideOffset={4}>
-            Open folder picker to add a repo
+            Open folder picker to add a project
           </TooltipContent>
         </Tooltip>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
-                size="icon-sm"
+                size="icon-xs"
                 onClick={() => setFeedbackOpen(true)}
                 className="text-muted-foreground"
               >
-                <MessageSquareText className="size-4" />
+                <MessageSquareText className="size-3.5" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={4}>
@@ -311,11 +274,11 @@ const SidebarToolbar = React.memo(function SidebarToolbar() {
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
-                size="icon-sm"
-                onClick={() => setActiveView('settings')}
+                size="icon-xs"
+                onClick={openSettingsPage}
                 className="text-muted-foreground"
               >
-                <Settings className="size-4" />
+                <Settings className="size-3.5" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={4}>

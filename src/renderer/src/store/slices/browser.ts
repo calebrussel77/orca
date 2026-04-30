@@ -2,9 +2,9 @@
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
 import type {
-  BrowserDetectedBrowser,
   BrowserCookieImportResult,
   BrowserCookieImportSummary,
+  BrowserHistoryEntry,
   BrowserLoadError,
   BrowserPage,
   BrowserSessionProfile,
@@ -12,12 +12,22 @@ import type {
   WorkspaceSessionState
 } from '../../../../shared/types'
 import { ORCA_BROWSER_BLANK_URL } from '../../../../shared/constants'
-import { pickNeighbor } from './tabs-helpers'
+import { pickNeighbor } from './tab-group-state'
 
 type CreateBrowserTabOptions = {
   activate?: boolean
   title?: string
   sessionProfileId?: string | null
+  // Why: callers like "Open Preview to the Side" need to place the new browser
+  // tab in a specific (sibling or newly-split) group rather than the ambient
+  // active group. Defaults to the worktree's current active group.
+  targetGroupId?: string
+  // Why: the explicit "New Tab" action (keyboard shortcut, + button) should
+  // land the user in the address bar even when their configured home page is a
+  // real URL, so they can type a destination immediately. Link-opened tabs
+  // (context menu, window.open, http link routing) leave this unset so focus
+  // stays on the webview. When omitted, we fall back to the blank-URL check.
+  focusAddressBar?: boolean
 }
 
 type CreateBrowserPageOptions = {
@@ -70,6 +80,7 @@ export type BrowserSlice = {
   setBrowserTabUrl: (pageId: string, url: string) => void
   setBrowserPageUrl: (pageId: string, url: string) => void
   hydrateBrowserSession: (session: WorkspaceSessionState) => void
+  switchBrowserTabProfile: (workspaceId: string, profileId: string | null) => void
   browserSessionProfiles: BrowserSessionProfile[]
   browserSessionImportState: {
     profileId: string
@@ -82,17 +93,58 @@ export type BrowserSlice = {
     scope: 'isolated' | 'imported',
     label: string
   ) => Promise<BrowserSessionProfile | null>
-  assignBrowserSessionProfile: (workspaceId: string, profileId: string | null) => void
   deleteBrowserSessionProfile: (profileId: string) => Promise<boolean>
   importCookiesToProfile: (profileId: string) => Promise<BrowserCookieImportResult>
   clearBrowserSessionImportState: () => void
-  detectedBrowsers: BrowserDetectedBrowser[]
+  detectedBrowsers: {
+    family: string
+    label: string
+    profiles: { name: string; directory: string }[]
+    selectedProfile: string
+  }[]
   fetchDetectedBrowsers: () => Promise<void>
   importCookiesFromBrowser: (
     profileId: string,
-    browserFamily: string
+    browserFamily: string,
+    browserProfile?: string
   ) => Promise<BrowserCookieImportResult>
   clearDefaultSessionCookies: () => Promise<boolean>
+  browserUrlHistory: BrowserHistoryEntry[]
+  addBrowserHistoryEntry: (url: string, title: string) => void
+  clearBrowserHistory: () => void
+  defaultBrowserSessionProfileId: string | null
+  setDefaultBrowserSessionProfileId: (profileId: string | null) => void
+}
+
+const MAX_BROWSER_HISTORY_ENTRIES = 200
+
+function normalizeHistoryUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    parsed.hostname = parsed.hostname.toLowerCase()
+    parsed.protocol = parsed.protocol.toLowerCase()
+    let normalized = parsed.toString()
+    if (normalized.endsWith('/')) {
+      normalized = normalized.slice(0, -1)
+    }
+    return normalized
+  } catch {
+    return url.toLowerCase()
+  }
+}
+
+function deduplicateHistory(entries: BrowserHistoryEntry[]): BrowserHistoryEntry[] {
+  const seen = new Set<string>()
+  const deduped: BrowserHistoryEntry[] = []
+  for (const entry of entries) {
+    const key = entry.normalizedUrl || normalizeHistoryUrl(entry.url)
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    deduped.push(entry.normalizedUrl ? entry : { ...entry, normalizedUrl: key })
+  }
+  return deduped.slice(0, MAX_BROWSER_HISTORY_ENTRIES)
 }
 
 function normalizeUrl(url: string): string {
@@ -253,16 +305,29 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
   pendingAddressBarFocusByPageId: {},
   browserSessionProfiles: [],
   browserSessionImportState: null,
+  browserUrlHistory: [],
+  defaultBrowserSessionProfileId: null,
+
+  setDefaultBrowserSessionProfileId: (profileId) => {
+    set({ defaultBrowserSessionProfileId: profileId })
+  },
 
   createBrowserTab: (worktreeId, url, options) => {
     const workspaceId = globalThis.crypto.randomUUID()
     const page = buildBrowserPage(workspaceId, worktreeId, url, options?.title)
+    // Why: when no explicit profile is passed, inherit the user's chosen default
+    // profile. This lets users set a preferred profile in Settings that all new
+    // browser tabs use automatically.
+    const sessionProfileId =
+      options?.sessionProfileId !== undefined
+        ? options.sessionProfileId
+        : get().defaultBrowserSessionProfileId
     const browserTab = buildWorkspaceFromPage(
       workspaceId,
       worktreeId,
       page,
       [page.id],
-      options?.sessionProfileId
+      sessionProfileId
     )
 
     set((s) => {
@@ -291,7 +356,8 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
       const shouldUpdateGlobalActiveSurface = shouldActivate && s.activeWorktreeId === worktreeId
       const shouldFocusAddressBar =
         shouldUpdateGlobalActiveSurface &&
-        (page.url === 'about:blank' || page.url === ORCA_BROWSER_BLANK_URL)
+        (options?.focusAddressBar ??
+          (page.url === 'about:blank' || page.url === ORCA_BROWSER_BLANK_URL))
 
       return {
         browserTabsByWorktree: {
@@ -340,7 +406,8 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
     if (!alreadyHasUnifiedTab) {
       state.createUnifiedTab(worktreeId, 'browser', {
         entityId: workspaceId,
-        label: browserTab.title
+        label: browserTab.title,
+        targetGroupId: options?.targetGroupId
       })
     }
     return browserTab
@@ -454,44 +521,69 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
   },
 
   reopenClosedBrowserTab: (worktreeId) => {
-    const recentlyClosed = get().recentlyClosedBrowserTabsByWorktree[worktreeId] ?? []
-    const entryToRestore = recentlyClosed[0]
+    // Why: read and pop atomically inside set() to prevent a TOCTOU race
+    // where two rapid Cmd+Shift+T presses both restore the same entry.
+    let entryToRestore: ClosedBrowserWorkspaceSnapshot | undefined
+
+    set((s) => {
+      const recentlyClosed = s.recentlyClosedBrowserTabsByWorktree[worktreeId] ?? []
+      entryToRestore = recentlyClosed[0]
+      if (!entryToRestore) {
+        return s
+      }
+      return {
+        recentlyClosedBrowserTabsByWorktree: {
+          ...s.recentlyClosedBrowserTabsByWorktree,
+          [worktreeId]: recentlyClosed.slice(1)
+        }
+      }
+    })
+
     if (!entryToRestore) {
       return null
     }
 
-    set((s) => ({
-      recentlyClosedBrowserTabsByWorktree: {
-        ...s.recentlyClosedBrowserTabsByWorktree,
-        [worktreeId]: (s.recentlyClosedBrowserTabsByWorktree[worktreeId] ?? []).slice(1)
-      }
-    }))
+    const snap = entryToRestore.workspace
+    const pages = entryToRestore.pages
+    const sessionProfileId = snap.sessionProfileId ?? null
 
-    const restored = get().createBrowserTab(worktreeId, entryToRestore.workspace.url, {
-      title: entryToRestore.workspace.title,
-      activate: true
+    if (pages.length === 0) {
+      const restored = get().createBrowserTab(worktreeId, snap.url, {
+        title: snap.title,
+        activate: true,
+        sessionProfileId
+      })
+      return get().browserTabsByWorktree[worktreeId]?.find((tab) => tab.id === restored.id) ?? null
+    }
+
+    // Why: create the tab with the first page, then append the rest in
+    // original order so multi-page workspaces preserve their page sequence.
+    const [firstPage, ...restPages] = pages
+    const restored = get().createBrowserTab(worktreeId, firstPage.url, {
+      title: firstPage.title,
+      activate: true,
+      sessionProfileId
     })
-    const restoredFirstPageId = restored.activePageId
-    const remainingPages = entryToRestore.pages.slice(1)
-    for (const page of remainingPages) {
-      get().createBrowserPage(restored.id, page.url, {
+
+    for (const p of restPages) {
+      get().createBrowserPage(restored.id, p.url, {
         activate: false,
-        title: page.title
+        title: p.title
       })
     }
-    if (restoredFirstPageId) {
+
+    // Activate the originally-active page if it wasn't the first one
+    const activePageId = snap.activePageId
+    if (activePageId) {
       const restoredPages = get().browserPagesByWorkspace[restored.id] ?? []
-      const activeReplacement = restoredPages.find(
-        (page) => page.url === entryToRestore.workspace.url
+      const targetPage = restoredPages.find(
+        (p) => p.url === pages.find((orig) => orig.id === activePageId)?.url
       )
-      const targetActivePage =
-        restoredPages.find((page) => page.title === entryToRestore.workspace.title) ??
-        activeReplacement ??
-        restoredPages[0]
-      if (targetActivePage) {
-        get().setActiveBrowserPage(restored.id, targetActivePage.id)
+      if (targetPage && targetPage.id !== restoredPages[0]?.id) {
+        get().setActiveBrowserPage(restored.id, targetPage.id)
       }
     }
+
     return get().browserTabsByWorktree[worktreeId]?.find((tab) => tab.id === restored.id) ?? null
   },
 
@@ -514,6 +606,17 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
         }
       }
     })
+
+    // Why: notify the CDP bridge which guest webContents is now active so
+    // subsequent agent commands (snapshot, click, etc.) target the correct tab.
+    // registerGuest uses page IDs (not workspace IDs), so we resolve the active
+    // page within the workspace to find the correct browserPageId.
+    const workspace = findWorkspace(get().browserTabsByWorktree, tabId)
+    if (workspace?.activePageId && typeof window !== 'undefined' && window.api?.browser) {
+      window.api.browser
+        .notifyActiveTabChanged({ browserPageId: workspace.activePageId })
+        .catch(() => {})
+    }
 
     const item = Object.values(get().unifiedTabsByWorktree)
       .flat()
@@ -661,18 +764,27 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
   },
 
   reopenClosedBrowserPage: (workspaceId) => {
-    const recentlyClosed = get().recentlyClosedBrowserPagesByWorkspace[workspaceId] ?? []
-    const pageToRestore = recentlyClosed[0]
+    // Why: read and pop atomically inside set() to prevent a TOCTOU race
+    // where two rapid Cmd+Shift+T presses both restore the same page.
+    let pageToRestore: BrowserPage | undefined
+
+    set((s) => {
+      const recentlyClosed = s.recentlyClosedBrowserPagesByWorkspace[workspaceId] ?? []
+      pageToRestore = recentlyClosed[0]
+      if (!pageToRestore) {
+        return s
+      }
+      return {
+        recentlyClosedBrowserPagesByWorkspace: {
+          ...s.recentlyClosedBrowserPagesByWorkspace,
+          [workspaceId]: recentlyClosed.slice(1)
+        }
+      }
+    })
+
     if (!pageToRestore) {
       return null
     }
-
-    set((s) => ({
-      recentlyClosedBrowserPagesByWorkspace: {
-        ...s.recentlyClosedBrowserPagesByWorkspace,
-        [workspaceId]: (s.recentlyClosedBrowserPagesByWorkspace[workspaceId] ?? []).slice(1)
-      }
-    }))
 
     return get().createBrowserPage(workspaceId, pageToRestore.url, {
       title: pageToRestore.title,
@@ -706,6 +818,12 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
         }
       }
     })
+
+    // Why: switching the active page within a workspace changes which guest
+    // webContents the CDP bridge should target for agent commands.
+    if (typeof window !== 'undefined' && window.api?.browser) {
+      window.api.browser.notifyActiveTabChanged({ browserPageId: pageId }).catch(() => {})
+    }
 
     const workspace = findWorkspace(get().browserTabsByWorktree, workspaceId)
     if (!workspace) {
@@ -969,7 +1087,8 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
         activeBrowserTabIdByWorktree,
         activeBrowserTabId,
         activeTabTypeByWorktree: nextActiveTabTypeByWorktree,
-        activeTabType
+        activeTabType,
+        browserUrlHistory: deduplicateHistory(session.browserUrlHistory ?? [])
       }
     })
 
@@ -987,6 +1106,25 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
         }
       }
     }
+  },
+
+  switchBrowserTabProfile: (workspaceId, profileId) => {
+    set((s) => {
+      for (const [worktreeId, tabs] of Object.entries(s.browserTabsByWorktree)) {
+        const tabIndex = tabs.findIndex((t) => t.id === workspaceId)
+        if (tabIndex !== -1) {
+          const updatedTabs = [...tabs]
+          updatedTabs[tabIndex] = { ...updatedTabs[tabIndex], sessionProfileId: profileId }
+          return {
+            browserTabsByWorktree: {
+              ...s.browserTabsByWorktree,
+              [worktreeId]: updatedTabs
+            }
+          }
+        }
+      }
+      return {}
+    })
   },
 
   fetchBrowserSessionProfiles: async () => {
@@ -1015,38 +1153,15 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
     }
   },
 
-  assignBrowserSessionProfile: (workspaceId, profileId) => {
-    set((s) => {
-      const workspace = findWorkspace(s.browserTabsByWorktree, workspaceId)
-      if (!workspace) {
-        return s
-      }
-
-      return {
-        browserTabsByWorktree: {
-          ...s.browserTabsByWorktree,
-          [workspace.worktreeId]: (s.browserTabsByWorktree[workspace.worktreeId] ?? []).map((tab) =>
-            tab.id === workspaceId ? { ...tab, sessionProfileId: profileId } : tab
-          )
-        }
-      }
-    })
-  },
-
   deleteBrowserSessionProfile: async (profileId) => {
     try {
       const ok = await window.api.browser.sessionDeleteProfile({ profileId })
       if (ok) {
         set((s) => ({
           browserSessionProfiles: s.browserSessionProfiles.filter((p) => p.id !== profileId),
-          browserTabsByWorktree: Object.fromEntries(
-            Object.entries(s.browserTabsByWorktree).map(([worktreeId, tabs]) => [
-              worktreeId,
-              tabs.map((tab) =>
-                tab.sessionProfileId === profileId ? { ...tab, sessionProfileId: null } : tab
-              )
-            ])
-          )
+          ...(s.defaultBrowserSessionProfileId === profileId
+            ? { defaultBrowserSessionProfileId: null }
+            : {})
         }))
       }
       return ok
@@ -1113,15 +1228,19 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
 
   fetchDetectedBrowsers: async () => {
     try {
-      const browsers =
-        (await window.api.browser.sessionDetectBrowsers()) as BrowserDetectedBrowser[]
+      const browsers = (await window.api.browser.sessionDetectBrowsers()) as {
+        family: string
+        label: string
+        profiles: { name: string; directory: string }[]
+        selectedProfile: string
+      }[]
       set({ detectedBrowsers: browsers })
     } catch {
       /* best-effort — empty list is acceptable fallback */
     }
   },
 
-  importCookiesFromBrowser: async (profileId, browserFamily) => {
+  importCookiesFromBrowser: async (profileId, browserFamily, browserProfile?) => {
     set({
       browserSessionImportState: {
         profileId,
@@ -1133,7 +1252,8 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
     try {
       const result = (await window.api.browser.sessionImportFromBrowser({
         profileId,
-        browserFamily
+        browserFamily,
+        browserProfile
       })) as BrowserCookieImportResult
       if (result.ok) {
         set({
@@ -1182,5 +1302,33 @@ export const createBrowserSlice: StateCreator<AppState, [], [], BrowserSlice> = 
     } catch {
       return false
     }
-  }
+  },
+
+  addBrowserHistoryEntry: (url, title) => {
+    if (url === ORCA_BROWSER_BLANK_URL || url === 'about:blank' || !url) {
+      return
+    }
+    const normalized = normalizeHistoryUrl(url)
+    set((s) => {
+      const existing = s.browserUrlHistory.find((entry) => entry.normalizedUrl === normalized)
+      let next: BrowserHistoryEntry[] = existing
+        ? s.browserUrlHistory.map((entry) =>
+            entry === existing
+              ? { ...entry, title, lastVisitedAt: Date.now(), visitCount: entry.visitCount + 1 }
+              : entry
+          )
+        : [
+            { url, normalizedUrl: normalized, title, lastVisitedAt: Date.now(), visitCount: 1 },
+            ...s.browserUrlHistory
+          ]
+      if (next.length > MAX_BROWSER_HISTORY_ENTRIES) {
+        next = next
+          .sort((a, b) => b.lastVisitedAt - a.lastVisitedAt)
+          .slice(0, MAX_BROWSER_HISTORY_ENTRIES)
+      }
+      return { browserUrlHistory: next }
+    })
+  },
+
+  clearBrowserHistory: () => set({ browserUrlHistory: [] })
 })

@@ -1,4 +1,4 @@
-import { webContents } from 'electron'
+import { screen, webContents } from 'electron'
 import {
   normalizeBrowserNavigationUrl,
   normalizeExternalBrowserUrl
@@ -9,6 +9,16 @@ import {
 } from '../../shared/window-shortcut-policy'
 
 type ResolveRenderer = (browserTabId: string) => Electron.WebContents | null
+
+function isTerminalTabSwitchChord(input: Electron.Input): boolean {
+  return (
+    Boolean(input.control) &&
+    !input.meta &&
+    !input.alt &&
+    !input.shift &&
+    (input.code === 'PageDown' || input.code === 'PageUp')
+  )
+}
 
 export function setupGuestContextMenu(args: {
   browserTabId: string
@@ -31,47 +41,22 @@ export function setupGuestContextMenu(args: {
       rawLinkUrl.length > 0
         ? (normalizeExternalBrowserUrl(rawLinkUrl) ?? normalizeBrowserNavigationUrl(rawLinkUrl))
         : null
-    const sendContextMenu = (viewportX: number, viewportY: number): void => {
-      renderer.send('browser:context-menu-requested', {
-        browserPageId: browserTabId,
-        x: viewportX,
-        y: viewportY,
-        pageUrl,
-        linkUrl,
-        canGoBack: guest.canGoBack(),
-        canGoForward: guest.canGoForward()
-      })
-    }
-
-    // Why: Electron reports guest context-menu coordinates in page space.
-    // Orca's renderer-owned menu needs viewport-relative coordinates so the
-    // menu appears under the cursor even after the page has scrolled.
-    if (typeof guest.executeJavaScript !== 'function') {
-      // Why: some tests and rare teardown edges only expose a minimal
-      // WebContents shape. Falling back to raw coordinates keeps the menu
-      // request best-effort instead of hard-failing on missing helpers.
-      sendContextMenu(params.x, params.y)
-      return
-    }
-
-    void guest
-      .executeJavaScript('({ scrollX: window.scrollX, scrollY: window.scrollY })', true)
-      .then((scroll) => {
-        const scrollX =
-          typeof scroll === 'object' && scroll && 'scrollX' in scroll
-            ? Number((scroll as { scrollX: unknown }).scrollX) || 0
-            : 0
-        const scrollY =
-          typeof scroll === 'object' && scroll && 'scrollY' in scroll
-            ? Number((scroll as { scrollY: unknown }).scrollY) || 0
-            : 0
-        sendContextMenu(params.x - scrollX, params.y - scrollY)
-      })
-      .catch(() => {
-        // Why: if the guest is tearing down, best-effort fallback to the raw
-        // coordinates is better than dropping the Orca menu entirely.
-        sendContextMenu(params.x, params.y)
-      })
+    // Why: send BOTH the guest viewport coordinates AND the OS screen cursor
+    // position. The renderer will try the screen cursor approach (which is
+    // immune to guest/renderer coordinate space mismatches) and fall back to
+    // guest coords if the screen API is unavailable.
+    const cursor = screen.getCursorScreenPoint()
+    renderer.send('browser:context-menu-requested', {
+      browserPageId: browserTabId,
+      x: params.x,
+      y: params.y,
+      screenX: cursor.x,
+      screenY: cursor.y,
+      pageUrl,
+      linkUrl,
+      canGoBack: guest.canGoBack(),
+      canGoForward: guest.canGoForward()
+    })
   }
 
   // Why: `before-mouse-event` fires for every mouse event (move, down, up,
@@ -97,6 +82,13 @@ export function setupGuestContextMenu(args: {
     removeDismissListener()
     dismissHandler = (_evt: Electron.Event, mouse: Electron.MouseInputEvent): void => {
       if (mouse.type !== 'mouseDown') {
+        return
+      }
+      // Why: a right-click mouseDown will be followed by a new context-menu
+      // event with updated coordinates. Sending a dismiss here would cause
+      // the renderer to briefly close the menu (trigger snaps to 0,0) then
+      // reopen it, producing a visible flash at the top-left corner.
+      if (mouse.button === 'right') {
         return
       }
       const renderer = resolveRenderer(browserTabId)
@@ -227,6 +219,35 @@ export function setupGuestShortcutForwarding(args: {
     if (input.type !== 'keyDown') {
       return
     }
+    // Why: resolve the policy action once per keystroke. The history-navigate
+    // chord (Cmd/Ctrl+Alt+Arrow) is the only allowlisted chord that carries
+    // Alt and must be handled before the generic modifier-chord gate below,
+    // which rejects Alt. Every other chord handled further down can reuse
+    // the same `action` rather than re-running the full predicate chain.
+    const action = resolveWindowShortcutAction(input, process.platform)
+    if (action?.type === 'worktreeHistoryNavigate') {
+      // Why: preventDefault unconditionally — if we cannot resolve the
+      // renderer (torn-down tab or teardown race), dropping the keystroke
+      // into the guest's webContents would let Chromium / the guest page
+      // handle Cmd+Alt+Arrow as their own chord (e.g. guest-side text
+      // navigation). Consistency with the main-window path is preserved
+      // only by suppressing the event here too.
+      event.preventDefault()
+      const renderer = resolveRenderer(browserTabId)
+      renderer?.send('ui:worktreeHistoryNavigate', action.direction)
+      return
+    }
+
+    // Why: terminal-only tab switching is intentionally Ctrl+PageUp/PageDown on
+    // every platform. Handle it before the primary-modifier gate so macOS Ctrl
+    // (non-primary there) still forwards out of focused browser guests.
+    if (isTerminalTabSwitchChord(input)) {
+      event.preventDefault()
+      const renderer = resolveRenderer(browserTabId)
+      renderer?.send('ui:switchTerminalTab', input.code === 'PageDown' ? 1 : -1)
+      return
+    }
+
     // Why: browser guests need a broader modifier-chord gate than the main
     // window because they also forward guest-specific tab shortcuts
     // (Cmd/Ctrl+T/W/Shift+B/Shift+[ / ]) in addition to the shared allowlist
@@ -239,11 +260,6 @@ export function setupGuestShortcutForwarding(args: {
     if (!renderer) {
       return
     }
-
-    // Why: centralizing the shared subset still keeps guest forwarding in
-    // lockstep with the main window for the chords that must never steal
-    // readline control input above the terminal.
-    const action = resolveWindowShortcutAction(input, process.platform)
 
     if (input.code === 'KeyB' && input.shift) {
       renderer.send('ui:newBrowserTab')
@@ -271,6 +287,12 @@ export function setupGuestShortcutForwarding(args: {
       // relying on the guest's built-in shortcut, which may not reach the
       // parked-webview eviction logic.
       renderer.send('ui:reloadBrowserPage')
+    } else if (input.code === 'KeyF' && !input.shift) {
+      // Why: Cmd/Ctrl+F must be forwarded out of the guest so the renderer can
+      // open its own find-in-page bar and call webview.findInPage(). Letting the
+      // guest handle it natively would open Chromium's built-in find UI inside
+      // the guest frame, which is invisible behind Orca's chrome.
+      renderer.send('ui:findInBrowserPage')
     } else if (input.code === 'KeyW' && !input.shift) {
       renderer.send('ui:closeActiveTab')
     } else if (input.shift && (input.code === 'BracketRight' || input.code === 'BracketLeft')) {
@@ -279,6 +301,8 @@ export function setupGuestShortcutForwarding(args: {
       renderer.send('ui:toggleWorktreePalette')
     } else if (action?.type === 'openQuickOpen') {
       renderer.send('ui:openQuickOpen')
+    } else if (action?.type === 'openNewWorkspace') {
+      renderer.send('ui:openNewWorkspace', action.tab)
     } else if (action?.type === 'jumpToWorktreeIndex') {
       renderer.send('ui:jumpToWorktreeIndex', action.index)
     } else {

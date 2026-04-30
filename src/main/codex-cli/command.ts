@@ -2,18 +2,18 @@ import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 
-type ResolveCodexCommandOptions = {
+type ResolveCommandOptions = {
   pathEnv?: string | null
   platform?: NodeJS.Platform
   homePath?: string
 }
 
-function getExecutableNames(platform: NodeJS.Platform): string[] {
+function getExecutableNames(platform: NodeJS.Platform, commandName: string): string[] {
   if (platform === 'win32') {
-    return ['codex.cmd', 'codex.exe', 'codex.bat', 'codex']
+    return [`${commandName}.cmd`, `${commandName}.exe`, `${commandName}.bat`, commandName]
   }
 
-  return ['codex']
+  return [commandName]
 }
 
 function splitPath(pathEnv: string | null | undefined): string[] {
@@ -71,14 +71,18 @@ function getVersionManagerDirectories(
   const directories = [
     join(homePath, '.volta', 'bin'),
     join(homePath, '.asdf', 'shims'),
-    join(homePath, '.fnm', 'aliases', 'default', 'bin')
+    join(homePath, '.fnm', 'aliases', 'default', 'bin'),
+    // Why: mise (formerly rtx) exposes managed tool binaries via a shims
+    // directory, similar to asdf. Without this, users who installed node
+    // or CLI tools through mise can't be found by the fallback probe.
+    join(homePath, '.local', 'share', 'mise', 'shims')
   ]
 
   // Why: GUI-launched Electron apps do not inherit shell init from version
   // managers like nvm, so `spawn('codex')` can fail for users who installed
   // Codex under a Node-managed bin directory even though Terminal can run it.
   // Probe the newest installed nvm version explicitly so rate-limit tracking
-  // and account login use the same Codex binary the shell would expose.
+  // and account login use the same binary the shell would expose.
   const nvmVersionsDir = join(homePath, '.nvm', 'versions', 'node')
   if (existsSync(nvmVersionsDir)) {
     const nvmVersionDirectories = readdirSync(nvmVersionsDir, { withFileTypes: true })
@@ -87,24 +91,39 @@ function getVersionManagerDirectories(
       .sort(compareVersionDesc)
       .map((entry) => join(nvmVersionsDir, entry, 'bin'))
 
-    const firstNvmWithCodex = findFirstExecutable(nvmVersionDirectories, executableNames)
-    if (firstNvmWithCodex) {
-      directories.unshift(dirname(firstNvmWithCodex))
+    const firstNvmMatch = findFirstExecutable(nvmVersionDirectories, executableNames)
+    if (firstNvmMatch) {
+      directories.unshift(dirname(firstNvmMatch))
     }
   }
 
   if (platform === 'win32') {
     directories.push(join(homePath, 'AppData', 'Roaming', 'npm'))
+    directories.push(join(homePath, 'AppData', 'Local', 'pnpm'))
+    directories.push(join(homePath, 'AppData', 'Local', 'Yarn', 'bin'))
   } else {
     directories.push(join(homePath, '.local', 'bin'))
+    // Why: pnpm uses platform-specific global bin directories that differ from
+    // npm's ~/.local/bin. macOS follows the ~/Library convention while Linux
+    // uses the XDG-compatible ~/.local/share path. Without these, users who
+    // installed via `pnpm add -g` can't be found by the fallback probe.
+    if (platform === 'darwin') {
+      directories.push(join(homePath, 'Library', 'pnpm'))
+    } else {
+      directories.push(join(homePath, '.local', 'share', 'pnpm'))
+    }
+    directories.push(join(homePath, '.yarn', 'bin'))
   }
+
+  // Why: bun uses ~/.bun/bin on all platforms for globally installed packages.
+  directories.push(join(homePath, '.bun', 'bin'))
 
   return directories
 }
 
-export function resolveCodexCommand(options: ResolveCodexCommandOptions = {}): string {
+function resolveCommand(commandName: string, options: ResolveCommandOptions = {}): string {
   const platform = options.platform ?? process.platform
-  const executableNames = getExecutableNames(platform)
+  const executableNames = getExecutableNames(platform, commandName)
   const pathEnv = options.pathEnv ?? process.env.PATH ?? process.env.Path ?? null
   const pathCandidate = findFirstExecutable(splitPath(pathEnv), executableNames)
   if (pathCandidate) {
@@ -116,5 +135,25 @@ export function resolveCodexCommand(options: ResolveCodexCommandOptions = {}): s
     getVersionManagerDirectories(platform, homePath, executableNames),
     executableNames
   )
-  return versionManagerCandidate ?? 'codex'
+  return versionManagerCandidate ?? commandName
+}
+
+export function resolveCodexCommand(options: ResolveCommandOptions = {}): string {
+  return resolveCommand('codex', options)
+}
+
+export function resolveClaudeCommand(options: ResolveCommandOptions = {}): string {
+  return resolveCommand('claude', options)
+}
+
+// Why: GUI-launched Electron apps inherit a minimal PATH that excludes Node
+// version manager directories. CLI tools like codex/claude are Node scripts
+// with #!/usr/bin/env node shebangs — they need `node` in PATH to execute,
+// not just to be *found*. This function returns the version manager bin paths
+// so the caller can augment process.env.PATH at startup.
+export function getVersionManagerBinPaths(options: ResolveCommandOptions = {}): string[] {
+  const platform = options.platform ?? process.platform
+  const homePath = options.homePath ?? homedir()
+  const nodeNames = getExecutableNames(platform, 'node')
+  return getVersionManagerDirectories(platform, homePath, nodeNames)
 }

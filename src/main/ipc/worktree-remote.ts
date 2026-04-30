@@ -4,6 +4,7 @@
 
 import type { BrowserWindow } from 'electron'
 import { join } from 'path'
+import { existsSync } from 'fs'
 import type { Store } from '../persistence'
 import type {
   CreateWorktreeArgs,
@@ -14,10 +15,11 @@ import type {
 import { getPRForBranch } from '../github/client'
 import { listWorktrees, addWorktree } from '../git/worktree'
 import { getGitUsername, getDefaultBaseRef, getBranchConflictKind } from '../git/repo'
-import { gitExecFileSync } from '../git/runner'
+import { gitExecFileAsync } from '../git/runner'
 import { isWslPath, parseWslPath, getWslHome } from '../wsl'
 import { createSetupRunnerScript, getEffectiveHooks, shouldRunSetupForCreate } from '../hooks'
 import { getSshGitProvider } from '../providers/ssh-git-dispatch'
+import { getActiveMultiplexer } from './ssh'
 import type { SshGitProvider } from '../providers/ssh-git-provider'
 import {
   sanitizeWorktreeName,
@@ -28,7 +30,7 @@ import {
   mergeWorktree,
   areWorktreePathsEqual
 } from './worktree-logic'
-import { rebuildAuthorizedRootsCache } from './filesystem-auth'
+import { invalidateAuthorizedRootsCache } from './filesystem-auth'
 
 export function notifyWorktreesChanged(mainWindow: BrowserWindow, repoId: string): void {
   if (!mainWindow.isDestroyed()) {
@@ -78,6 +80,11 @@ export async function createRemoteWorktree(
   const remotePath = `${repo.path}/../${sanitizedName}`
 
   // Determine base branch
+  // Why: previously fell back to a hardcoded 'origin/main' when
+  // symbolic-ref failed. That silently handed addWorktree a ref that may
+  // not exist on the remote (e.g. repos whose primary branch is master or
+  // develop), producing an opaque git error. Fail here with a clear
+  // message so the UI can surface it and prompt the user to pick a base.
   let baseBranch = args.baseBranch || repo.worktreeBaseRef
   if (!baseBranch) {
     try {
@@ -87,8 +94,13 @@ export async function createRemoteWorktree(
       )
       baseBranch = stdout.trim()
     } catch {
-      baseBranch = 'origin/main'
+      // Fall through — baseBranch stays unset.
     }
+  }
+  if (!baseBranch) {
+    throw new Error(
+      'Could not resolve a default base ref for this repo. Pick a base branch explicitly and try again.'
+    )
   }
 
   // Fetch latest
@@ -99,11 +111,62 @@ export async function createRemoteWorktree(
     /* best-effort */
   }
 
+  // Why: the relay's git.addWorktree validates targetDir against registered
+  // roots. The worktree sibling path (repo/../name) is outside the repo root
+  // and must be registered first. Using request (not notify) makes the
+  // ordering guarantee explicit rather than relying on FIFO frame processing,
+  // and closes failure windows during relay reconnect or fresh-host scenarios
+  // where roots may not yet be registered at all. See issue #911.
+  const mux = getActiveMultiplexer(repo.connectionId!)
+  if (!mux) {
+    throw new Error('SSH connection is not available. Please reconnect and try again.')
+  }
+  // Why: git.addWorktree validates both repoPath and targetDir against
+  // registered roots. In a fresh-host or reconnect scenario, registerRelayRoots
+  // may not have finished yet, so neither path may be registered. Register both
+  // synchronously here to close that window.
+  //
+  // Why (fallback): when Orca reconnects via --connect to a relay still in its
+  // grace period, the old relay binary may not have the request handler yet.
+  // Fall back to notify so worktree creation still works against pre-upgrade
+  // relays.
+  try {
+    await Promise.all([
+      mux.request('session.registerRoot', { rootPath: repo.path }),
+      mux.request('session.registerRoot', { rootPath: remotePath })
+    ])
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('Method not found')) {
+      mux.notify('session.registerRoot', { rootPath: repo.path })
+      mux.notify('session.registerRoot', { rootPath: remotePath })
+    } else {
+      throw err
+    }
+  }
+
   // Create worktree via relay
-  await provider.addWorktree(repo.path, branchName, remotePath, {
-    base: baseBranch,
-    track: baseBranch.includes('/')
-  })
+  try {
+    await provider.addWorktree(repo.path, branchName, remotePath, {
+      base: baseBranch,
+      track: baseBranch.includes('/')
+    })
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message.includes('No workspace roots registered yet') ||
+        err.message.includes('Path outside authorized workspace'))
+    ) {
+      // Why: validatePath throws two distinct errors — "No workspace roots
+      // registered yet" (relay has no roots at all, e.g., reconnect before
+      // registerRelayRoots completes) and "Path outside authorized workspace"
+      // (roots exist but the sibling worktree path isn't among them). Both are
+      // implementation details that mean nothing to the user.
+      throw new Error(
+        'The SSH relay has not registered the worktree path yet. Please wait a moment and try again, or disconnect and reconnect the SSH session.'
+      )
+    }
+    throw err
+  }
 
   // Re-list to get the created worktree info
   const gitWorktrees = await provider.listWorktrees(repo.path)
@@ -136,38 +199,9 @@ export async function createLocalWorktree(
 ): Promise<CreateWorktreeResult> {
   const settings = store.getSettings()
 
+  const username = getGitUsername(repo.path)
   const requestedName = args.name
   const sanitizedName = sanitizeWorktreeName(args.name)
-
-  // Compute branch name with prefix
-  const username = getGitUsername(repo.path)
-  const branchName = computeBranchName(sanitizedName, settings, username)
-
-  const branchConflictKind = await getBranchConflictKind(repo.path, branchName)
-  if (branchConflictKind) {
-    throw new Error(
-      `Branch "${branchName}" already exists ${branchConflictKind === 'local' ? 'locally' : 'on a remote'}. Pick a different worktree name.`
-    )
-  }
-
-  // Why: the UI resolves PR status by branch name alone. Reusing a historical
-  // PR head name would make a fresh worktree inherit that old merged/closed PR
-  // immediately, so we reject the name instead of silently suffixing it.
-  // The lookup is best-effort — don't block creation if GitHub is unreachable.
-  let existingPR: Awaited<ReturnType<typeof getPRForBranch>> | null = null
-  try {
-    existingPR = await getPRForBranch(repo.path, branchName)
-  } catch {
-    // GitHub API may be unreachable, rate-limited, or token missing
-  }
-  if (existingPR) {
-    throw new Error(
-      `Branch "${branchName}" already has PR #${existingPR.number}. Pick a different worktree name.`
-    )
-  }
-
-  // Compute worktree path
-  let worktreePath = computeWorktreePath(sanitizedName, repo.path, settings)
   // Why: WSL worktrees live under ~/orca/workspaces inside the WSL
   // filesystem. Validate against that root, not the Windows workspace dir.
   // If WSL home lookup fails, keep using the configured workspace root so
@@ -175,23 +209,115 @@ export async function createLocalWorktree(
   const wslInfo = isWslPath(repo.path) ? parseWslPath(repo.path) : null
   const wslHome = wslInfo ? getWslHome(wslInfo.distro) : null
   const workspaceRoot = wslHome ? join(wslHome, 'orca', 'workspaces') : settings.workspaceDir
-  worktreePath = ensurePathWithinWorkspace(worktreePath, workspaceRoot)
+  let effectiveRequestedName = requestedName
+  let effectiveSanitizedName = sanitizedName
+  let branchName = ''
+  let worktreePath = ''
 
-  // Determine base branch
+  // Why: silently resolve branch/path/PR name collisions by appending -2/-3/etc.
+  // instead of failing and forcing the user back to the name picker. This is
+  // especially important for the new-workspace flow where the user may not have
+  // direct control over the branch name. Bounded by MAX_SUFFIX_ATTEMPTS so a
+  // misconfigured environment (e.g. a mock or stub that always reports a
+  // conflict) cannot spin this loop indefinitely.
+  const MAX_SUFFIX_ATTEMPTS = 100
+  let resolved = false
+  let lastBranchConflictKind: 'local' | 'remote' | null = null
+  let lastExistingPR: Awaited<ReturnType<typeof getPRForBranch>> | null = null
+  for (let suffix = 1; suffix <= MAX_SUFFIX_ATTEMPTS; suffix += 1) {
+    effectiveSanitizedName = suffix === 1 ? sanitizedName : `${sanitizedName}-${suffix}`
+    effectiveRequestedName =
+      suffix === 1
+        ? requestedName
+        : requestedName.trim()
+          ? `${requestedName}-${suffix}`
+          : effectiveSanitizedName
+
+    branchName = computeBranchName(effectiveSanitizedName, settings, username)
+    lastBranchConflictKind = await getBranchConflictKind(repo.path, branchName)
+    if (lastBranchConflictKind) {
+      continue
+    }
+
+    // Why: `gh pr list` is a network round-trip that previously ran on every
+    // create, adding ~1–3s to the happy path even when no conflict exists. We
+    // only probe PR conflicts once a local/remote branch collision has already
+    // forced us past the first suffix — at that point uniqueness matters
+    // enough to justify the GitHub call. The common case (brand-new branch
+    // name, no collisions) skips the network entirely.
+    if (suffix > 1) {
+      lastExistingPR = null
+      try {
+        lastExistingPR = await getPRForBranch(repo.path, branchName)
+      } catch {
+        // GitHub API may be unreachable, rate-limited, or token missing
+      }
+      if (lastExistingPR) {
+        continue
+      }
+    }
+
+    worktreePath = ensurePathWithinWorkspace(
+      computeWorktreePath(effectiveSanitizedName, repo.path, settings),
+      workspaceRoot
+    )
+    if (existsSync(worktreePath)) {
+      continue
+    }
+
+    resolved = true
+    break
+  }
+
+  if (!resolved) {
+    // Why: if every suffix in range collides, fall back to the original
+    // "reject with a specific reason" behavior so the user sees why creation
+    // failed instead of a generic error or (worse) an infinite spinner.
+    if (lastExistingPR) {
+      throw new Error(
+        `Branch "${branchName}" already has PR #${lastExistingPR.number}. Pick a different worktree name.`
+      )
+    }
+    if (lastBranchConflictKind) {
+      throw new Error(
+        `Branch "${branchName}" already exists ${lastBranchConflictKind === 'local' ? 'locally' : 'on a remote'}. Pick a different worktree name.`
+      )
+    }
+    throw new Error(
+      `Could not find an available worktree name for "${sanitizedName}". Pick a different worktree name.`
+    )
+  }
+
+  // Determine base branch.
+  //
+  // Why: getDefaultBaseRef may return null when none of origin/HEAD,
+  // origin/main, origin/master, local main, or local master exist. In that
+  // case we must not fall back to a hardcoded 'origin/main' — passing a
+  // non-existent ref to `git worktree add` produces an opaque error. Fail
+  // here with a clear message so the UI can prompt the user to pick a base
+  // branch explicitly.
   const baseBranch = args.baseBranch || repo.worktreeBaseRef || getDefaultBaseRef(repo.path)
+  if (!baseBranch) {
+    throw new Error(
+      'Could not resolve a default base ref for this repo. Pick a base branch explicitly and try again.'
+    )
+  }
   const setupScript = getEffectiveHooks(repo)?.scripts.setup
   // Why: `ask` is a pre-create choice gate, not a post-create side effect.
   // Resolve it before mutating git state so missing UI input cannot strand
   // a real worktree on disk while the renderer reports "create failed".
   const shouldLaunchSetup = setupScript ? shouldRunSetupForCreate(repo, args.setupDecision) : false
 
-  // Fetch latest from remote so the worktree starts with up-to-date content
+  // Why: `git fetch` previously blocked worktree creation for 1–5s on every
+  // click, even though the fetch result isn't actually required — the
+  // subsequent `git worktree add` uses whatever local ref `baseBranch` points
+  // at. Kicking fetch off in parallel lets the worktree be created off the
+  // last-known tip while the fetch completes in the background; the next
+  // user action (pull, diff, PR create) will see the refreshed remote state.
   const remote = baseBranch.includes('/') ? baseBranch.split('/')[0] : 'origin'
-  try {
-    gitExecFileSync(['fetch', remote], { cwd: repo.path })
-  } catch {
+  void gitExecFileAsync(['fetch', remote], { cwd: repo.path }).catch(() => {
     // Fetch is best-effort — don't block worktree creation if offline
-  }
+  })
 
   await addWorktree(
     repo.path,
@@ -214,13 +340,18 @@ export async function createLocalWorktree(
     // immediately — prevents scroll-to-reveal racing with a later
     // bumpWorktreeActivity that would re-sort the list.
     lastActivityAt: Date.now(),
-    ...(shouldSetDisplayName(requestedName, branchName, sanitizedName)
-      ? { displayName: requestedName }
+    ...(shouldSetDisplayName(effectiveRequestedName, branchName, effectiveSanitizedName)
+      ? { displayName: effectiveRequestedName }
       : {})
   }
   const meta = store.setWorktreeMeta(worktreeId, metaUpdates)
   const worktree = mergeWorktree(repo.id, created, meta)
-  await rebuildAuthorizedRootsCache(store)
+  // Why: the authorized-roots cache is consulted lazily on the next filesystem
+  // access (`ensureAuthorizedRootsCache` rebuilds on demand when dirty). We
+  // just invalidate the cache marker instead of blocking worktree creation on
+  // an immediate rebuild, which can spawn `git worktree list` per repo and
+  // adds 100ms+ to every create.
+  invalidateAuthorizedRootsCache()
 
   let setup: CreateWorktreeResult['setup']
   if (setupScript && shouldLaunchSetup) {

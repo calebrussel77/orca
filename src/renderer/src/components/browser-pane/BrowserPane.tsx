@@ -1,5 +1,6 @@
 /* eslint-disable max-lines */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 import {
   ArrowLeft,
@@ -10,15 +11,12 @@ import {
   ExternalLink,
   Globe,
   Image,
-  Import,
   Loader2,
   OctagonX,
   RefreshCw,
-  Settings,
   SquareCode
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,15 +25,8 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAppStore } from '@/store'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
-import { Label } from '@/components/ui/label'
 import { ORCA_BROWSER_BLANK_URL, ORCA_BROWSER_PARTITION } from '../../../../shared/constants'
 import type {
   BrowserLoadError,
@@ -44,8 +35,7 @@ import type {
 } from '../../../../shared/types'
 import {
   normalizeBrowserNavigationUrl,
-  normalizeExternalBrowserUrl,
-  resolveBrowserAddressBarUrl
+  normalizeExternalBrowserUrl
 } from '../../../../shared/browser-url'
 import {
   clearLiveBrowserUrl,
@@ -65,6 +55,14 @@ import type {
 import { useGrabMode } from './useGrabMode'
 import { formatGrabPayloadAsText } from './GrabConfirmationSheet'
 import { isEditableKeyboardTarget } from './browser-keyboard'
+import BrowserAddressBar from './BrowserAddressBar'
+import { BrowserToolbarMenu } from './BrowserToolbarMenu'
+import BrowserFind from './BrowserFind'
+import {
+  consumeBrowserFocusRequest,
+  ORCA_BROWSER_FOCUS_REQUEST_EVENT,
+  type BrowserFocusRequestDetail
+} from './browser-focus'
 import {
   formatByteCount,
   formatDownloadFinishedNotice,
@@ -150,6 +148,14 @@ export function destroyPersistentWebview(browserTabId: string): void {
     return
   }
   void window.api.browser.unregisterGuest({ browserPageId: browserTabId })
+  // Why: if this webview currently owns focus, removing it lets macOS hand
+  // activation back to the previously-active app (Slack, etc.) because the
+  // focused webContents is gone with no replacement. Move focus back into the
+  // main renderer first so Electron keeps focus inside the Orca window.
+  if (webview === document.activeElement || webview.contains(document.activeElement)) {
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    window.focus()
+  }
   webview.remove()
   webviewRegistry.delete(browserTabId)
   registeredWebContentsIds.delete(browserTabId)
@@ -312,7 +318,8 @@ export default function BrowserPane({
 }): React.JSX.Element {
   const browserPagesByWorkspace = useAppStore((s) => s.browserPagesByWorkspace)
   const browserPages = browserPagesByWorkspace[browserTab.id] ?? EMPTY_BROWSER_PAGES
-  const activeBrowserPage = browserPages[0] ?? null
+  const activeBrowserPage =
+    browserPages.find((page) => page.id === browserTab.activePageId) ?? browserPages[0] ?? null
   const updateBrowserPageState = useAppStore((s) => s.updateBrowserPageState)
   const setBrowserPageUrl = useAppStore((s) => s.setBrowserPageUrl)
 
@@ -370,6 +377,8 @@ function BrowserPagePane({
   const lastKnownWebviewUrlRef = useRef<string | null>(null)
   const onUpdatePageStateRef = useRef(onUpdatePageState)
   const onSetUrlRef = useRef(onSetUrl)
+  const addBrowserHistoryEntry = useAppStore((s) => s.addBrowserHistoryEntry)
+  const addBrowserHistoryEntryRef = useRef(addBrowserHistoryEntry)
   const [addressBarValue, setAddressBarValue] = useState(browserTab.url)
   const addressBarValueRef = useRef(browserTab.url)
   const [resourceNotice, setResourceNotice] = useState<string | null>(null)
@@ -381,18 +390,16 @@ function BrowserPagePane({
     linkUrl: string | null
     pageUrl: string
   } | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+  const [findOpen, setFindOpen] = useState(false)
   const grab = useGrabMode(browserTab.id)
   const createBrowserTab = useAppStore((s) => s.createBrowserTab)
-  const assignBrowserSessionProfile = useAppStore((s) => s.assignBrowserSessionProfile)
   const consumeAddressBarFocusRequest = useAppStore((s) => s.consumeAddressBarFocusRequest)
-  const browserDefaultUrl = useAppStore((s) => s.browserDefaultUrl)
-  const setBrowserDefaultUrl = useAppStore((s) => s.setBrowserDefaultUrl)
   const browserSessionProfiles = useAppStore((s) => s.browserSessionProfiles)
   const sessionProfile = sessionProfileId
     ? (browserSessionProfiles.find((p) => p.id === sessionProfileId) ?? null)
     : null
   const webviewPartition = sessionProfile?.partition ?? ORCA_BROWSER_PARTITION
-  const detectedBrowsers = useAppStore((s) => s.detectedBrowsers)
   const browserSessionImportState = useAppStore((s) => s.browserSessionImportState)
   const clearBrowserSessionImportState = useAppStore((s) => s.clearBrowserSessionImportState)
 
@@ -423,29 +430,6 @@ function BrowserPagePane({
   }, [resourceNotice])
 
   const keepAddressBarFocusRef = useRef(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [homePageDraft, setHomePageDraft] = useState('')
-
-  const saveHomePage = useCallback(() => {
-    const trimmed = homePageDraft.trim()
-    if (!trimmed) {
-      // Why: empty input treated as "clear" so the user can remove a home page
-      // without having to click the separate Clear button.
-      setBrowserDefaultUrl(null)
-    } else {
-      const normalized = normalizeBrowserNavigationUrl(trimmed)
-      if (normalized && normalized !== ORCA_BROWSER_BLANK_URL) {
-        setBrowserDefaultUrl(normalized)
-      }
-      // Why: if the URL is not navigable (e.g. plain text with no scheme),
-      // leave the draft as-is so the user can correct it rather than silently
-      // discarding their input.
-      if (!normalized || normalized === ORCA_BROWSER_BLANK_URL) {
-        return
-      }
-    }
-    setSettingsOpen(false)
-  }, [homePageDraft, setBrowserDefaultUrl])
 
   // Inline toast that appears near the grabbed element instead of the global
   // bottom-right toaster, so feedback feels spatially connected to the action.
@@ -467,14 +451,6 @@ function BrowserPagePane({
     return () => clearTimeout(grabToastTimerRef.current)
   }, [])
 
-  // Why: populate the home-page draft from the stored value each time the
-  // settings dialog opens so the user sees the current setting pre-filled
-  // rather than an empty field or a stale in-memory edit.
-  useEffect(() => {
-    if (settingsOpen) {
-      setHomePageDraft(browserDefaultUrl ?? '')
-    }
-  }, [settingsOpen, browserDefaultUrl])
   const grabRef = useRef(grab)
   grabRef.current = grab
 
@@ -537,6 +513,13 @@ function BrowserPagePane({
   }, [browserTab.id, browserTab.url])
 
   useEffect(() => {
+    // Why: if the user is actively typing in the address bar (focused), do not
+    // clobber their in-progress query when an async URL update lands (e.g., the
+    // configured default URL resolving after a new tab opens). Syncing will
+    // resume on the next legitimate URL change after the input loses focus.
+    if (document.activeElement === addressBarInputRef.current) {
+      return
+    }
     setAddressBarValue(toDisplayUrl(browserTab.url))
   }, [browserTab.url])
 
@@ -588,9 +571,29 @@ function BrowserPagePane({
       if (event.browserPageId !== browserTab.id) {
         return
       }
+      // Why: convert the OS screen cursor position to the renderer's CSS
+      // viewport coordinates. This is the only approach immune to coordinate
+      // space mismatches between the guest process and the renderer (caused
+      // by UI zoom, DPI scaling, or Electron version differences).
+      // window.screenX/Y gives the window origin in the same screen
+      // coordinate system that screen.getCursorScreenPoint() uses. Dividing
+      // by the zoom factor converts screen points to CSS pixels.
+      const zoomFactor = Math.pow(1.2, window.api.ui.getZoomLevel())
+      const x = Math.round((event.screenX - window.screenX) / zoomFactor)
+      const y = Math.round((event.screenY - window.screenY) / zoomFactor)
+      console.debug(
+        '[context-menu] screen=(%d,%d) window=(%d,%d) zoom=%.2f → viewport=(%d,%d)',
+        event.screenX,
+        event.screenY,
+        window.screenX,
+        window.screenY,
+        zoomFactor,
+        x,
+        y
+      )
       setContextMenu({
-        x: event.x,
-        y: event.y,
+        x,
+        y,
         linkUrl: event.linkUrl,
         pageUrl: event.pageUrl
       })
@@ -605,6 +608,58 @@ function BrowserPagePane({
       setContextMenu(null)
     })
   }, [browserTab.id])
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return
+    }
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setContextMenu(null)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [contextMenu])
+
+  // Why: position: fixed can be offset by ancestor CSS properties (backdrop-filter,
+  // transform, will-change) that create new containing blocks. Even with a Portal to
+  // document.body, global CSS or Electron chrome can shift the element. Measuring the
+  // actual rendered position and correcting before paint is immune to all of these.
+  // Additionally, flip the menu when it would overflow the viewport edge so right-clicking
+  // near the screen border keeps the entire menu visible.
+  useLayoutEffect(() => {
+    const el = contextMenuRef.current
+    if (!el || !contextMenu) {
+      return
+    }
+    el.style.left = `${contextMenu.x}px`
+    el.style.top = `${contextMenu.y}px`
+    const rect = el.getBoundingClientRect()
+
+    // Why: CSS containing blocks can shift "fixed" elements. Capture the offset
+    // between where we asked CSS to place the element and where it actually rendered.
+    const offsetX = contextMenu.x - rect.left
+    const offsetY = contextMenu.y - rect.top
+
+    let renderX = contextMenu.x
+    let renderY = contextMenu.y
+
+    // Flip so the opposite corner aligns with the cursor when the menu overflows.
+    if (rect.right > window.innerWidth) {
+      renderX = contextMenu.x - rect.width
+    }
+    if (rect.bottom > window.innerHeight) {
+      renderY = contextMenu.y - rect.height
+    }
+
+    renderX = Math.max(0, renderX)
+    renderY = Math.max(0, renderY)
+
+    el.style.left = `${renderX + offsetX}px`
+    el.style.top = `${renderY + offsetY}px`
+  }, [contextMenu])
 
   useEffect(() => {
     return window.api.browser.onDownloadRequested((event) => {
@@ -718,6 +773,111 @@ function BrowserPagePane({
     })
   }, [focusAddressBarNow, isActive])
 
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+    const focusTarget = consumeBrowserFocusRequest(browserTab.id)
+    if (!focusTarget) {
+      return
+    }
+    keepAddressBarFocusRef.current = focusTarget === 'address-bar'
+    let cancelled = false
+    let frameId = 0
+    let attempts = 0
+    const runFocus = (): void => {
+      if (cancelled) {
+        return
+      }
+      const didFocus = focusTarget === 'address-bar' ? focusAddressBarNow() : focusWebviewNow()
+      attempts += 1
+      if (!didFocus && attempts < 6) {
+        frameId = window.requestAnimationFrame(runFocus)
+      }
+    }
+    // Why: jump-palette browser focus can be queued before the target page
+    // pane mounts. Persisting the request outside React lets the active page
+    // claim it once mounted instead of depending on a transient event race.
+    frameId = window.requestAnimationFrame(runFocus)
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [browserTab.id, focusAddressBarNow, focusWebviewNow, isActive])
+
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+    const handleBrowserFocusRequest = (event: Event): void => {
+      const detail = (event as CustomEvent<BrowserFocusRequestDetail>).detail
+      if (!detail || detail.pageId !== browserTab.id) {
+        return
+      }
+      const focusTarget = consumeBrowserFocusRequest(browserTab.id)
+      if (!focusTarget) {
+        return
+      }
+      if (focusTarget === 'address-bar') {
+        // Why: palette-triggered address-bar focus has to survive the same
+        // follow-up browser load events as the existing blank-tab path.
+        keepAddressBarFocusRef.current = true
+        focusAddressBarNow()
+        return
+      }
+      keepAddressBarFocusRef.current = false
+      focusWebviewNow()
+    }
+    // Why: queued focus lets a page claim a request after mount, but palette
+    // re-selecting an already-active page never remounts. Listening for the
+    // matching event lets the active pane consume the durable request
+    // immediately without regressing the mount/activation path above.
+    window.addEventListener(ORCA_BROWSER_FOCUS_REQUEST_EVENT, handleBrowserFocusRequest)
+    return () =>
+      window.removeEventListener(ORCA_BROWSER_FOCUS_REQUEST_EVENT, handleBrowserFocusRequest)
+  }, [browserTab.id, focusAddressBarNow, focusWebviewNow, isActive])
+
+  // Cmd/Ctrl+F — find in page (renderer path: focus on browser chrome)
+  // Why: unlike grab-mode shortcuts (bare C/S) which skip editable targets,
+  // Cmd+F is a modified chord that should always open find — even from the
+  // address bar. This matches Chrome/Safari behavior.
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      const isMod = navigator.userAgent.includes('Mac') ? e.metaKey : e.ctrlKey
+      if (!isMod || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'f') {
+        return
+      }
+      e.preventDefault()
+      e.stopPropagation()
+      setFindOpen(true)
+    }
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [isActive])
+
+  // Cmd/Ctrl+F — find in page (IPC path: focus inside webview guest)
+  // Why: a focused webview guest is a separate Chromium process so the renderer
+  // keydown handler above never fires. Main intercepts the chord and sends it
+  // back here so find works whether focus is on the toolbar or the page.
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+    return window.api.ui.onFindInBrowserPage(() => {
+      setFindOpen(true)
+    })
+  }, [isActive])
+
+  // Close find bar when tab is deactivated
+  useEffect(() => {
+    if (!isActive) {
+      setFindOpen(false)
+    }
+  }, [isActive])
+
   // Cmd/Ctrl+R — reload (renderer path: focus on browser chrome, not in guest)
   // Why: when focus is inside the renderer chrome (address bar, toolbar buttons)
   // rather than the webview guest, the guest shortcut forwarding in main never
@@ -772,7 +932,8 @@ function BrowserPagePane({
   useEffect(() => {
     onUpdatePageStateRef.current = onUpdatePageState
     onSetUrlRef.current = onSetUrl
-  }, [onSetUrl, onUpdatePageState])
+    addBrowserHistoryEntryRef.current = addBrowserHistoryEntry
+  }, [onSetUrl, onUpdatePageState, addBrowserHistoryEntry])
 
   const syncNavigationState = useCallback(
     (webview: Electron.WebviewTag): void => {
@@ -813,14 +974,6 @@ function BrowserPagePane({
 
     let webview = webviewRegistry.get(browserTab.id)
     let needsInitialNavigation = false
-    if (webview && webview.getAttribute('partition') !== webviewPartition) {
-      // Why: Electron locks a webview's partition at creation time. When the
-      // user switches this browser workspace to an imported session profile we
-      // must destroy the cached guest so the replacement webview boots against
-      // the new persistent cookie/storage partition.
-      destroyPersistentWebview(browserTab.id)
-      webview = undefined
-    }
     if (webview) {
       container.appendChild(webview)
       parkedAtByTabId.delete(browserTab.id)
@@ -855,6 +1008,7 @@ function BrowserPagePane({
         void window.api.browser.registerGuest({
           browserPageId: browserTab.id,
           workspaceId,
+          worktreeId,
           webContentsId
         })
       }
@@ -918,7 +1072,11 @@ function BrowserPagePane({
       activeLoadFailureRef.current = null
       lastKnownWebviewUrlRef.current = normalizeBrowserNavigationUrl(currentUrl) ?? currentUrl
       rememberLiveBrowserUrl(browserTab.id, currentUrl)
-      setAddressBarValue(toDisplayUrl(currentUrl))
+      // Why: don't overwrite in-progress typing. See comment on the
+      // browserTab.url sync effect above.
+      if (document.activeElement !== addressBarInputRef.current) {
+        setAddressBarValue(toDisplayUrl(currentUrl))
+      }
       onSetUrlRef.current(browserTab.id, currentUrl)
       if (keepAddressBarFocusRef.current && currentUrl === ORCA_BROWSER_BLANK_URL) {
         focusAddressBarNow()
@@ -945,7 +1103,10 @@ function BrowserPagePane({
       }
       lastKnownWebviewUrlRef.current = normalizeBrowserNavigationUrl(currentUrl) ?? currentUrl
       rememberLiveBrowserUrl(browserTab.id, currentUrl)
-      setAddressBarValue(toDisplayUrl(currentUrl))
+      // Why: don't overwrite in-progress typing (see above).
+      if (document.activeElement !== addressBarInputRef.current) {
+        setAddressBarValue(toDisplayUrl(currentUrl))
+      }
       onSetUrlRef.current(browserTab.id, currentUrl)
       onUpdatePageStateRef.current(browserTab.id, {
         title: webview.getTitle() || currentUrl,
@@ -956,9 +1117,10 @@ function BrowserPagePane({
 
     const handleTitleUpdate = (event: { title?: string }): void => {
       try {
-        onUpdatePageStateRef.current(browserTab.id, {
-          title: getBrowserDisplayTitle(event.title, webview.getURL() || browserTab.url)
-        })
+        const currentUrl = webview.getURL() || browserTab.url
+        const title = getBrowserDisplayTitle(event.title, currentUrl)
+        onUpdatePageStateRef.current(browserTab.id, { title })
+        addBrowserHistoryEntryRef.current(currentUrl, title)
       } catch {
         // Why: title-updated can fire before dom-ready, making getURL() throw.
       }
@@ -1003,7 +1165,16 @@ function BrowserPagePane({
     webview.addEventListener('dom-ready', handleDomReady)
     webview.addEventListener('did-start-loading', handleDidStartLoading)
     webview.addEventListener('did-stop-loading', handleDidStopLoading)
+    // Why: separate handler registered only on 'did-navigate' (full page loads),
+    // NOT on 'did-navigate-in-page'. The shared handleDidNavigate is registered
+    // on both events, so adding find-close logic there would also close on SPA
+    // hash changes and pushState calls, which fire constantly on single-page apps.
+    const handleFindCloseOnNavigate = (): void => {
+      setFindOpen(false)
+    }
+
     webview.addEventListener('did-navigate', handleDidNavigate)
+    webview.addEventListener('did-navigate', handleFindCloseOnNavigate)
     webview.addEventListener('did-navigate-in-page', handleDidNavigate)
     webview.addEventListener('page-title-updated', handleTitleUpdate)
     webview.addEventListener('page-favicon-updated', handleFaviconUpdate)
@@ -1028,6 +1199,7 @@ function BrowserPagePane({
       webview.removeEventListener('did-start-loading', handleDidStartLoading)
       webview.removeEventListener('did-stop-loading', handleDidStopLoading)
       webview.removeEventListener('did-navigate', handleDidNavigate)
+      webview.removeEventListener('did-navigate', handleFindCloseOnNavigate)
       webview.removeEventListener('did-navigate-in-page', handleDidNavigate)
       webview.removeEventListener('page-title-updated', handleTitleUpdate)
       webview.removeEventListener('page-favicon-updated', handleFaviconUpdate)
@@ -1044,17 +1216,19 @@ function BrowserPagePane({
       }
     }
     // Why: this effect mounts and wires up webview event listeners once per tab
-    // identity. browserTab.url and webviewPartition are intentionally excluded:
-    // re-running on URL changes would detach/reattach the webview, cancelling
-    // in-progress navigations. Callbacks use refs so they always see current values.
+    // identity. browserTab.url is intentionally excluded: re-running on URL
+    // changes would detach/reattach the webview, cancelling in-progress
+    // navigations. Callbacks use refs so they always see current values.
+    // webviewPartition IS included: switching profiles changes the partition,
+    // which requires destroying and recreating the webview since Electron does
+    // not allow changing a webview's partition after creation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     browserTab.id,
+    webviewPartition,
     workspaceId,
     worktreeId,
-    webviewPartition,
     createBrowserTab,
-    assignBrowserSessionProfile,
     focusAddressBarNow,
     focusWebviewNow,
     syncNavigationState
@@ -1356,39 +1530,46 @@ function BrowserPagePane({
     grab.rearm()
   }, [grab, showGrabToast])
 
+  const navigateToUrl = useCallback(
+    (url: string): void => {
+      setAddressBarValue(toDisplayUrl(url))
+      onSetUrlRef.current(browserTab.id, url)
+      onUpdatePageStateRef.current(browserTab.id, {
+        loading: true,
+        loadError: null,
+        title: getBrowserDisplayTitle(url, url)
+      })
+      setResourceNotice(null)
+
+      const webview = webviewRef.current
+      if (!webview) {
+        return
+      }
+      trackNextLoadingEventRef.current = url !== ORCA_BROWSER_BLANK_URL
+      lastKnownWebviewUrlRef.current = url
+      webview.src = url
+      if (url !== ORCA_BROWSER_BLANK_URL) {
+        focusWebviewNow()
+      }
+    },
+    [browserTab.id, focusWebviewNow]
+  )
+
   const submitAddressBar = (): void => {
     keepAddressBarFocusRef.current = false
-    const nextUrl = resolveBrowserAddressBarUrl(addressBarValue)
+    const searchEngine = useAppStore.getState().browserDefaultSearchEngine
+    const nextUrl = normalizeBrowserNavigationUrl(addressBarValue, searchEngine)
     if (!nextUrl) {
       onUpdatePageStateRef.current(browserTab.id, {
         loadError: {
           code: 0,
-          description: 'Enter a valid http(s) URL, localhost address, or search query.',
+          description: 'Enter a valid http(s) or localhost URL.',
           validatedUrl: addressBarValue.trim() || 'about:blank'
         }
       })
       return
     }
-
-    setAddressBarValue(toDisplayUrl(nextUrl))
-    onSetUrlRef.current(browserTab.id, nextUrl)
-    onUpdatePageStateRef.current(browserTab.id, {
-      loading: true,
-      loadError: null,
-      title: getBrowserDisplayTitle(nextUrl, nextUrl)
-    })
-    setResourceNotice(null)
-
-    const webview = webviewRef.current
-    if (!webview) {
-      return
-    }
-    trackNextLoadingEventRef.current = nextUrl !== ORCA_BROWSER_BLANK_URL
-    lastKnownWebviewUrlRef.current = nextUrl
-    webview.src = nextUrl
-    if (nextUrl !== ORCA_BROWSER_BLANK_URL) {
-      focusWebviewNow()
-    }
+    navigateToUrl(nextUrl)
   }
 
   // Why: the store initially holds 'about:blank', but once the webview loads
@@ -1434,265 +1615,132 @@ function BrowserPagePane({
         isActive ? 'z-10' : 'pointer-events-none hidden'
       )}
     >
-      {/* IPC-driven context menu — main intercepts guest right-clicks and sends
-          the event here so Orca can offer link actions that require renderer/store access. */}
-      <DropdownMenu
-        open={contextMenu !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setContextMenu(null)
-          }
-        }}
-        modal={false}
-      >
-        <DropdownMenuTrigger asChild>
-          <button
-            aria-hidden
-            tabIndex={-1}
-            className="pointer-events-none fixed size-px opacity-0"
-            style={{
-              left: contextMenu?.x ?? 0,
-              top: contextMenu?.y ?? 0
-            }}
-          />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          className="min-w-[13rem] rounded-[11px] border-border/80 p-1 shadow-[0_16px_36px_rgba(0,0,0,0.24)]"
-          sideOffset={0}
-          align="start"
-        >
-          {contextMenu?.linkUrl ? (
+      {/* IPC-driven context menu — rendered in a Portal so position: fixed is
+          relative to the viewport, not affected by ancestor backdrop-filter or
+          transform properties that create new containing blocks. */}
+      {contextMenu
+        ? createPortal(
             <>
-              <DropdownMenuItem
-                onSelect={() => {
-                  if (contextMenu.linkUrl) {
-                    createBrowserTab(worktreeId, contextMenu.linkUrl, {
-                      title: contextMenu.linkUrl
-                    })
-                  }
-                }}
+              <div className="fixed inset-0 z-50" onPointerDown={() => setContextMenu(null)} />
+              <div
+                ref={contextMenuRef}
+                role="menu"
+                data-testid="browser-context-menu"
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+                className="fixed z-50 min-w-[13rem] overflow-hidden rounded-[11px] border border-black/14 bg-[rgba(255,255,255,0.82)] p-1 text-black shadow-[0_16px_36px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.14)] backdrop-blur-2xl dark:border-white/14 dark:bg-[rgba(0,0,0,0.72)] dark:text-white dark:shadow-[0_20px_44px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.04)]"
               >
-                Open Link In Orca Browser
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  if (contextMenu.linkUrl) {
-                    const targetUrl = normalizeExternalBrowserUrl(contextMenu.linkUrl)
+                {contextMenu.linkUrl ? (
+                  <>
+                    <button
+                      role="menuitem"
+                      className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 dark:hover:bg-white/14"
+                      onClick={() => {
+                        createBrowserTab(worktreeId, contextMenu.linkUrl!, {
+                          title: contextMenu.linkUrl!
+                        })
+                        setContextMenu(null)
+                      }}
+                    >
+                      Open Link In Orca Browser
+                    </button>
+                    <button
+                      role="menuitem"
+                      className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 dark:hover:bg-white/14"
+                      onClick={() => {
+                        const targetUrl = normalizeExternalBrowserUrl(contextMenu.linkUrl!)
+                        if (targetUrl) {
+                          void window.api.shell.openUrl(targetUrl)
+                        }
+                        setContextMenu(null)
+                      }}
+                    >
+                      Open Link In Default Browser
+                    </button>
+                    <button
+                      role="menuitem"
+                      className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 dark:hover:bg-white/14"
+                      onClick={() => {
+                        void window.api.ui.writeClipboardText(contextMenu.linkUrl ?? '')
+                        setContextMenu(null)
+                      }}
+                    >
+                      Copy Link Address
+                    </button>
+                    <div className="my-1 h-px bg-border/70" />
+                  </>
+                ) : null}
+                <button
+                  role="menuitem"
+                  disabled={!browserTab.canGoBack}
+                  className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 disabled:pointer-events-none disabled:opacity-50 dark:hover:bg-white/14"
+                  onClick={() => {
+                    webviewRef.current?.goBack()
+                    setContextMenu(null)
+                  }}
+                >
+                  Back
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={!browserTab.canGoForward}
+                  className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 disabled:pointer-events-none disabled:opacity-50 dark:hover:bg-white/14"
+                  onClick={() => {
+                    webviewRef.current?.goForward()
+                    setContextMenu(null)
+                  }}
+                >
+                  Forward
+                </button>
+                <button
+                  role="menuitem"
+                  className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 dark:hover:bg-white/14"
+                  onClick={() => {
+                    webviewRef.current?.reload()
+                    setContextMenu(null)
+                  }}
+                >
+                  Reload
+                </button>
+                <div className="my-1 h-px bg-border/70" />
+                <button
+                  role="menuitem"
+                  className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 dark:hover:bg-white/14"
+                  onClick={() => {
+                    const targetUrl = normalizeExternalBrowserUrl(contextMenu.pageUrl)
                     if (targetUrl) {
                       void window.api.shell.openUrl(targetUrl)
                     }
-                  }
-                }}
-              >
-                Open Link In Default Browser
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  void window.api.ui.writeClipboardText(contextMenu?.linkUrl ?? '')
-                }}
-              >
-                Copy Link Address
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-            </>
-          ) : null}
-          <DropdownMenuItem
-            disabled={!browserTab.canGoBack}
-            onSelect={() => webviewRef.current?.goBack()}
-          >
-            Back
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={!browserTab.canGoForward}
-            onSelect={() => webviewRef.current?.goForward()}
-          >
-            Forward
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => webviewRef.current?.reload()}>Reload</DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={() => {
-              const targetUrl = normalizeExternalBrowserUrl(contextMenu?.pageUrl ?? '')
-              if (targetUrl) {
-                void window.api.shell.openUrl(targetUrl)
-              }
-            }}
-          >
-            Open Page In Default Browser
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              void window.api.ui.writeClipboardText(contextMenu?.pageUrl ?? '')
-            }}
-          >
-            Copy Page URL
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={() => {
-              void window.api.browser.openDevTools({ browserPageId: browserTab.id })
-            }}
-          >
-            Inspect Page
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      {/* Browser Settings dialog — uses Radix Portal so layout is unaffected */}
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Browser Settings</DialogTitle>
-          </DialogHeader>
-          <div className="py-1">
-            <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              General
-            </p>
-            <div className="space-y-1.5">
-              <Label htmlFor="browser-home-page">Home Page</Label>
-              <p className="text-xs text-muted-foreground">
-                URL to open when creating a new tab. Leave empty for a blank tab.
-              </p>
-              <Input
-                id="browser-home-page"
-                value={homePageDraft}
-                onChange={(e) => setHomePageDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    saveHomePage()
-                  }
-                }}
-                placeholder="https://google.com"
-                spellCheck={false}
-                autoCapitalize="none"
-                autoCorrect="off"
-                className="h-8 text-sm"
-              />
-            </div>
-          </div>
-          <div className="border-t border-border pt-4">
-            <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Session &amp; Cookies
-            </p>
-            {sessionProfile ? (
-              <div className="mb-3 flex items-center gap-2 rounded-lg bg-accent/40 px-3 py-2">
-                <Import className="size-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{sessionProfile.label}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {sessionProfile.source
-                      ? `Imported from ${sessionProfile.source.browserFamily}${sessionProfile.source.profileName ? ` (${sessionProfile.source.profileName})` : ''}`
-                      : 'Custom session profile'}
-                  </p>
-                </div>
+                    setContextMenu(null)
+                  }}
+                >
+                  Open Page In Default Browser
+                </button>
+                <button
+                  role="menuitem"
+                  className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 dark:hover:bg-white/14"
+                  onClick={() => {
+                    void window.api.ui.writeClipboardText(contextMenu.pageUrl)
+                    setContextMenu(null)
+                  }}
+                >
+                  Copy Page URL
+                </button>
+                <div className="my-1 h-px bg-border/70" />
+                <button
+                  role="menuitem"
+                  className="relative flex w-full cursor-default items-center gap-2 rounded-[7px] px-2 py-0.5 text-[12px] leading-5 font-medium outline-none select-none hover:bg-black/8 dark:hover:bg-white/14"
+                  onClick={() => {
+                    void window.api.browser.openDevTools({ browserPageId: browserTab.id })
+                    setContextMenu(null)
+                  }}
+                >
+                  Inspect Page
+                </button>
               </div>
-            ) : (
-              <p className="mb-3 text-xs text-muted-foreground">
-                Using the default shared session. Import cookies from your browser to use existing
-                logins.
-              </p>
-            )}
-            <div className="space-y-1">
-              {detectedBrowsers.map((browser) => (
-                <div key={browser.family} className="space-y-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full justify-start gap-2"
-                    disabled={!browser.available}
-                    onClick={async () => {
-                      const store = useAppStore.getState()
-                      let targetProfileId = sessionProfileId
-                      let createdProfileId: string | null = null
-                      if (!targetProfileId) {
-                        const profile = await store.createBrowserSessionProfile(
-                          'imported',
-                          `${browser.label} Session`
-                        )
-                        if (!profile) {
-                          return
-                        }
-                        targetProfileId = profile.id
-                        createdProfileId = profile.id
-                      }
-                      const result = await store.importCookiesFromBrowser(
-                        targetProfileId,
-                        browser.family
-                      )
-                      if (result.ok) {
-                        store.assignBrowserSessionProfile(workspaceId, targetProfileId)
-                      } else if (createdProfileId) {
-                        await store.deleteBrowserSessionProfile(createdProfileId)
-                      }
-                      setSettingsOpen(false)
-                    }}
-                  >
-                    <Import className="size-3.5" />
-                    {browser.available
-                      ? `Import from ${browser.label}`
-                      : `Import from ${browser.label} (Unavailable)`}
-                  </Button>
-                  {!browser.available && browser.unavailableReason ? (
-                    <p className="px-1 text-xs text-muted-foreground">
-                      {browser.unavailableReason}
-                    </p>
-                  ) : null}
-                </div>
-              ))}
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full justify-start gap-2"
-                onClick={async () => {
-                  const store = useAppStore.getState()
-                  let targetProfileId = sessionProfileId
-                  let createdProfileId: string | null = null
-                  if (!targetProfileId) {
-                    const profile = await store.createBrowserSessionProfile(
-                      'imported',
-                      'Imported Session'
-                    )
-                    if (!profile) {
-                      return
-                    }
-                    targetProfileId = profile.id
-                    createdProfileId = profile.id
-                  }
-                  const result = await store.importCookiesToProfile(targetProfileId)
-                  if (result.ok) {
-                    store.assignBrowserSessionProfile(workspaceId, targetProfileId)
-                  } else if (createdProfileId) {
-                    await store.deleteBrowserSessionProfile(createdProfileId)
-                  }
-                  setSettingsOpen(false)
-                }}
-              >
-                <Import className="size-3.5" />
-                Import from File…
-              </Button>
-            </div>
-            {sessionProfile && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="mt-2 w-full justify-start gap-2 text-destructive hover:text-destructive"
-                onClick={async () => {
-                  await useAppStore.getState().deleteBrowserSessionProfile(sessionProfile.id)
-                  setSettingsOpen(false)
-                }}
-              >
-                Clear Imported Session
-              </Button>
-            )}
-          </div>
-          <DialogFooter>
-            <Button size="sm" onClick={saveHomePage}>
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </>,
+            document.body
+          )
+        : null}
 
       <div className="relative z-10 flex items-center gap-2 border-b border-border/70 bg-background/95 px-3 py-1.5">
         <Button
@@ -1738,35 +1786,36 @@ function BrowserPagePane({
           )}
         </Button>
 
-        <form
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-border bg-background px-3 py-1 shadow-sm"
-          onSubmit={(event) => {
-            event.preventDefault()
-            submitAddressBar()
-          }}
-        >
-          <Globe className="size-4 shrink-0 text-muted-foreground" />
-          <Input
-            ref={addressBarInputRef}
-            value={addressBarValue}
-            onChange={(event) => setAddressBarValue(event.target.value)}
-            className="h-auto border-0 bg-transparent px-0 text-sm shadow-none focus-visible:ring-0"
-            spellCheck={false}
-            autoCapitalize="none"
-            autoCorrect="off"
-          />
-        </form>
+        <BrowserAddressBar
+          value={addressBarValue}
+          onChange={setAddressBarValue}
+          onSubmit={submitAddressBar}
+          onNavigate={navigateToUrl}
+          inputRef={addressBarInputRef}
+        />
 
-        <Button
-          size="icon"
-          variant={grab.state !== 'idle' ? 'default' : 'ghost'}
-          className={`h-8 w-8 ${grab.state !== 'idle' ? 'bg-foreground/80 text-background hover:bg-foreground/90' : ''}`}
-          onClick={grab.toggle}
-          title={`Grab page element (${navigator.userAgent.includes('Mac') ? '⌘C' : 'Ctrl+C'})`}
-          disabled={isBlankTab}
-        >
-          <Crosshair className="size-4" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            {/* Why: wrap the disabled button in a span so pointer events still
+                reach the tooltip trigger — Radix (and the DOM) drop hover
+                events on disabled <button>, which is why the previous native
+                `title` attribute fired inconsistently. */}
+            <span className="inline-flex">
+              <Button
+                size="icon"
+                variant={grab.state !== 'idle' ? 'default' : 'ghost'}
+                className={`h-8 w-8 ${grab.state !== 'idle' ? 'bg-foreground/80 text-background hover:bg-foreground/90' : ''}`}
+                onClick={grab.toggle}
+                disabled={isBlankTab}
+              >
+                <Crosshair className="size-4" />
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={4}>
+            {`Grab page element (${navigator.userAgent.includes('Mac') ? '⌘C' : 'Ctrl+C'})`}
+          </TooltipContent>
+        </Tooltip>
 
         <Button
           size="icon"
@@ -1794,28 +1843,11 @@ function BrowserPagePane({
           <ExternalLink className="size-4" />
         </Button>
 
-        {sessionProfile && (
-          <div
-            className="flex h-6 items-center gap-1 rounded-md bg-accent/60 px-2 text-[10px] font-medium text-muted-foreground"
-            title={`Session: ${sessionProfile.label}${sessionProfile.source?.browserFamily ? ` (${sessionProfile.source.browserFamily})` : ''}`}
-          >
-            <Import className="size-3" />
-            {sessionProfile.label}
-          </div>
-        )}
-
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-8 w-8"
-          title="Browser Settings"
-          onClick={() => {
-            useAppStore.getState().openSettingsTarget({ pane: 'general', repoId: null })
-            useAppStore.getState().setActiveView('settings')
-          }}
-        >
-          <Settings className="size-4" />
-        </Button>
+        <BrowserToolbarMenu
+          currentProfileId={sessionProfileId}
+          workspaceId={workspaceId}
+          onDestroyWebview={() => destroyPersistentWebview(browserTab.id)}
+        />
       </div>
       {downloadState ? (
         <div className="flex items-center gap-3 border-b border-border/60 bg-amber-500/10 px-3 py-2 text-xs text-foreground/90">
@@ -1914,6 +1946,7 @@ function BrowserPagePane({
         ref={containerRef}
         className="relative flex min-h-0 flex-1 overflow-hidden bg-background"
       >
+        <BrowserFind isOpen={findOpen} onClose={() => setFindOpen(false)} webviewRef={webviewRef} />
         {showFailureOverlay ? (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.02),transparent_58%)] px-6">
             <div className="flex max-w-sm flex-col items-center px-8 py-8 text-center opacity-70">

@@ -1,375 +1,135 @@
-/* eslint-disable max-lines -- Why: group panels intentionally co-locate group-scoped tab chrome, activation/close handlers, and surface rendering so split groups cannot drift into a separate behavior path from the original root group. */
-import { lazy, Suspense, useCallback, useMemo } from 'react'
-import { X } from 'lucide-react'
-import { useShallow } from 'zustand/react/shallow'
-import type { OpenFile } from '@/store/slices/editor'
-import type { BrowserTab as BrowserTabState } from '../../../../shared/types'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { useDroppable } from '@dnd-kit/core'
+import { Columns2, Ellipsis, Rows2, X } from 'lucide-react'
 import { useAppStore } from '../../store'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import TabBar from '../tab-bar/TabBar'
 import TerminalPane from '../terminal-pane/TerminalPane'
-import BrowserPane, { destroyPersistentWebview } from '../browser-pane/BrowserPane'
+import { browserSlotAnchorName } from '../browser-pane/browser-pane-slots'
+import { useTabGroupWorkspaceModel } from './useTabGroupWorkspaceModel'
+import TabGroupDropOverlay from './TabGroupDropOverlay'
+import {
+  getTabPaneBodyDroppableId,
+  type HoveredTabInsertion,
+  type TabDropZone
+} from './useTabDragSplit'
 
 const EditorPanel = lazy(() => import('../editor/EditorPanel'))
-
-type GroupEditorItem = OpenFile & { tabId: string }
-const EMPTY_GROUPS: readonly never[] = []
-const EMPTY_TABS: readonly never[] = []
-const EMPTY_RUNTIME_TERMINALS: readonly never[] = []
-const EMPTY_BROWSER_TABS: readonly never[] = []
 
 export default function TabGroupPanel({
   groupId,
   worktreeId,
+  isWorktreeActive,
   isFocused,
-  hasSplitGroups
+  hasSplitGroups,
+  touchesRightEdge,
+  reserveClosedExplorerToggleSpace,
+  reserveCollapsedSidebarHeaderSpace,
+  isTabDragActive = false,
+  activeDropZone = null,
+  hoveredTabInsertion = null
 }: {
   groupId: string
   worktreeId: string
+  isWorktreeActive: boolean
   isFocused: boolean
   hasSplitGroups: boolean
+  touchesRightEdge: boolean
+  reserveClosedExplorerToggleSpace: boolean
+  reserveCollapsedSidebarHeaderSpace: boolean
+  isTabDragActive?: boolean
+  activeDropZone?: TabDropZone | null
+  hoveredTabInsertion?: HoveredTabInsertion | null
 }): React.JSX.Element {
-  const worktreeGroups = useAppStore(
-    useShallow((state) => state.groupsByWorktree[worktreeId] ?? EMPTY_GROUPS)
-  )
-  const worktreeUnifiedTabs = useAppStore(
-    useShallow((state) => state.unifiedTabsByWorktree[worktreeId] ?? EMPTY_TABS)
-  )
-  const openFiles = useAppStore((state) => state.openFiles)
-  const worktree = useAppStore(
-    useShallow(
-      (state) =>
-        Object.values(state.worktreesByRepo)
-          .flat()
-          .find((candidate) => candidate.id === worktreeId) ?? null
-    )
-  )
-  const focusGroup = useAppStore((state) => state.focusGroup)
-  const activateTab = useAppStore((state) => state.activateTab)
-  const closeUnifiedTab = useAppStore((state) => state.closeUnifiedTab)
-  const closeOtherTabs = useAppStore((state) => state.closeOtherTabs)
-  const closeTabsToRight = useAppStore((state) => state.closeTabsToRight)
-  const reorderUnifiedTabs = useAppStore((state) => state.reorderUnifiedTabs)
-  const createEmptySplitGroup = useAppStore((state) => state.createEmptySplitGroup)
-  const closeEmptyGroup = useAppStore((state) => state.closeEmptyGroup)
-  const createTab = useAppStore((state) => state.createTab)
-  const closeTab = useAppStore((state) => state.closeTab)
-  const setActiveTab = useAppStore((state) => state.setActiveTab)
-  const setActiveFile = useAppStore((state) => state.setActiveFile)
-  const setActiveTabType = useAppStore((state) => state.setActiveTabType)
-  const setTabCustomTitle = useAppStore((state) => state.setTabCustomTitle)
-  const setTabColor = useAppStore((state) => state.setTabColor)
-  const consumeSuppressedPtyExit = useAppStore((state) => state.consumeSuppressedPtyExit)
-  const createBrowserTab = useAppStore((state) => state.createBrowserTab)
-  const closeFile = useAppStore((state) => state.closeFile)
-  const closeAllFiles = useAppStore((state) => state.closeAllFiles)
-  const pinFile = useAppStore((state) => state.pinFile)
-  const expandedPaneByTabId = useAppStore((state) => state.expandedPaneByTabId)
-  const browserTabsByWorktree = useAppStore((state) => state.browserTabsByWorktree)
-  const runtimeTerminalTabs = useAppStore(
-    (state) => state.tabsByWorktree[worktreeId] ?? EMPTY_RUNTIME_TERMINALS
-  )
-  const closeBrowserTab = useAppStore((state) => state.closeBrowserTab)
-  const setActiveBrowserTab = useAppStore((state) => state.setActiveBrowserTab)
+  const rightSidebarOpen = useAppStore((state) => state.rightSidebarOpen)
+  const sidebarOpen = useAppStore((state) => state.sidebarOpen)
 
-  const group = useMemo(
-    () => worktreeGroups.find((item) => item.id === groupId) ?? null,
-    [groupId, worktreeGroups]
-  )
-  const groupTabs = useMemo(
-    () => worktreeUnifiedTabs.filter((item) => item.groupId === groupId),
-    [groupId, worktreeUnifiedTabs]
-  )
+  const [wslAvailable, setWslAvailable] = useState(false)
+  useEffect(() => {
+    void window.api.wsl.isAvailable().then(setWslAvailable)
+  }, [])
 
-  const activeItemId = group?.activeTabId ?? null
-  const activeTab = groupTabs.find((item) => item.id === activeItemId) ?? null
-
-  const terminalTabs = useMemo(
-    () =>
-      groupTabs
-        .filter((item) => item.contentType === 'terminal')
-        .map((item) => ({
-          id: item.entityId,
-          ptyId: null,
-          worktreeId,
-          title: item.label,
-          customTitle: item.customLabel,
-          color: item.color,
-          sortOrder: item.sortOrder,
-          createdAt: item.createdAt
-        })),
-    [groupTabs, worktreeId]
-  )
-
-  const editorItems = useMemo<GroupEditorItem[]>(
-    () =>
-      groupTabs
-        .filter(
-          (item) =>
-            item.contentType === 'editor' ||
-            item.contentType === 'diff' ||
-            item.contentType === 'conflict-review'
-        )
-        .map((item) => {
-          const file = openFiles.find((candidate) => candidate.id === item.entityId)
-          return file ? { ...file, tabId: item.id } : null
-        })
-        .filter((item): item is GroupEditorItem => item !== null),
-    [groupTabs, openFiles]
-  )
-
-  const worktreeBrowserTabs = useMemo(
-    () => browserTabsByWorktree[worktreeId] ?? EMPTY_BROWSER_TABS,
-    [browserTabsByWorktree, worktreeId]
-  )
-
-  const browserItems = useMemo(
-    () =>
-      groupTabs
-        .filter((item) => item.contentType === 'browser')
-        .map((item) => {
-          const bt = worktreeBrowserTabs.find((candidate) => candidate.id === item.entityId)
-          return bt ?? null
-        })
-        .filter((item): item is BrowserTabState => item !== null),
-    [groupTabs, worktreeBrowserTabs]
-  )
-
-  const activeBrowserTab = useMemo(
-    () =>
-      activeTab?.contentType === 'browser'
-        ? (worktreeBrowserTabs.find((bt) => bt.id === activeTab.entityId) ?? null)
-        : null,
-    [activeTab, worktreeBrowserTabs]
-  )
-
-  const runtimeTerminalTabById = useMemo(
-    () => new Map(runtimeTerminalTabs.map((tab) => [tab.id, tab])),
-    [runtimeTerminalTabs]
-  )
-
-  const closeEditorIfUnreferenced = useCallback(
-    (entityId: string, closingTabId: string) => {
-      const otherReference = (useAppStore.getState().unifiedTabsByWorktree[worktreeId] ?? []).some(
-        (item) =>
-          item.id !== closingTabId &&
-          item.entityId === entityId &&
-          (item.contentType === 'editor' ||
-            item.contentType === 'diff' ||
-            item.contentType === 'conflict-review')
-      )
-      if (!otherReference) {
-        closeFile(entityId)
-      }
+  const model = useTabGroupWorkspaceModel({ groupId, worktreeId })
+  const {
+    activeTab,
+    browserItems,
+    commands,
+    editorItems,
+    runtimeTerminalTabById,
+    tabBarOrder,
+    terminalTabs,
+    worktreePath
+  } = model
+  const { setNodeRef: setBodyDropRef } = useDroppable({
+    id: getTabPaneBodyDroppableId(groupId),
+    data: {
+      kind: 'pane-body',
+      groupId,
+      worktreeId
     },
-    [closeFile, worktreeId]
-  )
-
-  const handleActivateTerminal = useCallback(
-    (terminalId: string) => {
-      const item = groupTabs.find(
-        (candidate) => candidate.entityId === terminalId && candidate.contentType === 'terminal'
-      )
-      if (!item) {
-        return
-      }
-      focusGroup(worktreeId, groupId)
-      activateTab(item.id)
-      setActiveTab(terminalId)
-      setActiveTabType('terminal')
-    },
-    [activateTab, focusGroup, groupId, groupTabs, setActiveTab, setActiveTabType, worktreeId]
-  )
-
-  const handleActivateEditor = useCallback(
-    (tabId: string) => {
-      const item = groupTabs.find((candidate) => candidate.id === tabId)
-      if (!item) {
-        return
-      }
-      focusGroup(worktreeId, groupId)
-      activateTab(item.id)
-      setActiveFile(item.entityId)
-      setActiveTabType('editor')
-    },
-    [activateTab, focusGroup, groupId, groupTabs, setActiveFile, setActiveTabType, worktreeId]
-  )
-
-  const handleActivateBrowser = useCallback(
-    (browserTabId: string) => {
-      const item = groupTabs.find(
-        (candidate) => candidate.entityId === browserTabId && candidate.contentType === 'browser'
-      )
-      if (!item) {
-        return
-      }
-      focusGroup(worktreeId, groupId)
-      activateTab(item.id)
-      setActiveBrowserTab(browserTabId)
-      setActiveTabType('browser')
-    },
-    [activateTab, focusGroup, groupId, groupTabs, setActiveBrowserTab, setActiveTabType, worktreeId]
-  )
-
-  const handleClose = useCallback(
-    (itemId: string) => {
-      const item = groupTabs.find((candidate) => candidate.id === itemId)
-      if (!item) {
-        return
-      }
-      if (item.contentType === 'terminal') {
-        closeTab(item.entityId)
-      } else if (item.contentType === 'browser') {
-        destroyPersistentWebview(item.entityId)
-        closeBrowserTab(item.entityId)
-      } else {
-        closeEditorIfUnreferenced(item.entityId, item.id)
-        closeUnifiedTab(item.id)
-      }
-    },
-    [closeBrowserTab, closeEditorIfUnreferenced, closeTab, closeUnifiedTab, groupTabs]
-  )
-
-  const handleCloseGroup = useCallback(() => {
-    const items = [...(useAppStore.getState().unifiedTabsByWorktree[worktreeId] ?? [])].filter(
-      (item) => item.groupId === groupId
-    )
-    for (const item of items) {
-      if (item.contentType === 'terminal') {
-        closeTab(item.entityId)
-      } else if (item.contentType === 'browser') {
-        destroyPersistentWebview(item.entityId)
-        closeBrowserTab(item.entityId)
-      } else {
-        closeEditorIfUnreferenced(item.entityId, item.id)
-        closeUnifiedTab(item.id)
-      }
-    }
-    // Why: split creation can leave intentionally empty groups behind. Closing
-    // the group chrome must collapse those placeholders too, not just groups
-    // that still own tabs.
-    closeEmptyGroup(worktreeId, groupId)
-  }, [
-    closeBrowserTab,
-    closeEditorIfUnreferenced,
-    closeEmptyGroup,
-    closeTab,
-    closeUnifiedTab,
-    groupId,
-    worktreeId
-  ])
-
-  const handleCreateSplitGroup = useCallback(
-    (direction: 'right' | 'down') => {
-      focusGroup(worktreeId, groupId)
-      createEmptySplitGroup(worktreeId, groupId, direction)
-    },
-    [createEmptySplitGroup, focusGroup, groupId, worktreeId]
-  )
-
-  const handleCloseOthers = useCallback(
-    (itemId: string) => {
-      const closedIds = closeOtherTabs(itemId)
-      for (const closedId of closedIds) {
-        const item = groupTabs.find((candidate) => candidate.id === closedId)
-        if (!item) {
-          continue
-        }
-        if (item.contentType === 'terminal') {
-          closeTab(item.entityId)
-        } else if (item.contentType === 'browser') {
-          destroyPersistentWebview(item.entityId)
-          closeBrowserTab(item.entityId)
-        } else {
-          closeEditorIfUnreferenced(item.entityId, item.id)
-        }
-      }
-    },
-    [closeBrowserTab, closeEditorIfUnreferenced, closeOtherTabs, closeTab, groupTabs]
-  )
-
-  const handleCloseToRight = useCallback(
-    (itemId: string) => {
-      const closedIds = closeTabsToRight(itemId)
-      for (const closedId of closedIds) {
-        const item = groupTabs.find((candidate) => candidate.id === closedId)
-        if (!item) {
-          continue
-        }
-        if (item.contentType === 'terminal') {
-          closeTab(item.entityId)
-        } else if (item.contentType === 'browser') {
-          destroyPersistentWebview(item.entityId)
-          closeBrowserTab(item.entityId)
-        } else {
-          closeEditorIfUnreferenced(item.entityId, item.id)
-        }
-      }
-    },
-    [closeBrowserTab, closeEditorIfUnreferenced, closeTabsToRight, closeTab, groupTabs]
+    disabled: !isTabDragActive
+  })
+  // Why: browser panes for this worktree are rendered once at the worktree
+  // level (BrowserPaneOverlayLayer) and positioned over the owning group's
+  // body via CSS anchor positioning. Tagging this body with a per-group
+  // `anchor-name` lets the overlay reference it via `position-anchor`;
+  // moving a tab between groups only swaps which anchor-name the overlay
+  // targets, never reparenting the `<webview>` (which would reload it).
+  const bodyAnchorName = browserSlotAnchorName(groupId)
+  // Why: memoize the style object so the literal isn't recreated on every
+  // render. A fresh object every render would make the body `<div>` appear
+  // to have a new `style` prop on every parent re-render, which defeats any
+  // downstream memoization keyed on referential equality.
+  const bodyAnchorStyle = useMemo(
+    () => ({ anchorName: bodyAnchorName }) as React.CSSProperties,
+    [bodyAnchorName]
   )
 
   const tabBar = (
     <TabBar
       tabs={terminalTabs}
       activeTabId={activeTab?.contentType === 'terminal' ? activeTab.entityId : null}
+      groupId={groupId}
       worktreeId={worktreeId}
-      expandedPaneByTabId={expandedPaneByTabId}
-      onActivate={handleActivateTerminal}
+      expandedPaneByTabId={model.expandedPaneByTabId}
+      onActivate={commands.activateTerminal}
       onClose={(terminalId) => {
-        const item = groupTabs.find(
+        const item = model.groupTabs.find(
           (candidate) => candidate.entityId === terminalId && candidate.contentType === 'terminal'
         )
         if (item) {
-          handleClose(item.id)
+          commands.closeItem(item.id)
         }
       }}
       onCloseOthers={(terminalId) => {
-        const item = groupTabs.find(
+        const item = model.groupTabs.find(
           (candidate) => candidate.entityId === terminalId && candidate.contentType === 'terminal'
         )
         if (item) {
-          handleCloseOthers(item.id)
+          commands.closeOthers(item.id)
         }
       }}
       onCloseToRight={(terminalId) => {
-        const item = groupTabs.find(
+        const item = model.groupTabs.find(
           (candidate) => candidate.entityId === terminalId && candidate.contentType === 'terminal'
         )
         if (item) {
-          handleCloseToRight(item.id)
+          commands.closeToRight(item.id)
         }
       }}
-      onReorder={(_, order) => {
-        if (!group) {
-          return
-        }
-        const itemOrder = order
-          .map(
-            (entityId) =>
-              groupTabs.find(
-                (item) => item.contentType === 'terminal' && item.entityId === entityId
-              )?.id
-          )
-          .filter((value): value is string => Boolean(value))
-          .concat(
-            group.tabOrder.filter(
-              (itemId) =>
-                !groupTabs.find((item) => item.contentType === 'terminal' && item.id === itemId)
-            )
-          )
-        reorderUnifiedTabs(groupId, itemOrder)
-      }}
-      onNewTerminalTab={() => {
-        const terminal = createTab(worktreeId)
-        setActiveTab(terminal.id)
-        setActiveTabType('terminal')
-      }}
-      onNewBrowserTab={() => {
-        const defaultUrl = useAppStore.getState().browserDefaultUrl ?? 'about:blank'
-        createBrowserTab(worktreeId, defaultUrl, { title: 'New Browser Tab' })
-      }}
-      onSetCustomTitle={setTabCustomTitle}
-      onSetTabColor={setTabColor}
+      onNewTerminalTab={commands.newTerminalTab}
+      onNewTerminalWithShell={commands.newTerminalWithShell}
+      wslAvailable={wslAvailable}
+      onNewBrowserTab={commands.newBrowserTab}
+      onNewFileTab={commands.newFileTab}
+      onSetCustomTitle={commands.setTabCustomTitle}
+      onSetTabColor={commands.setTabColor}
       onTogglePaneExpand={() => {}}
       editorFiles={editorItems}
       browserTabs={browserItems}
@@ -386,95 +146,230 @@ export default function TabGroupPanel({
             ? 'browser'
             : 'editor'
       }
-      onActivateFile={handleActivateEditor}
-      onCloseFile={handleClose}
-      onActivateBrowserTab={handleActivateBrowser}
+      onActivateFile={commands.activateEditor}
+      onCloseFile={commands.closeItem}
+      onActivateBrowserTab={commands.activateBrowser}
       onCloseBrowserTab={(browserTabId) => {
-        const item = groupTabs.find(
+        const item = model.groupTabs.find(
           (candidate) => candidate.entityId === browserTabId && candidate.contentType === 'browser'
         )
         if (item) {
-          handleClose(item.id)
+          commands.closeItem(item.id)
         }
       }}
-      onCloseAllFiles={closeAllFiles}
+      onDuplicateBrowserTab={commands.duplicateBrowserTab}
+      onCloseAllFiles={commands.closeAllEditorTabsInGroup}
       onPinFile={(_fileId, tabId) => {
         if (!tabId) {
           return
         }
-        const item = groupTabs.find((candidate) => candidate.id === tabId)
+        const item = model.groupTabs.find((candidate) => candidate.id === tabId)
         if (!item) {
           return
         }
-        pinFile(item.entityId, item.id)
+        commands.pinFile(item.entityId, item.id)
       }}
-      tabBarOrder={(group?.tabOrder ?? []).map((itemId) => {
-        const item = groupTabs.find((candidate) => candidate.id === itemId)
-        if (!item) {
-          return itemId
-        }
-        return item.contentType === 'terminal' ? item.entityId : item.id
-      })}
-      onCreateSplitGroup={handleCreateSplitGroup}
+      tabBarOrder={tabBarOrder}
+      onCreateSplitGroup={commands.createSplitGroup}
+      hoveredTabInsertion={hoveredTabInsertion}
     />
   )
 
+  const menuButtonClassName =
+    'my-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+  const actionChromeClassName = `flex shrink-0 items-center overflow-hidden transition-[width,margin,opacity] duration-150 ${
+    isFocused
+      ? 'ml-1.5 w-7 pointer-events-auto opacity-100'
+      : 'ml-1.5 w-7 pointer-events-none opacity-0'
+  }`
+
   return (
     <div
-      className={`flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden${
+      // Why: vertical borders are always `border-border` so the focus
+      // highlight doesn't introduce a near-white strip next to the split
+      // resize handle (--accent is ~#f5f5f5 in light mode, which reads as a
+      // visible gap between the dragger and the tab row). Only the bottom
+      // border changes color on focus, which is enough to cue the focused
+      // group without painting a bright line along the vertical edges.
+      // Why: unfocused split groups dim very subtly so the focused group
+      // reads as "selected" without making the unfocused content look
+      // washed out or hard to read. Only applied when `hasSplitGroups`
+      // because a lone group has nothing to contrast against.
+      className={`group/tab-group flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden${
         hasSplitGroups
-          ? ` group/tab-group border ${isFocused ? 'border-accent' : 'border-border'}`
+          ? // Why: drop only the RIGHT border on the rightmost group. The right
+            // sidebar paints its own `borderLeft` that already extends full
+            // height, so painting our own border-r in that spot stacks a
+            // second 1px line next to it — reading as a 2px-thick bar below
+            // the 8px drag strip (where the sidebar border continues alone
+            // above). The left edge has no such double-up, so the left
+            // border is always kept.
+            ` border-l ${touchesRightEdge ? '' : 'border-r'} border-border border-b ${isFocused ? 'border-b-accent' : 'opacity-95'}`
           : ''
       }`}
-      onPointerDown={() => focusGroup(worktreeId, groupId)}
+      onPointerDown={commands.focusGroup}
+      // Why: keyboard and assistive-tech users can move focus into an unfocused
+      // split group without generating a pointer event. Keeping the owning
+      // group in sync with DOM focus makes global shortcuts like New Markdown
+      // target the panel the user actually navigated into.
+      onFocusCapture={commands.focusGroup}
     >
-      {/* Why: every group, including the initial unsplit root, must render its
-          chrome inside the same panel stack. Portaling the first group's tabs
-          into the window titlebar created a second vertical frame of reference,
-          so the first split appeared to "jump down" when later groups rendered
-          inline below it. */}
-      <div className="flex items-stretch h-9 shrink-0 border-b border-border bg-card">
-        {tabBar}
-        {hasSplitGroups && (
-          <button
-            type="button"
-            aria-label="Close tab group"
-            title="Close tab group"
-            onClick={(event) => {
-              event.stopPropagation()
-              handleCloseGroup()
-            }}
-            className="mr-1 my-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent/50 hover:text-foreground group-hover/tab-group:opacity-100 focus:opacity-100"
+      {/* Why: every split group must keep its own real tab row because the app
+          can show multiple groups at once, while the window titlebar only has
+          one shared center slot. Rendering true tab chrome here preserves
+          per-group titles without making groups fight over one portal target. */}
+      {/* Why: the macOS window uses hiddenInset titleBarStyle, so the only
+          way to drag-move the window is via -webkit-app-region: drag. Without
+          this, the empty space after tabs in the center column is dead — the
+          user can only drag from the tiny left-sidebar header strip. */}
+      <div
+        className="h-[34px] shrink-0 border-b border-border bg-card"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
+        <div className="flex h-full items-stretch pr-1.5">
+          {/* Why: Electron's native drag hit-test only respects no-drag on DOM
+              descendants, not z-index siblings. When the left sidebar is
+              collapsed, its header floats absolutely (z-10) over this tab row
+              from a separate DOM branch. An explicit no-drag spacer here
+              punches a hole in the drag surface so the floating sidebar toggle
+              and other titlebar controls remain clickable. */}
+          {reserveCollapsedSidebarHeaderSpace && !sidebarOpen ? (
+            <div
+              className="shrink-0"
+              style={
+                {
+                  width: 'var(--collapsed-sidebar-header-width)',
+                  WebkitAppRegion: 'no-drag'
+                } as React.CSSProperties
+              }
+            />
+          ) : null}
+          <div className="min-w-0 flex-1 h-full">{tabBar}</div>
+          {/* Why: pane-scoped layout actions belong with the active pane instead
+              of the global tab-bar `+`, which should keep opening tabs exactly
+              as before. The local overflow menu holds split directions and
+              close-group without changing the existing tab-creation affordance. */}
+          <div
+            className={actionChromeClassName}
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            <X className="size-4" />
-          </button>
-        )}
+            {isFocused ? (
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Pane Actions"
+                    title="Pane Actions"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                    }}
+                    className={menuButtonClassName}
+                  >
+                    <Ellipsis className="size-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" side="bottom" sideOffset={4}>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      commands.createSplitGroup('right')
+                    }}
+                  >
+                    <Columns2 className="size-4" />
+                    Split Right
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      commands.createSplitGroup('down')
+                    }}
+                  >
+                    <Rows2 className="size-4" />
+                    Split Down
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      commands.createSplitGroup('left')
+                    }}
+                  >
+                    <Columns2 className="size-4" />
+                    Split Left
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      commands.createSplitGroup('up')
+                    }}
+                  >
+                    <Rows2 className="size-4" />
+                    Split Up
+                  </DropdownMenuItem>
+                  {hasSplitGroups ? (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={() => {
+                          commands.closeGroup()
+                        }}
+                      >
+                        <X className="size-4" />
+                        Close Group
+                      </DropdownMenuItem>
+                    </>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </div>
+          {/* Why: Electron's native drag hit-test ignores z-index — a no-drag
+              element only overrides drag when it's a DOM descendant, not a
+              sibling in another branch. The floating right-sidebar toggle in
+              App.tsx sits in a separate DOM tree, so we need an explicit
+              no-drag child here to punch a hole in the drag surface beneath it
+              and let clicks through to the toggle. */}
+          {reserveClosedExplorerToggleSpace && !rightSidebarOpen ? (
+            <div
+              className="shrink-0 w-10"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            />
+          ) : null}
+        </div>
       </div>
 
-      <div className="relative flex-1 min-h-0 overflow-hidden">
-        {groupTabs
+      <div
+        ref={setBodyDropRef}
+        className="relative flex-1 min-h-0 overflow-hidden"
+        style={bodyAnchorStyle}
+      >
+        {activeDropZone ? <TabGroupDropOverlay zone={activeDropZone} /> : null}
+        {model.groupTabs
           .filter((item) => item.contentType === 'terminal')
           .map((item) => (
             <TerminalPane
               key={`${item.entityId}-${runtimeTerminalTabById.get(item.entityId)?.generation ?? 0}`}
               tabId={item.entityId}
               worktreeId={worktreeId}
-              cwd={worktree?.path}
+              cwd={worktreePath}
               isActive={
                 isFocused && activeTab?.id === item.id && activeTab.contentType === 'terminal'
               }
               // Why: in multi-group splits, the active terminal in each group
               // must remain visible (display:flex) so the user sees its output,
               // but only the focused group's terminal should receive keyboard
-              // input. isVisible controls rendering; isActive controls focus.
-              isVisible={activeTab?.id === item.id && activeTab.contentType === 'terminal'}
+              // input. Hidden worktrees stay mounted offscreen, so `isVisible`
+              // must also respect worktree visibility or those detached panes
+              // keep their WebGL renderers alive and exhaust Chromium's context
+              // budget across worktrees.
+              isVisible={
+                isWorktreeActive &&
+                activeTab?.id === item.id &&
+                activeTab.contentType === 'terminal'
+              }
               onPtyExit={(ptyId) => {
-                if (consumeSuppressedPtyExit(ptyId)) {
+                if (commands.consumeSuppressedPtyExit(ptyId)) {
                   return
                 }
-                handleClose(item.id)
+                commands.closeItem(item.id)
               }}
-              onCloseTab={() => handleClose(item.id)}
+              onCloseTab={() => commands.closeItem(item.id)}
             />
           ))}
 
@@ -495,20 +390,17 @@ export default function TabGroupPanel({
                   </div>
                 }
               >
-                <EditorPanel activeFileId={activeTab.entityId} />
+                <EditorPanel activeFileId={activeTab.entityId} activeViewStateId={activeTab.id} />
               </Suspense>
             </div>
           )}
 
-        {browserItems.map((bt) => (
-          <div
-            key={bt.id}
-            className="absolute inset-0 flex min-h-0 min-w-0"
-            style={{ display: activeBrowserTab?.id === bt.id ? undefined : 'none' }}
-          >
-            <BrowserPane browserTab={bt} isActive={activeBrowserTab?.id === bt.id} />
-          </div>
-        ))}
+        {/* Why: browser panes are rendered at the worktree level by
+            BrowserPaneOverlayLayer and absolutely positioned over this body
+            element via the slot registered above. Rendering them per-group
+            here caused moving a browser tab between groups to unmount and
+            remount the pane, reparenting the Electron `<webview>` — which
+            destroys its guest contents and reloads the page. */}
       </div>
     </div>
   )

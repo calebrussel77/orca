@@ -1,19 +1,18 @@
 import React, { useEffect } from 'react'
 import { useAppStore } from '@/store'
-import { cn } from '@/lib/utils'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
 import SidebarHeader from './SidebarHeader'
+import SidebarNav from './SidebarNav'
 import SearchBar from './SearchBar'
-import GroupControls from './GroupControls'
 import WorktreeList from './WorktreeList'
 import SidebarToolbar from './SidebarToolbar'
-import AddWorktreeDialog from './AddWorktreeDialog'
 import WorktreeMetaDialog from './WorktreeMetaDialog'
 import DeleteWorktreeDialog from './DeleteWorktreeDialog'
 import NonGitFolderDialog from './NonGitFolderDialog'
 import RemoveFolderDialog from './RemoveFolderDialog'
 import AddRepoDialog from './AddRepoDialog'
+import OrcaYamlTrustDialog from './OrcaYamlTrustDialog'
 
 const MIN_WIDTH = 220
 const MAX_WIDTH = 500
@@ -33,7 +32,7 @@ function Sidebar(): React.JSX.Element {
     }
   }, [repoCount, fetchAllWorktrees])
 
-  const { containerRef, isResizing, onResizeStart } = useSidebarResize<HTMLDivElement>({
+  const { containerRef, onResizeStart } = useSidebarResize<HTMLDivElement>({
     isOpen: sidebarOpen,
     width: sidebarWidth,
     minWidth: MIN_WIDTH,
@@ -46,20 +45,13 @@ function Sidebar(): React.JSX.Element {
     <TooltipProvider delayDuration={400}>
       <div
         ref={containerRef}
-        className={cn(
-          'relative flex-shrink-0 bg-sidebar flex flex-col overflow-hidden scrollbar-sleek-parent',
-          isResizing ? 'transition-none' : 'transition-[width] duration-200'
-        )}
-        style={{
-          borderRight: sidebarOpen ? '1px solid var(--sidebar-border)' : 'none'
-        }}
+        className="relative min-h-0 flex-shrink-0 bg-sidebar flex flex-col overflow-hidden scrollbar-sleek-parent"
       >
         {/* Fixed controls */}
+        <SidebarNav />
         <SidebarHeader />
         <SearchBar />
-        <GroupControls />
 
-        {/* Virtualized scrollable list */}
         <WorktreeList />
 
         {/* Fixed bottom toolbar */}
@@ -73,12 +65,12 @@ function Sidebar(): React.JSX.Element {
       </div>
 
       {/* Dialog (rendered outside sidebar to avoid clipping) */}
-      <AddWorktreeDialog />
       <WorktreeMetaDialog />
       <DeleteWorktreeDialog />
       <NonGitFolderDialog />
       <RemoveFolderDialog />
       <AddRepoDialog />
+      <OrcaYamlTrustDialog />
     </TooltipProvider>
   )
 }

@@ -1,5 +1,7 @@
 import { app } from 'electron'
 import { join } from 'path'
+import { getVersionManagerBinPaths } from '../codex-cli/command'
+import { getMainE2EConfig } from '../e2e-config'
 
 const DEV_PARENT_SHUTDOWN_GRACE_MS = 3000
 
@@ -50,8 +52,27 @@ export function patchPackagedProcessPath(): void {
   ]
 
   if (home) {
-    extraPaths.push(join(home, '.local/bin'), join(home, '.nix-profile/bin'))
+    extraPaths.push(
+      join(home, 'bin'),
+      join(home, '.local/bin'),
+      join(home, '.nix-profile/bin'),
+      // Why: several agent CLIs ship install scripts that drop binaries into
+      // tool-specific ~/.<name>/bin directories (opencode's documented fallback,
+      // Pi's vite-plus installer). GUI-launched Electron inherits a minimal PATH
+      // without shell rc files, so these stay invisible to `which` probes — and
+      // the Agents settings page reports them as "Not installed" even when the
+      // user can run them from Terminal. See stablyai/orca#829.
+      join(home, '.opencode/bin'),
+      join(home, '.vite-plus/bin')
+    )
   }
+
+  // Why: CLI tools installed via Node version managers (nvm, volta, asdf, fnm,
+  // pnpm, yarn, bun) use #!/usr/bin/env node shebangs that need `node` in PATH.
+  // resolveCodexCommand() can locate the codex binary in these directories, but
+  // spawning it still fails if node itself isn't in PATH. Adding version manager
+  // bin paths here fixes all spawn sites (login, rate limits, usage tracking).
+  extraPaths.push(...getVersionManagerBinPaths())
 
   const currentPath = process.env.PATH ?? ''
   const existing = new Set(currentPath.split(':'))
@@ -63,7 +84,25 @@ export function patchPackagedProcessPath(): void {
 }
 
 export function configureDevUserDataPath(isDev: boolean): void {
+  const e2eConfig = getMainE2EConfig()
+  if (e2eConfig.userDataDir) {
+    // Why: the E2E suite launches a fresh Electron app for each spec. A
+    // dedicated userData path per launch prevents persisted repos, worktrees,
+    // and session state from leaking between tests through the shared dev
+    // profile while still leaving the user's real packaged profile untouched.
+    app.setPath('userData', e2eConfig.userDataDir)
+    return
+  }
+
   if (!isDev) {
+    return
+  }
+  const overrideUserDataPath = process.env.ORCA_DEV_USER_DATA_PATH
+  if (overrideUserDataPath) {
+    // Why: automated Electron repros need an isolated profile so persisted
+    // tabs/worktrees from the developer's normal `orca-dev` session do not
+    // change startup behavior and hide or create window-management bugs.
+    app.setPath('userData', overrideUserDataPath)
     return
   }
   // Why: development runs share the same machine as packaged Orca, and both
@@ -130,7 +169,33 @@ export function installDevParentWatchdog(isDev: boolean): void {
   timer.unref()
 }
 
+function isLinuxWaylandSession(): boolean {
+  // Why: WAYLAND_DISPLAY is set directly by the Wayland compositor and is the
+  // same signal Electron's own ELECTRON_OZONE_PLATFORM_HINT=auto logic uses.
+  // XDG_SESSION_TYPE is the login-manager/PAM signal and is the belt-and-
+  // suspenders check for sessions where WAYLAND_DISPLAY isn't set at process
+  // start (nested Wayland, manual session startup). Both are inherited from
+  // the parent process, so they're available before app.whenReady where the
+  // GPU command-line switches must be appended.
+  return (
+    process.platform === 'linux' &&
+    (Boolean(process.env.WAYLAND_DISPLAY) || process.env.XDG_SESSION_TYPE === 'wayland')
+  )
+}
+
 export function enableMainProcessGpuFeatures(): void {
+  // Why: Chromium's Ozone/Wayland surface factory hard-aborts when Vulkan is
+  // enabled (see wayland_surface_factory.cc:251 — "--ozone-platform=wayland is
+  // not compatible with Vulkan"), leaving the renderer unable to compose and
+  // showing a blank/transparent window on Wayland-default distros like
+  // Arch/Omarchy/Hyprland and GNOME-Wayland. Skia Graphite is Vulkan-only on
+  // Linux (no OpenGL backend), so enabling it with Vulkan off would silently
+  // fall back to software rendering — gate it on the same Wayland signal.
+  // The X11 Vulkan path works, so we keep the acceleration there and on
+  // macOS/Windows.
+  if (isLinuxWaylandSession()) {
+    return
+  }
   app.commandLine.appendSwitch('enable-features', 'Vulkan,UseSkiaGraphite')
   app.commandLine.appendSwitch('enable-unsafe-webgpu')
 }

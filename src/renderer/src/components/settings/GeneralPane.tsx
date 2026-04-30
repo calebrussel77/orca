@@ -1,60 +1,34 @@
 /* eslint-disable max-lines -- Why: GeneralPane is the single owner of all general settings UI;
    splitting individual settings into separate files would scatter related controls without a
    meaningful abstraction boundary. */
-import { useEffect, useState } from 'react'
-import type {
-  BrowserSessionProfile,
-  CodexRateLimitAccountsState,
-  GlobalSettings
-} from '../../../../shared/types'
-import { Badge } from '../ui/badge'
+import { useEffect, useRef, useState } from 'react'
+import type { GlobalSettings } from '../../../../shared/types'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Separator } from '../ui/separator'
-import { Download, FolderOpen, Import, Loader2, Plus, RefreshCw, Timer, Trash2 } from 'lucide-react'
+import { Download, FolderOpen, Loader2, RefreshCw, Star, Timer } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { CliSection } from './CliSection'
 import { toast } from 'sonner'
 import {
   DEFAULT_EDITOR_AUTO_SAVE_DELAY_MS,
   MAX_EDITOR_AUTO_SAVE_DELAY_MS,
-  MIN_EDITOR_AUTO_SAVE_DELAY_MS,
-  ORCA_BROWSER_BLANK_URL
+  MIN_EDITOR_AUTO_SAVE_DELAY_MS
 } from '../../../../shared/constants'
-import { normalizeBrowserNavigationUrl } from '../../../../shared/browser-url'
 import { clampNumber } from '@/lib/terminal-theme'
 import {
-  GENERAL_BROWSER_SEARCH_ENTRIES,
-  GENERAL_CODEX_ACCOUNTS_SEARCH_ENTRIES,
   GENERAL_CACHE_TIMER_SEARCH_ENTRIES,
   GENERAL_CLI_SEARCH_ENTRIES,
   GENERAL_EDITOR_SEARCH_ENTRIES,
   GENERAL_PANE_SEARCH_ENTRIES,
+  GENERAL_SUPPORT_SEARCH_ENTRIES,
   GENERAL_UPDATE_SEARCH_ENTRIES,
   GENERAL_WORKSPACE_SEARCH_ENTRIES
 } from './general-search'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from '../ui/dropdown-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
 import { SearchableSetting } from './SearchableSetting'
 import { matchesSettingsSearch } from './settings-search'
-import { markLiveCodexSessionsForRestart } from '@/lib/codex-session-restart'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '../ui/dialog'
-import { buildReleaseTagUrl, DEFAULT_GITHUB_RELEASE_INFO } from '../../../../shared/github-release'
-import { resolveSettingsCookieImportTarget } from '@/lib/browser-session-target'
 
 export { GENERAL_PANE_SEARCH_ENTRIES }
 
@@ -63,123 +37,90 @@ type GeneralPaneProps = {
   updateSettings: (updates: Partial<GlobalSettings>) => void
 }
 
-function getCodexAccountLabel(
-  state: CodexRateLimitAccountsState,
-  accountId: string | null | undefined
-): string {
-  if (accountId == null) {
-    return 'System default'
-  }
-  return state.accounts.find((account) => account.id === accountId)?.email ?? 'Codex account'
-}
-
-function getCodexAccountErrorDescription(error: unknown): string {
-  const message = String((error as Error)?.message ?? error)
-    .replace(/^Error occurred in handler for 'codexAccounts:[^']+':\s*/i, '')
-    .replace(/^Error invoking remote method 'codexAccounts:[^']+':\s*/i, '')
-    .replace(/^Error:\s*/i, '')
-    .trim()
-  const normalizedMessage = message.toLowerCase()
-
-  // Why: Codex account actions cross the Electron IPC boundary, and invoke()
-  // failures often include transport-level wrapper text that is useful in
-  // devtools but noisy in product UI. Normalize the handful of expected auth
-  // failures here so users see actionable sign-in guidance instead of IPC
-  // internals or raw upstream wording.
-  if (normalizedMessage.includes('timed out waiting for codex login to finish')) {
-    return 'Codex sign-in took too long to finish. Please try again.'
-  }
-  if (normalizedMessage.includes('codex sign-in took too long to finish')) {
-    return 'Codex sign-in took too long to finish. Please try again.'
-  }
-  if (
-    normalizedMessage.includes('auth error 502') ||
-    normalizedMessage.includes('gateway') ||
-    normalizedMessage.includes('bad gateway')
-  ) {
-    return 'Codex sign-in is temporarily unavailable. Please try again in a minute.'
-  }
-  if (normalizedMessage.startsWith('codex login failed:')) {
-    const loginMessage = message.slice('Codex login failed:'.length).trim()
-    return loginMessage || 'Codex sign-in failed. Please try again.'
-  }
-
-  return message || 'Codex sign-in failed. Please try again.'
-}
-
 export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): React.JSX.Element {
   const searchQuery = useAppStore((s) => s.settingsSearchQuery)
   const updateStatus = useAppStore((s) => s.updateStatus)
-  const fetchSettings = useAppStore((s) => s.fetchSettings)
-  const browserDefaultUrl = useAppStore((s) => s.browserDefaultUrl)
-  const setBrowserDefaultUrl = useAppStore((s) => s.setBrowserDefaultUrl)
-  const detectedBrowsers = useAppStore((s) => s.detectedBrowsers)
-  const browserSessionProfiles = useAppStore((s) => s.browserSessionProfiles)
-  const browserTabsByWorktree = useAppStore((s) => s.browserTabsByWorktree)
-  const activeBrowserTabIdByWorktree = useAppStore((s) => s.activeBrowserTabIdByWorktree)
-  const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
-  const activeTabType = useAppStore((s) => s.activeTabType)
-  const browserSessionImportState = useAppStore((s) => s.browserSessionImportState)
-  const { profile: cookieImportTargetProfile, workspace: cookieImportTargetWorkspace } =
-    resolveSettingsCookieImportTarget({
-      activeBrowserTabIdByWorktree,
-      activeTabType,
-      activeWorktreeId,
-      browserSessionProfiles,
-      browserTabsByWorktree
-    })
-  const cookieImportTargetProfileId = cookieImportTargetProfile?.id ?? 'default'
-  const cookieImportTargetLabel = cookieImportTargetProfile?.label ?? 'Default'
-  const customProfiles = browserSessionProfiles.filter(
-    (profile) => profile.scope !== 'default' && profile.id !== cookieImportTargetProfile?.id
-  )
-  const unavailableDetectedBrowsers = detectedBrowsers.filter((browser) => !browser.available)
-  const [homePageDraft, setHomePageDraft] = useState(browserDefaultUrl ?? '')
+  // Why: the 'error' variant of UpdateStatus does not carry a `version` field.
+  // The main process emits `{ state: 'error' }` for both check failures (no
+  // version known yet) and download/install failures (version was known from
+  // the preceding 'available'/'downloading'/'downloaded' state). Cache the
+  // last-known version so the error copy below can distinguish the two cases
+  // without adding IPC. Mirrors `versionRef` in UpdateCard.tsx.
+  const updateVersionRef = useRef<string | null>(null)
+  if (
+    (updateStatus.state === 'available' ||
+      updateStatus.state === 'downloading' ||
+      updateStatus.state === 'downloaded') &&
+    updateStatus.version
+  ) {
+    updateVersionRef.current = updateStatus.version
+  } else if (
+    updateStatus.state === 'checking' ||
+    updateStatus.state === 'idle' ||
+    updateStatus.state === 'not-available'
+  ) {
+    // Why: a new check cycle has started or completed cleanly. Clear the
+    // cached version so a subsequent check failure cannot be mis-classified
+    // as a download failure based on a stale version from a prior cycle.
+    updateVersionRef.current = null
+  }
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [autoSaveDelayDraft, setAutoSaveDelayDraft] = useState(
     String(settings.editorAutoSaveDelayMs)
   )
-  const [codexAccounts, setCodexAccounts] = useState<CodexRateLimitAccountsState>({
-    accounts: [],
-    activeAccountId: null
-  })
-  const [codexAction, setCodexAction] = useState<
-    'idle' | 'adding' | `reauth:${string}` | `remove:${string}` | `select:${string | 'system'}`
-  >('idle')
-  const [removeAccountId, setRemoveAccountId] = useState<string | null>(null)
+  // Why: the star state is derived from gh, not from settings, so it does not
+  // live in the global settings store. 'hidden' covers the gh-unavailable and
+  // already-starred-on-a-previous-session cases so the section drops out for
+  // users who can't or don't need to act.
+  //
+  // We start in 'loading' and render a placeholder at the exact same
+  // dimensions as the resolved section. When gh resolves to 'hidden', the
+  // placeholder collapses with a grid-rows transition so content above it
+  // doesn't shift; anything below (nothing today, but future-proof) eases up.
+  const [starState, setStarState] = useState<
+    'loading' | 'not-starred' | 'starred' | 'starring' | 'hidden' | 'error'
+  >('loading')
 
   useEffect(() => {
     window.api.updater.getVersion().then(setAppVersion)
   }, [])
 
   useEffect(() => {
-    setAutoSaveDelayDraft(String(settings.editorAutoSaveDelayMs))
-  }, [settings.editorAutoSaveDelayMs])
-
-  useEffect(() => {
-    let stale = false
-
-    const loadCodexAccounts = async (): Promise<void> => {
-      try {
-        const next = await window.api.codexAccounts.list()
-        if (!stale) {
-          setCodexAccounts(next)
-        }
-      } catch (error) {
-        if (!stale) {
-          toast.error('Could not load Codex accounts.', {
-            description: String((error as Error)?.message ?? error)
-          })
-        }
+    let cancelled = false
+    void window.api.gh.checkOrcaStarred().then((result) => {
+      if (cancelled) {
+        return
       }
-    }
-
-    void loadCodexAccounts()
-
+      if (result === null) {
+        setStarState('hidden')
+      } else {
+        setStarState(result ? 'starred' : 'not-starred')
+      }
+    })
     return () => {
-      stale = true
+      cancelled = true
     }
   }, [])
+
+  const handleStarClick = async (): Promise<void> => {
+    if (starState !== 'not-starred' && starState !== 'error') {
+      return
+    }
+    setStarState('starring')
+    const ok = await window.api.gh.starOrca()
+    if (!ok) {
+      setStarState('error')
+      return
+    }
+    setStarState('starred')
+    // Why: clicking star anywhere should also permanently mute the
+    // threshold-based nag so the user isn't re-prompted via the popup.
+    await window.api.starNag.complete()
+  }
+
+  useEffect(() => {
+    setAutoSaveDelayDraft(String(settings.editorAutoSaveDelayMs))
+  }, [settings.editorAutoSaveDelayMs])
 
   const handleBrowseWorkspace = async () => {
     const path = await window.api.repos.pickFolder()
@@ -218,72 +159,12 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
     void window.api.updater.quitAndInstall().catch(console.error)
   }
 
-  const syncCodexAccounts = async (next: CodexRateLimitAccountsState): Promise<void> => {
-    setCodexAccounts(next)
-    await fetchSettings()
-  }
-
-  const formatAccountTimestamp = (timestamp: number): string => {
-    return new Date(timestamp).toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit'
-    })
-  }
-
-  const getCookieImportTargetDescription = (
-    profile: BrowserSessionProfile | null,
-    isActiveWorkspaceTarget: boolean
-  ): string => {
-    if (!isActiveWorkspaceTarget) {
-      return 'Imports apply to Orca’s shared default browser session.'
-    }
-    if (profile?.id === 'default' || !profile) {
-      return 'Imports apply to the active browser workspace using the shared default session.'
-    }
-    return `Imports apply to the active browser workspace session: ${profile.label}.`
-  }
-
-  const runCodexAccountAction = async (
-    action: typeof codexAction,
-    operation: () => Promise<CodexRateLimitAccountsState>
-  ): Promise<void> => {
-    const previousActiveAccountId = codexAccounts.activeAccountId
-    setCodexAction(action)
-    try {
-      const next = await operation()
-      await syncCodexAccounts(next)
-      const shouldPromptRestart =
-        action === 'adding' ||
-        (action.startsWith('select:') && previousActiveAccountId !== next.activeAccountId) ||
-        (action.startsWith('reauth:') &&
-          next.activeAccountId !== null &&
-          action === `reauth:${next.activeAccountId}`) ||
-        (action.startsWith('remove:') && previousActiveAccountId !== next.activeAccountId)
-      if (shouldPromptRestart) {
-        void markLiveCodexSessionsForRestart({
-          previousAccountLabel: getCodexAccountLabel(codexAccounts, previousActiveAccountId),
-          nextAccountLabel: getCodexAccountLabel(next, next.activeAccountId)
-        })
-      }
-    } catch (error) {
-      toast.error('Codex account update failed.', {
-        description: getCodexAccountErrorDescription(error)
-      })
-    } finally {
-      setCodexAction('idle')
-    }
-  }
-
   const visibleSections = [
     matchesSettingsSearch(searchQuery, GENERAL_WORKSPACE_SEARCH_ENTRIES) ? (
-      <section key="workspace" className="space-y-6">
+      <section key="workspace" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Workspace
-          </h3>
-          <p className="text-sm text-muted-foreground">
+          <h3 className="text-sm font-semibold">Workspace</h3>
+          <p className="text-xs text-muted-foreground">
             Configure where new worktrees are created.
           </p>
         </div>
@@ -299,7 +180,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             <Input
               value={settings.workspaceDir}
               onChange={(e) => updateSettings({ workspaceDir: e.target.value })}
-              className="flex-1 text-sm"
+              className="flex-1 text-xs"
             />
             <Button
               variant="outline"
@@ -311,7 +192,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
               Browse
             </Button>
           </div>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Root directory where worktree folders are created.
           </p>
         </SearchableSetting>
@@ -320,11 +201,11 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Nest Workspaces"
           description="Create worktrees inside a repo-named subfolder."
           keywords={['nested', 'subfolder', 'directory']}
-          className="flex items-center justify-between gap-6 py-3"
+          className="flex items-center justify-between gap-4 px-1 py-2"
         >
           <div className="space-y-0.5">
             <Label>Nest Workspaces</Label>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Create worktrees inside a repo-named subfolder.
             </p>
           </div>
@@ -347,308 +228,62 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             />
           </button>
         </SearchableSetting>
-      </section>
-    ) : null,
-    matchesSettingsSearch(searchQuery, GENERAL_BROWSER_SEARCH_ENTRIES) ? (
-      <section key="browser" className="space-y-6">
-        <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Browser
-          </h3>
-          <p className="text-sm text-muted-foreground">
-            Control how Orca handles links and browser workspace defaults.
-          </p>
-        </div>
 
-        <SearchableSetting
-          title="Default Home Page"
-          description="URL opened when creating a new browser tab. Leave empty to open a blank tab."
-          keywords={['browser', 'home', 'homepage', 'default', 'url', 'new tab', 'blank']}
-          className="flex items-start justify-between gap-6 py-3"
-        >
-          <div className="min-w-0 shrink space-y-0.5">
-            <Label>Default Home Page</Label>
-            <p className="text-sm text-muted-foreground">
-              URL opened when creating a new browser tab. Leave empty to open a blank tab.
-            </p>
-          </div>
-          <form
-            className="flex shrink-0 items-center gap-2"
-            onSubmit={(e) => {
-              e.preventDefault()
-              const trimmed = homePageDraft.trim()
-              if (!trimmed) {
-                setBrowserDefaultUrl(null)
-                return
-              }
-              const normalized = normalizeBrowserNavigationUrl(trimmed)
-              if (normalized && normalized !== ORCA_BROWSER_BLANK_URL) {
-                setBrowserDefaultUrl(normalized)
-                setHomePageDraft(normalized)
-                toast.success('Home page saved.')
-              }
-            }}
+        {/* Why: the "Don't ask again" toast in the delete-worktree dialog
+            deep-links here, so the wrapper id must stay stable. Renaming it
+            breaks that toast action even though this pane still renders fine. */}
+        <div id="general-skip-delete-worktree-confirm" className="scroll-mt-6">
+          <SearchableSetting
+            title="Skip Delete Worktree Confirmation"
+            description="Delete worktrees from the context menu without a confirmation dialog."
+            keywords={['delete', 'worktree', 'confirm', 'dialog', 'skip', 'prompt']}
+            className="flex items-center justify-between gap-4 px-1 py-2"
           >
-            <Input
-              value={homePageDraft}
-              onChange={(e) => setHomePageDraft(e.target.value)}
-              placeholder="https://google.com"
-              spellCheck={false}
-              autoCapitalize="none"
-              autoCorrect="off"
-              className="h-8 w-52 text-sm"
-            />
-            <Button type="submit" size="sm" variant="outline" className="h-8 text-sm">
-              Save
-            </Button>
-          </form>
-        </SearchableSetting>
-
-        <SearchableSetting
-          title="Terminal Link Routing"
-          description="Cmd/Ctrl+click opens terminal http(s) links in Orca. Shift+Cmd/Ctrl+click uses the system browser."
-          keywords={['browser', 'preview', 'links', 'localhost', 'webview']}
-          className="flex items-center justify-between gap-6 py-3"
-        >
-          <div className="space-y-0.5">
-            <Label>Terminal Link Routing</Label>
-            <p className="text-sm text-muted-foreground">
-              Cmd/Ctrl+click opens terminal links in Orca. Shift+Cmd/Ctrl+click opens the same link
-              in your system browser.
-            </p>
-          </div>
-          <button
-            role="switch"
-            aria-checked={settings.openLinksInApp}
-            onClick={() => updateSettings({ openLinksInApp: !settings.openLinksInApp })}
-            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
-              settings.openLinksInApp ? 'bg-foreground' : 'bg-muted-foreground/30'
-            }`}
-          >
-            <span
-              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-background shadow-sm transition-transform ${
-                settings.openLinksInApp ? 'translate-x-4' : 'translate-x-0.5'
-              }`}
-            />
-          </button>
-        </SearchableSetting>
-
-        <SearchableSetting
-          title="Session & Cookies"
-          description="Import cookies from Chrome, Edge, or other browsers to use existing logins inside Orca."
-          keywords={[
-            'cookies',
-            'session',
-            'import',
-            'auth',
-            'login',
-            'chrome',
-            'edge',
-            'arc',
-            'profile'
-          ]}
-          className="space-y-4 py-3"
-        >
-          <div className="flex items-center justify-between gap-3">
             <div className="space-y-0.5">
-              <Label>Session &amp; Cookies</Label>
-              <p className="text-sm text-muted-foreground">
-                Import cookies from your system browser to reuse existing logins inside Orca.
-              </p>
+              <Label>Skip Delete Worktree Confirmation</Label>
               <p className="text-xs text-muted-foreground">
-                {getCookieImportTargetDescription(
-                  cookieImportTargetProfile,
-                  cookieImportTargetWorkspace != null
-                )}
+                Delete worktrees from the context menu without a confirmation dialog. Errors still
+                surface as a toast with a Force Delete fallback.
               </p>
-              {unavailableDetectedBrowsers.length > 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {unavailableDetectedBrowsers
-                    .map(
-                      (browser) =>
-                        `${browser.label}: ${browser.unavailableReason ?? 'Unavailable in Orca.'}`
-                    )
-                    .join(' ')}
-                </p>
-              ) : null}
             </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0 gap-1.5"
-                  disabled={browserSessionImportState?.status === 'importing'}
-                >
-                  {browserSessionImportState?.status === 'importing' ? (
-                    <Loader2 className="size-3 animate-spin" />
-                  ) : (
-                    <Import className="size-3" />
-                  )}
-                  Import Cookies
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {detectedBrowsers.map((browser) => (
-                  <DropdownMenuItem
-                    key={browser.family}
-                    disabled={!browser.available}
-                    onSelect={async () => {
-                      const store = useAppStore.getState()
-                      const result = await store.importCookiesFromBrowser(
-                        cookieImportTargetProfileId,
-                        browser.family
-                      )
-                      if (result.ok) {
-                        toast.success(
-                          `Imported ${result.summary.importedCookies} cookies from ${browser.label} into ${cookieImportTargetLabel}.`
-                        )
-                      } else {
-                        toast.error(result.reason)
-                      }
-                    }}
-                  >
-                    {browser.available
-                      ? `From ${browser.label}`
-                      : `From ${browser.label} (Unavailable)`}
-                  </DropdownMenuItem>
-                ))}
-                {detectedBrowsers.length > 0 && <DropdownMenuSeparator />}
-                <DropdownMenuItem
-                  onSelect={async () => {
-                    const store = useAppStore.getState()
-                    const result = await store.importCookiesToProfile(cookieImportTargetProfileId)
-                    if (result.ok) {
-                      toast.success(
-                        `Imported ${result.summary.importedCookies} cookies from file into ${cookieImportTargetLabel}.`
-                      )
-                    } else if (result.reason !== 'canceled') {
-                      toast.error(result.reason)
-                    }
-                  }}
-                >
-                  From File…
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-
-          {cookieImportTargetProfile?.source ? (
-            <div className="flex w-full items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2.5">
-              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate text-sm font-medium">
-                  {cookieImportTargetProfile.label}: imported from{' '}
-                  {cookieImportTargetProfile.source.browserFamily}
-                  {cookieImportTargetProfile.source.profileName
-                    ? ` (${cookieImportTargetProfile.source.profileName})`
-                    : ''}
-                </span>
-                {cookieImportTargetProfile.source.importedAt ? (
-                  <span className="truncate text-sm text-muted-foreground">
-                    {new Date(cookieImportTargetProfile.source.importedAt).toLocaleDateString(
-                      undefined,
-                      {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit'
-                      }
-                    )}
-                  </span>
-                ) : null}
-              </div>
-              {cookieImportTargetProfile.id === 'default' ? (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  className="gap-1 text-muted-foreground hover:text-destructive"
-                  onClick={async () => {
-                    const ok = await useAppStore.getState().clearDefaultSessionCookies()
-                    if (ok) {
-                      toast.success('Cookies cleared.')
-                    }
-                  }}
-                >
-                  <Trash2 className="size-3" />
-                  Clear
-                </Button>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  className="gap-1 text-muted-foreground hover:text-destructive"
-                  onClick={async () => {
-                    const ok = await useAppStore
-                      .getState()
-                      .deleteBrowserSessionProfile(cookieImportTargetProfile.id)
-                    if (ok) {
-                      toast.success('Session removed.')
-                    }
-                  }}
-                >
-                  <Trash2 className="size-3" />
-                  Remove Session
-                </Button>
-              )}
-            </div>
-          ) : null}
-
-          {customProfiles.length > 0 ? (
-            <div className="space-y-2">
-              {customProfiles.map((profile) => (
-                <div
-                  key={profile.id}
-                  className="flex w-full items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2.5"
-                >
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate text-sm font-medium">{profile.label}</span>
-                    <span className="truncate text-sm text-muted-foreground">
-                      {profile.source
-                        ? `Imported from ${profile.source.browserFamily}${profile.source.profileName ? ` (${profile.source.profileName})` : ''}`
-                        : 'Unused session'}
-                    </span>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    className="gap-1 text-muted-foreground hover:text-destructive"
-                    onClick={async () => {
-                      const ok = await useAppStore
-                        .getState()
-                        .deleteBrowserSessionProfile(profile.id)
-                      if (ok) {
-                        toast.success('Session removed.')
-                      }
-                    }}
-                  >
-                    <Trash2 className="size-3" />
-                    Remove
-                  </Button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </SearchableSetting>
+            <button
+              role="switch"
+              aria-checked={settings.skipDeleteWorktreeConfirm}
+              onClick={() =>
+                updateSettings({
+                  skipDeleteWorktreeConfirm: !settings.skipDeleteWorktreeConfirm
+                })
+              }
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors ${
+                settings.skipDeleteWorktreeConfirm ? 'bg-foreground' : 'bg-muted-foreground/30'
+              }`}
+            >
+              <span
+                className={`pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform ${
+                  settings.skipDeleteWorktreeConfirm ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </SearchableSetting>
+        </div>
       </section>
     ) : null,
     matchesSettingsSearch(searchQuery, GENERAL_EDITOR_SEARCH_ENTRIES) ? (
-      <section key="editor" className="space-y-6">
+      <section key="editor" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Editor
-          </h3>
-          <p className="text-sm text-muted-foreground">Configure how Orca persists file edits.</p>
+          <h3 className="text-sm font-semibold">Editor</h3>
+          <p className="text-xs text-muted-foreground">Configure how Orca persists file edits.</p>
         </div>
 
         <SearchableSetting
           title="Auto Save Files"
           description="Save editor and editable diff changes automatically after a short pause."
           keywords={['autosave', 'save']}
-          className="flex items-center justify-between gap-6 py-3"
+          className="flex items-center justify-between gap-4 px-1 py-2"
         >
           <div className="space-y-0.5">
             <Label>Auto Save Files</Label>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Save editor and editable diff changes automatically after a short pause.
             </p>
           </div>
@@ -676,11 +311,11 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Auto Save Delay"
           description="How long Orca waits after your last edit before saving automatically."
           keywords={['autosave', 'delay', 'milliseconds']}
-          className="flex items-center justify-between gap-6 py-3"
+          className="flex items-center justify-between gap-4 px-1 py-2"
         >
           <div className="space-y-0.5">
             <Label>Auto Save Delay</Label>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               How long Orca waits after your last edit before saving automatically. First launch
               defaults to {DEFAULT_EDITOR_AUTO_SAVE_DELAY_MS} ms.
             </p>
@@ -701,7 +336,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
               }}
               className="number-input-clean w-28 text-right tabular-nums"
             />
-            <span className="text-sm text-muted-foreground">ms</span>
+            <span className="text-xs text-muted-foreground">ms</span>
           </div>
         </SearchableSetting>
 
@@ -709,11 +344,11 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Default Diff View"
           description="Preferred presentation format for showing git diffs by default."
           keywords={['diff', 'view', 'inline', 'side-by-side', 'split']}
-          className="flex flex-col items-start gap-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+          className="flex flex-col items-start gap-3 px-1 py-2 sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="space-y-0.5">
             <Label>Default Diff View</Label>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Preferred presentation format for showing git diffs by default.
             </p>
           </div>
@@ -742,12 +377,10 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
       />
     ) : null,
     matchesSettingsSearch(searchQuery, GENERAL_CACHE_TIMER_SEARCH_ENTRIES) ? (
-      <section key="cache-timer" className="space-y-6">
+      <section key="cache-timer" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Prompt Cache Timer
-          </h3>
-          <p className="text-sm text-muted-foreground">
+          <h3 className="text-sm font-semibold">Prompt Cache Timer</h3>
+          <p className="text-xs text-muted-foreground">
             Claude caches your conversation to reduce costs. When idle too long the cache expires
             and the next message resends full context at higher cost. This shows a countdown so you
             know when to resume.
@@ -758,14 +391,14 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
           title="Cache Timer"
           description="Show a countdown after a Claude agent becomes idle."
           keywords={['cache', 'timer', 'prompt', 'ttl', 'claude']}
-          className="flex items-center justify-between gap-6 py-3"
+          className="flex items-center justify-between gap-4 px-1 py-2"
         >
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
               <Timer className="size-4" />
               <Label>Cache Timer</Label>
             </div>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Show a countdown in the sidebar after a Claude agent becomes idle.
             </p>
           </div>
@@ -800,11 +433,11 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             title="Timer Duration"
             description="Match this to your provider's cache TTL."
             keywords={['cache', 'timer', 'duration', 'ttl']}
-            className="flex items-center justify-between gap-6 py-3 pl-7"
+            className="flex items-center justify-between gap-4 px-1 py-2 pl-7"
           >
             <div className="space-y-0.5">
               <Label>Timer Duration</Label>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 Match this to your provider&apos;s cache TTL. The default is 5 minutes.
               </p>
             </div>
@@ -824,198 +457,11 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
         )}
       </section>
     ) : null,
-    matchesSettingsSearch(searchQuery, GENERAL_CODEX_ACCOUNTS_SEARCH_ENTRIES) ? (
-      <section key="codex-accounts" id="general-codex-accounts" className="space-y-6 scroll-mt-6">
-        <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Codex Accounts
-          </h3>
-          <p className="text-sm text-muted-foreground">
-            Add and switch between Codex accounts in Orca.
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Each account keeps its own local sign-in context in Orca. Account auth stays on this
-            device.
-          </p>
-        </div>
-
-        <SearchableSetting
-          title="Codex Accounts"
-          description="Manage which Codex account Orca uses for live rate limit fetching."
-          keywords={['codex', 'account', 'rate limit', 'status bar', 'quota']}
-          className="space-y-4 py-3"
-        >
-          {/* Why: Settings deep-links can target this subsection directly from
-          the status-bar account switcher. Keeping a stable DOM anchor here
-          avoids dumping the user at the top of General and making them hunt
-          for the actual Codex account controls. */}
-          <div className="flex items-center justify-between gap-3">
-            <div className="space-y-0.5">
-              <Label>Accounts</Label>
-              <p className="text-sm text-muted-foreground">
-                Add a Codex account to use it in Orca.
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                void runCodexAccountAction('adding', () => window.api.codexAccounts.add())
-              }
-              disabled={codexAction !== 'idle'}
-            >
-              {codexAction === 'adding' ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Plus className="size-4" />
-              )}
-              Add Account
-            </Button>
-          </div>
-
-          {codexAccounts.accounts.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-sm text-muted-foreground">
-              No managed Codex accounts yet. Orca will use your system default Codex login until you
-              add one here.
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={() =>
-                  void runCodexAccountAction('select:system', () =>
-                    window.api.codexAccounts.select({ accountId: null })
-                  )
-                }
-                disabled={codexAction !== 'idle'}
-                className={`flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
-                  codexAccounts.activeAccountId === null
-                    ? 'border-foreground/20 bg-accent/15'
-                    : 'border-border/70 hover:border-border hover:bg-accent/8'
-                } disabled:cursor-default disabled:opacity-100`}
-              >
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-sm font-medium">System default</span>
-                    {codexAccounts.activeAccountId === null ? (
-                      <Badge
-                        variant="outline"
-                        className="h-4 shrink-0 rounded px-1.5 text-xs font-medium leading-none text-foreground/80"
-                      >
-                        Active
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <span className="truncate text-sm text-muted-foreground">
-                    Use your current system Codex login.
-                  </span>
-                </div>
-              </button>
-              {codexAccounts.accounts.map((account) => {
-                const isActive = codexAccounts.activeAccountId === account.id
-                const isReauthing = codexAction === `reauth:${account.id}`
-                const isRemoving = codexAction === `remove:${account.id}`
-                const isBusy = codexAction !== 'idle'
-
-                return (
-                  <button
-                    key={account.id}
-                    type="button"
-                    onClick={() =>
-                      void runCodexAccountAction(`select:${account.id}`, () =>
-                        window.api.codexAccounts.select({ accountId: account.id })
-                      )
-                    }
-                    disabled={isBusy}
-                    className={`flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
-                      isActive
-                        ? 'border-foreground/20 bg-accent/15'
-                        : 'border-border/70 hover:border-border hover:bg-accent/8'
-                    }`}
-                  >
-                    <div className="flex w-full items-center justify-between gap-3 max-md:flex-col max-md:items-start">
-                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="truncate text-sm font-medium">{account.email}</span>
-                          {isActive ? (
-                            <Badge
-                              variant="outline"
-                              className="h-4 shrink-0 rounded px-1.5 text-xs font-medium leading-none text-foreground/80"
-                            >
-                              Active
-                            </Badge>
-                          ) : null}
-                        </div>
-                        <div className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground max-sm:flex-wrap">
-                          {account.workspaceLabel ? (
-                            <span className="truncate">{account.workspaceLabel}</span>
-                          ) : null}
-                          {account.workspaceLabel ? (
-                            <span className="shrink-0 opacity-50">•</span>
-                          ) : null}
-                          <span className="shrink-0">
-                            {formatAccountTimestamp(account.lastAuthenticatedAt)}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex shrink-0 items-center justify-end gap-1 max-md:w-full max-md:flex-wrap">
-                        {/* Why: selecting an account is the primary action in this row.
-                        Keeping maintenance actions visually lighter prevents re-auth/remove
-                        controls from overpowering the selection affordance in a dense list. */}
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            void runCodexAccountAction(`reauth:${account.id}`, () =>
-                              window.api.codexAccounts.reauthenticate({ accountId: account.id })
-                            )
-                          }}
-                          disabled={isBusy}
-                          className="h-6 px-2 text-muted-foreground hover:text-foreground"
-                        >
-                          {isReauthing ? (
-                            <Loader2 className="size-3 animate-spin" />
-                          ) : (
-                            <RefreshCw className="size-3" />
-                          )}
-                          Re-authenticate
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            setRemoveAccountId(account.id)
-                          }}
-                          disabled={isBusy}
-                          className="h-6 px-2 text-muted-foreground hover:text-destructive"
-                        >
-                          {isRemoving ? (
-                            <Loader2 className="size-3 animate-spin" />
-                          ) : (
-                            <Trash2 className="size-3" />
-                          )}
-                          Remove
-                        </Button>
-                      </div>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-          )}
-        </SearchableSetting>
-      </section>
-    ) : null,
     matchesSettingsSearch(searchQuery, GENERAL_UPDATE_SEARCH_ENTRIES) ? (
-      <section key="updates" className="space-y-6">
+      <section key="updates" className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Updates
-          </h3>
-          <p className="text-sm text-muted-foreground">Current version: {appVersion ?? '…'}</p>
+          <h3 className="text-sm font-semibold">Updates</h3>
+          <p className="text-xs text-muted-foreground">Current version: {appVersion ?? '…'}</p>
         </div>
 
         <SearchableSetting
@@ -1028,7 +474,14 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             <Button
               variant="outline"
               size="sm"
-              onClick={() => window.api.updater.check()}
+              // Why: Shift-click opts this check into the release-candidate
+              // channel. Keep the affordance hidden — it's a power-user
+              // shortcut, not a discoverable toggle.
+              onClick={(event) =>
+                window.api.updater.check({
+                  includePrerelease: event.shiftKey
+                })
+              }
               disabled={updateStatus.state === 'checking' || updateStatus.state === 'downloading'}
               className="gap-2"
             >
@@ -1064,7 +517,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
             ) : null}
           </div>
 
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {updateStatus.state === 'idle' && 'Updates are checked automatically on launch.'}
             {updateStatus.state === 'checking' && 'Checking for updates...'}
             {updateStatus.state === 'available' && (
@@ -1074,7 +527,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                 <a
                   href={
                     updateStatus.releaseUrl ??
-                    buildReleaseTagUrl(updateStatus.version, DEFAULT_GITHUB_RELEASE_INFO)
+                    `https://github.com/stablyai/orca/releases/tag/v${updateStatus.version}`
                   }
                   target="_blank"
                   rel="noopener noreferrer"
@@ -1093,7 +546,7 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                 <a
                   href={
                     updateStatus.releaseUrl ??
-                    buildReleaseTagUrl(updateStatus.version, DEFAULT_GITHUB_RELEASE_INFO)
+                    `https://github.com/stablyai/orca/releases/tag/v${updateStatus.version}`
                   }
                   target="_blank"
                   rel="noopener noreferrer"
@@ -1103,55 +556,154 @@ export function GeneralPane({ settings, updateSettings }: GeneralPaneProps): Rea
                 </a>
               </>
             )}
-            {updateStatus.state === 'error' && `Update error: ${updateStatus.message}`}
+            {updateStatus.state === 'error' &&
+              // Why: `{ state: 'error' }` is emitted for both check-time
+              // failures (no version cached) and download/install failures
+              // (version cached from a prior 'available'/'downloading'/
+              // 'downloaded' state). Label accordingly so a download failure
+              // isn't mislabeled as a "check" failure. Mirrors UpdateCard.tsx.
+              (updateVersionRef.current
+                ? `Update error. ${updateStatus.message}`
+                : `Update check failed. ${updateStatus.message}`)}
           </p>
         </SearchableSetting>
       </section>
     ) : null
+    // Note: the Support section is rendered outside this array so it can own
+    // its own loading placeholder and its own collapsing Separator. Without
+    // that separation, a dangling divider would remain above the collapsed
+    // section.
   ].filter(Boolean)
 
   return (
-    <div className="space-y-12">
-      <Dialog
-        open={removeAccountId !== null}
-        onOpenChange={(open) => !open && setRemoveAccountId(null)}
-      >
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>Remove Codex Account?</DialogTitle>
-            <DialogDescription>
-              Orca will delete the managed Codex home for this saved account. If it is currently
-              active, Orca falls back to the system default Codex login.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRemoveAccountId(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                const accountId = removeAccountId
-                if (!accountId) {
-                  return
-                }
-                setRemoveAccountId(null)
-                void runCodexAccountAction(`remove:${accountId}`, () =>
-                  window.api.codexAccounts.remove({ accountId })
-                )
-              }}
-            >
-              Remove Account
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+    <div className="space-y-8">
       {visibleSections.map((section, index) => (
-        <div key={index} className="space-y-6">
-          {index > 0 ? <Separator className="my-2" /> : null}
+        <div key={index} className="space-y-8">
+          {index > 0 ? <Separator /> : null}
           {section}
         </div>
       ))}
+      {matchesSettingsSearch(searchQuery, GENERAL_SUPPORT_SEARCH_ENTRIES) ? (
+        <SupportSection
+          state={starState}
+          hasPrecedingSections={visibleSections.length > 0}
+          onStarClick={handleStarClick}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+type SupportSectionProps = {
+  state: 'loading' | 'not-starred' | 'starring' | 'starred' | 'hidden' | 'error'
+  hasPrecedingSections: boolean
+  onStarClick: () => void | Promise<void>
+}
+
+function SupportSection({
+  state,
+  hasPrecedingSections,
+  onStarClick
+}: SupportSectionProps): React.JSX.Element {
+  // Why: 'hidden' means gh is unavailable or the user had already starred on a
+  // previous session — in both cases we collapse the entire section (including
+  // its leading Separator) so the settings pane doesn't carry an empty strip.
+  // For every other state we render the full row so the initial layout is
+  // stable: the skeleton-to-live swap happens in place and a post-click
+  // "Starred" confirmation does not shift anything above or below it.
+  const collapsed = state === 'hidden'
+
+  return (
+    <section
+      className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${
+        collapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'
+      }`}
+      aria-hidden={collapsed}
+    >
+      <div className="min-h-0 overflow-hidden">
+        <div className="space-y-8">
+          {hasPrecedingSections ? <Separator /> : null}
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold">Support Orca</h3>
+            </div>
+            {state === 'loading' ? <SupportRowSkeleton /> : null}
+            {state !== 'loading' && state !== 'hidden' ? (
+              <SupportRow state={state} onStarClick={onStarClick} />
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function SupportRowSkeleton(): React.JSX.Element {
+  return (
+    <div className="flex items-center justify-between gap-4 px-1 py-2" aria-hidden="true">
+      <div className="h-4 w-36 rounded bg-muted/50 animate-pulse" />
+      <div className="h-8 w-24 rounded-md bg-muted/50 animate-pulse" />
+    </div>
+  )
+}
+
+function SupportRow({
+  state,
+  onStarClick
+}: {
+  state: 'not-starred' | 'starring' | 'starred' | 'error'
+  onStarClick: () => void | Promise<void>
+}): React.JSX.Element {
+  // Why: the left-hand label is the setting's identity and must not change
+  // when the user clicks — the row should still read "Star Orca on GitHub"
+  // afterwards. The right-hand control is what changes: before starring it
+  // is a button; after a successful star we swap in a small inline "Thanks"
+  // confirmation so the row keeps the same shape without showing a stale,
+  // disabled button.
+  return (
+    <SearchableSetting
+      title="Star Orca on GitHub"
+      description="Support the project with a GitHub star via the gh CLI."
+      keywords={['star', 'github', 'support', 'feedback', 'like']}
+      className="flex items-center justify-between gap-4 px-1 py-2"
+    >
+      <Label>Star Orca on GitHub</Label>
+      {state === 'starred' ? (
+        <SupportRowThanks />
+      ) : (
+        <Button
+          variant="default"
+          size="sm"
+          onClick={() => void onStarClick()}
+          disabled={state === 'starring'}
+          className="shrink-0 gap-1.5"
+        >
+          {state === 'starring' ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Star className="size-3.5" />
+          )}
+          {state === 'starring' ? 'Starring…' : state === 'error' ? 'Try Again' : 'Star'}
+        </Button>
+      )}
+    </SearchableSetting>
+  )
+}
+
+function SupportRowThanks(): React.JSX.Element {
+  // Why: match the size="sm" button's h-8 / gap-1.5 / px-3 dimensions so the
+  // row height stays identical when the button is swapped out. Without the
+  // fixed height, the text baseline collapses ~6px and the entire row
+  // shrinks, shifting everything below.
+  return (
+    <div
+      className="shrink-0 inline-flex h-8 items-center gap-1.5 px-3 text-sm font-medium
+        text-amber-400/90 animate-in fade-in slide-in-from-right-1 duration-300"
+      role="status"
+      aria-live="polite"
+    >
+      <Star className="size-3.5 fill-amber-400/80 text-amber-400/80" aria-hidden="true" />
+      Thanks for the support!
     </div>
   )
 }

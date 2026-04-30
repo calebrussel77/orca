@@ -5,7 +5,7 @@
  * co-locating the global handler maps that both the transport factory
  * and the eager-buffer reconnection logic share.
  */
-import type { OpenCodeStatusEvent } from '../../../../shared/types'
+import type { ParsedAgentStatusPayload } from '../../../../shared/agent-status-types'
 
 // ── Singleton PTY event dispatcher ───────────────────────────────────
 // One global IPC listener per channel, routes events to transports by
@@ -13,9 +13,35 @@ import type { OpenCodeStatusEvent } from '../../../../shared/types'
 // MaxListenersExceededWarning with many panes/tabs.
 
 export const ptyDataHandlers = new Map<string, (data: string) => void>()
+/** Per-PTY replay handlers for relay pty.attach replay data. Routed through
+ *  a dedicated pty:replay IPC channel so the renderer can engage the replay
+ *  guard and suppress xterm auto-replies during replay. */
+export const ptyReplayHandlers = new Map<string, (data: string) => void>()
 export const ptyExitHandlers = new Map<string, (code: number) => void>()
-export const openCodeStatusHandlers = new Map<string, (event: OpenCodeStatusEvent) => void>()
+/** Per-PTY teardown callbacks registered by each transport to clear closure
+ *  state (stale-title timer, agent tracker) that would otherwise fire after
+ *  the data handler is removed. */
+export const ptyTeardownHandlers = new Map<string, () => void>()
 let ptyDispatcherAttached = false
+
+/**
+ * Remove data and status handlers for the given PTY IDs so that any final
+ * data flushed by the main process during PTY teardown cannot trigger
+ * bell / agent-status notifications from a worktree that is being shut down.
+ * Also invokes per-transport teardown callbacks to cancel accumulated closure
+ * state (e.g. staleTitleTimer, agent tracker) that could independently fire
+ * stale notifications.
+ * Exit handlers are intentionally kept alive so the normal exit-cleanup
+ * path (unregister, clear stale timers, update store) still runs.
+ */
+export function unregisterPtyDataHandlers(ptyIds: string[]): void {
+  for (const id of ptyIds) {
+    ptyDataHandlers.delete(id)
+    ptyReplayHandlers.delete(id)
+    ptyTeardownHandlers.get(id)?.()
+    ptyTeardownHandlers.delete(id)
+  }
+}
 
 export function ensurePtyDispatcher(): void {
   if (ptyDispatcherAttached) {
@@ -25,11 +51,11 @@ export function ensurePtyDispatcher(): void {
   window.api.pty.onData((payload) => {
     ptyDataHandlers.get(payload.id)?.(payload.data)
   })
+  window.api.pty.onReplay((payload) => {
+    ptyReplayHandlers.get(payload.id)?.(payload.data)
+  })
   window.api.pty.onExit((payload) => {
     ptyExitHandlers.get(payload.id)?.(payload.code)
-  })
-  window.api.pty.onOpenCodeStatus((payload) => {
-    openCodeStatusHandlers.get(payload.ptyId)?.(payload)
   })
 }
 
@@ -72,6 +98,7 @@ export function registerEagerPtyBuffer(
     // Shell died before TerminalPane attached — clean up and notify the store
     // so the tab's ptyId is cleared and connectPanePty falls through to connect().
     ptyDataHandlers.delete(ptyId)
+    ptyReplayHandlers.delete(ptyId)
     ptyExitHandlers.delete(ptyId)
     eagerPtyHandles.delete(ptyId)
     onExit(ptyId, code)
@@ -91,6 +118,7 @@ export function registerEagerPtyBuffer(
       // reference). After attach() replaces the handler this becomes a no-op.
       if (ptyDataHandlers.get(ptyId) === dataHandler) {
         ptyDataHandlers.delete(ptyId)
+        ptyReplayHandlers.delete(ptyId)
       }
       if (ptyExitHandlers.get(ptyId) === exitHandler) {
         ptyExitHandlers.delete(ptyId)
@@ -106,30 +134,55 @@ export function registerEagerPtyBuffer(
 // ── PtyTransport interface ───────────────────────────────────────────
 // Why: lives here so pty-transport.ts stays under the 300-line limit.
 
+export type PtyConnectResult = {
+  id: string
+  snapshot?: string
+  snapshotCols?: number
+  snapshotRows?: number
+  isAlternateScreen?: boolean
+  sessionExpired?: boolean
+  coldRestore?: { scrollback: string; cwd: string }
+  replay?: string
+}
+
 export type PtyTransport = {
   connect: (options: {
     url: string
     cols?: number
     rows?: number
+    /** Daemon session ID for reattach. When provided, the daemon reconnects
+     *  to an existing session instead of creating a new one. */
+    sessionId?: string
     callbacks: {
       onConnect?: () => void
       onDisconnect?: () => void
       onData?: (data: string) => void
+      /** Replay bytes from a prior session (eager buffers, attach-time screen
+       *  clears). Routed separately from onData so the renderer can engage
+       *  the replay guard — otherwise xterm auto-replies to embedded query
+       *  sequences leak into the shell. See replay-guard.ts. */
+      onReplayData?: (data: string) => void
       onStatus?: (shell: string) => void
       onError?: (message: string, errors?: string[]) => void
       onExit?: (code: number) => void
     }
-  }) => void | Promise<void>
+  }) => void | Promise<void | string | PtyConnectResult>
   /** Attach to an existing PTY that was eagerly spawned during startup.
    *  Skips pty:spawn — registers handlers and replays buffered data instead. */
   attach: (options: {
     existingPtyId: string
     cols?: number
     rows?: number
+    /** When true, the session uses the alternate screen buffer (e.g., Codex).
+     *  Skips the delayed double-resize since a single resize already triggers
+     *  a full TUI repaint without content loss. */
+    isAlternateScreen?: boolean
     callbacks: {
       onConnect?: () => void
       onDisconnect?: () => void
       onData?: (data: string) => void
+      /** See note on connect.callbacks.onReplayData. */
+      onReplayData?: (data: string) => void
       onStatus?: (shell: string) => void
       onError?: (message: string, errors?: string[]) => void
       onExit?: (code: number) => void
@@ -145,6 +198,9 @@ export type PtyTransport = {
   isConnected: () => boolean
   getPtyId: () => string | null
   preserve?: () => void
+  /** Unregister PTY handlers without killing the process, so a remounted
+   *  pane can reattach to the same running shell. */
+  detach?: () => void
   destroy?: () => void | Promise<void>
 }
 
@@ -155,6 +211,8 @@ export type IpcPtyTransportOptions = {
   connectionId?: string | null
   /** Orca worktree identity for scoped shell history. */
   worktreeId?: string
+  /** Why: mirrors PtySpawnOptions.shellOverride — see types.ts for rationale. */
+  shellOverride?: string
   onPtyExit?: (ptyId: string) => void
   onTitleChange?: (title: string, rawTitle: string) => void
   onPtySpawn?: (ptyId: string) => void
@@ -162,4 +220,6 @@ export type IpcPtyTransportOptions = {
   onAgentBecameIdle?: (title: string) => void
   onAgentBecameWorking?: () => void
   onAgentExited?: () => void
+  /** Callback for OSC 9999 agent status payloads parsed from PTY output. */
+  onAgentStatus?: (payload: ParsedAgentStatusPayload) => void
 }

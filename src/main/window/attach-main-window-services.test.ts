@@ -6,11 +6,12 @@ const {
   setPermissionRequestHandlerMock,
   setPermissionCheckHandlerMock,
   setDisplayMediaRequestHandlerMock,
+  systemPreferencesAskForMediaAccessMock,
+  systemPreferencesGetMediaAccessStatusMock,
   registerRepoHandlersMock,
   registerWorktreeHandlersMock,
   registerPtyHandlersMock,
   setupAutoUpdaterMock,
-  getUpdateReleaseInfoMock,
   sessionFromPartitionMock,
   browserManagerUnregisterAllMock,
   browserManagerNotifyPermissionDeniedMock,
@@ -21,11 +22,12 @@ const {
   setPermissionRequestHandlerMock: vi.fn(),
   setPermissionCheckHandlerMock: vi.fn(),
   setDisplayMediaRequestHandlerMock: vi.fn(),
+  systemPreferencesAskForMediaAccessMock: vi.fn(),
+  systemPreferencesGetMediaAccessStatusMock: vi.fn(),
   registerRepoHandlersMock: vi.fn(),
   registerWorktreeHandlersMock: vi.fn(),
   registerPtyHandlersMock: vi.fn(),
   setupAutoUpdaterMock: vi.fn(),
-  getUpdateReleaseInfoMock: vi.fn(),
   sessionFromPartitionMock: vi.fn(),
   browserManagerUnregisterAllMock: vi.fn(),
   browserManagerNotifyPermissionDeniedMock: vi.fn(),
@@ -37,6 +39,10 @@ vi.mock('electron', () => ({
   clipboard: {},
   session: {
     fromPartition: sessionFromPartitionMock
+  },
+  systemPreferences: {
+    askForMediaAccess: systemPreferencesAskForMediaAccessMock,
+    getMediaAccessStatus: systemPreferencesGetMediaAccessStatusMock
   },
   ipcMain: {
     on: onMock,
@@ -69,13 +75,61 @@ vi.mock('../browser/browser-manager', () => ({
 vi.mock('../updater', () => ({
   checkForUpdates: vi.fn(),
   getUpdateStatus: vi.fn(),
-  getUpdateReleaseInfo: getUpdateReleaseInfoMock,
   quitAndInstall: vi.fn(),
   dismissNudge: vi.fn(),
   setupAutoUpdater: setupAutoUpdaterMock
 }))
 
 import { attachMainWindowServices } from './attach-main-window-services'
+
+type MockFn = ReturnType<typeof vi.fn>
+
+type MainWindowStub = {
+  isDestroyed?: MockFn
+  on: MockFn
+  webContents: {
+    on: MockFn
+    send?: MockFn
+    session: {
+      setPermissionRequestHandler: MockFn
+      setPermissionCheckHandler: MockFn
+    }
+  }
+}
+
+type RuntimeStub = {
+  attachWindow: MockFn
+  setNotifier: MockFn
+  markRendererReloading: MockFn
+  markGraphUnavailable: MockFn
+}
+
+function createMainWindow(extraWebContents: { on?: MockFn; send?: MockFn } = {}): MainWindowStub {
+  return {
+    on: vi.fn(),
+    webContents: {
+      on: vi.fn(),
+      session: {
+        setPermissionRequestHandler: setPermissionRequestHandlerMock,
+        setPermissionCheckHandler: setPermissionCheckHandlerMock
+      },
+      ...extraWebContents
+    }
+  }
+}
+
+function createStore(): never {
+  return { flush: vi.fn() } as never
+}
+
+function createRuntime(): RuntimeStub {
+  return {
+    attachWindow: vi.fn(),
+    setNotifier: vi.fn(),
+    markRendererReloading: vi.fn(),
+    markGraphUnavailable: vi.fn()
+  }
+}
 
 describe('attachMainWindowServices', () => {
   beforeEach(() => {
@@ -84,11 +138,12 @@ describe('attachMainWindowServices', () => {
     setPermissionRequestHandlerMock.mockReset()
     setPermissionCheckHandlerMock.mockReset()
     setDisplayMediaRequestHandlerMock.mockReset()
+    systemPreferencesAskForMediaAccessMock.mockReset()
+    systemPreferencesGetMediaAccessStatusMock.mockReset()
     registerRepoHandlersMock.mockReset()
     registerWorktreeHandlersMock.mockReset()
     registerPtyHandlersMock.mockReset()
     setupAutoUpdaterMock.mockReset()
-    getUpdateReleaseInfoMock.mockReset()
     sessionFromPartitionMock.mockReset()
     browserManagerUnregisterAllMock.mockReset()
     browserManagerNotifyPermissionDeniedMock.mockReset()
@@ -99,39 +154,46 @@ describe('attachMainWindowServices', () => {
       setDisplayMediaRequestHandler: setDisplayMediaRequestHandlerMock,
       on: vi.fn()
     })
+    systemPreferencesAskForMediaAccessMock.mockResolvedValue(true)
+    systemPreferencesGetMediaAccessStatusMock.mockReturnValue('granted')
   })
 
-  it('only allows the explicit permission allowlist', () => {
-    const mainWindow = {
-      on: vi.fn(),
-      webContents: {
-        on: vi.fn(),
-        session: {
-          setPermissionRequestHandler: setPermissionRequestHandlerMock
-        }
-      }
-    }
-    const store = { flush: vi.fn() }
-    const runtime = {
-      attachWindow: vi.fn(),
-      setNotifier: vi.fn(),
-      markRendererReloading: vi.fn(),
-      markGraphUnavailable: vi.fn()
-    }
-
-    attachMainWindowServices(mainWindow as never, store as never, runtime as never)
+  it('only allows the explicit permission allowlist', async () => {
+    attachMainWindowServices(createMainWindow() as never, createStore(), createRuntime() as never)
 
     expect(setPermissionRequestHandlerMock).toHaveBeenCalledTimes(2)
     const permissionHandler = setPermissionRequestHandlerMock.mock.calls[0][0]
     const callback = vi.fn()
 
-    permissionHandler(null, 'media', callback)
+    permissionHandler(null, 'media', callback, { mediaTypes: ['audio'] })
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledWith(true))
     permissionHandler(null, 'fullscreen', callback)
     permissionHandler(null, 'pointerLock', callback)
     permissionHandler(null, 'clipboard-read', callback)
-    permissionHandler(null, 'clipboard-sanitized-write', callback)
 
-    expect(callback.mock.calls).toEqual([[true], [true], [true], [false], [false]])
+    expect(callback.mock.calls).toEqual([[true], [true], [true], [false]])
+  })
+
+  it('requests macOS media access only when the renderer asks for media', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    try {
+      attachMainWindowServices(createMainWindow() as never, createStore(), createRuntime() as never)
+
+      expect(systemPreferencesAskForMediaAccessMock).not.toHaveBeenCalled()
+
+      const permissionHandler = setPermissionRequestHandlerMock.mock.calls[0][0]
+      const callback = vi.fn()
+      permissionHandler(null, 'media', callback, { mediaTypes: ['audio', 'video'] })
+
+      await vi.waitFor(() => expect(callback).toHaveBeenCalledWith(true))
+      expect(systemPreferencesAskForMediaAccessMock.mock.calls).toEqual([
+        ['microphone'],
+        ['camera']
+      ])
+    } finally {
+      Object.defineProperty(process, 'platform', platform ?? { value: process.platform })
+    }
   })
 
   it('denies browser-session permissions, display capture, and downloads by default', () => {
@@ -144,24 +206,10 @@ describe('attachMainWindowServices', () => {
     })
 
     const mainWindowOnMock = vi.fn()
-    const mainWindow = {
-      on: mainWindowOnMock,
-      webContents: {
-        on: vi.fn(),
-        session: {
-          setPermissionRequestHandler: setPermissionRequestHandlerMock
-        }
-      }
-    }
-    const store = { flush: vi.fn() }
-    const runtime = {
-      attachWindow: vi.fn(),
-      setNotifier: vi.fn(),
-      markRendererReloading: vi.fn(),
-      markGraphUnavailable: vi.fn()
-    }
+    const mainWindow = createMainWindow()
+    mainWindow.on = mainWindowOnMock
 
-    attachMainWindowServices(mainWindow as never, store as never, runtime as never)
+    attachMainWindowServices(mainWindow as never, createStore(), createRuntime() as never)
 
     const browserPermissionHandler = setPermissionRequestHandlerMock.mock.calls[1][0] as (
       wc: unknown,
@@ -171,10 +219,9 @@ describe('attachMainWindowServices', () => {
     const permissionCallback = vi.fn()
     const guestWebContents = { id: 401, getURL: vi.fn(() => 'https://example.com/account') }
     browserPermissionHandler(guestWebContents, 'fullscreen', permissionCallback)
-    browserPermissionHandler(guestWebContents, 'clipboard-sanitized-write', permissionCallback)
     browserPermissionHandler(guestWebContents, 'media', permissionCallback)
 
-    expect(permissionCallback.mock.calls).toEqual([[true], [true], [false]])
+    expect(permissionCallback.mock.calls).toEqual([[true], [false]])
     expect(browserManagerNotifyPermissionDeniedMock).toHaveBeenCalledTimes(1)
     expect(browserManagerNotifyPermissionDeniedMock).toHaveBeenCalledWith({
       guestWebContentsId: 401,
@@ -182,12 +229,11 @@ describe('attachMainWindowServices', () => {
       rawUrl: 'https://example.com/account'
     })
 
-    const browserPermissionCheckHandler = setPermissionCheckHandlerMock.mock.calls[0][0] as (
+    const browserPermissionCheckHandler = setPermissionCheckHandlerMock.mock.calls[1][0] as (
       wc: unknown,
       permission: string
     ) => boolean
     expect(browserPermissionCheckHandler(null, 'fullscreen')).toBe(true)
-    expect(browserPermissionCheckHandler(null, 'clipboard-sanitized-write')).toBe(true)
     expect(browserPermissionCheckHandler(null, 'notifications')).toBe(false)
 
     const displayMediaHandler = setDisplayMediaRequestHandlerMock.mock.calls[0][0] as (
@@ -222,24 +268,10 @@ describe('attachMainWindowServices', () => {
       on: vi.fn()
     })
     const mainWindowOnMock = vi.fn()
-    const mainWindow = {
-      on: mainWindowOnMock,
-      webContents: {
-        on: vi.fn(),
-        session: {
-          setPermissionRequestHandler: setPermissionRequestHandlerMock
-        }
-      }
-    }
-    const store = { flush: vi.fn() }
-    const runtime = {
-      attachWindow: vi.fn(),
-      setNotifier: vi.fn(),
-      markRendererReloading: vi.fn(),
-      markGraphUnavailable: vi.fn()
-    }
+    const mainWindow = createMainWindow()
+    mainWindow.on = mainWindowOnMock
 
-    attachMainWindowServices(mainWindow as never, store as never, runtime as never)
+    attachMainWindowServices(mainWindow as never, createStore(), createRuntime() as never)
 
     const closedHandler = mainWindowOnMock.mock.calls
       .filter(([event]) => event === 'closed')
@@ -253,26 +285,12 @@ describe('attachMainWindowServices', () => {
     const sendMock = vi.fn()
     const webContentsOnMock = vi.fn()
     const mainWindowOnMock = vi.fn()
-    const mainWindow = {
-      isDestroyed: vi.fn(() => false),
-      on: mainWindowOnMock,
-      webContents: {
-        on: webContentsOnMock,
-        send: sendMock,
-        session: {
-          setPermissionRequestHandler: setPermissionRequestHandlerMock
-        }
-      }
-    }
-    const store = { flush: vi.fn() }
-    const runtime = {
-      attachWindow: vi.fn(),
-      setNotifier: vi.fn(),
-      markRendererReloading: vi.fn(),
-      markGraphUnavailable: vi.fn()
-    }
+    const mainWindow = createMainWindow({ on: webContentsOnMock, send: sendMock })
+    mainWindow.isDestroyed = vi.fn(() => false)
+    mainWindow.on = mainWindowOnMock
+    const runtime = createRuntime()
 
-    attachMainWindowServices(mainWindow as never, store as never, runtime as never)
+    attachMainWindowServices(mainWindow as never, createStore(), runtime as never)
 
     expect(runtime.setNotifier).toHaveBeenCalledTimes(1)
     const notifier = runtime.setNotifier.mock.calls[0][0] as {

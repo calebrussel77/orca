@@ -1,30 +1,82 @@
 /* eslint-disable max-lines -- Why: the Orca runtime is the authoritative live control plane for the CLI, so handle validation, selector resolution, wait state, and summaries are kept together to avoid split-brain behavior. */
 /* eslint-disable unicorn/no-useless-spread -- Why: waiter sets and handle keys are cloned intentionally before mutation so resolution and rejection can safely remove entries while iterating. */
 /* eslint-disable no-control-regex -- Why: terminal normalization must strip ANSI and OSC control sequences from PTY output before returning bounded text to agents. */
+import {
+  extractLastOscTitle,
+  detectAgentStatusFromTitle,
+  isShellProcess
+} from '../../shared/agent-detection'
+import type { AgentStatus } from '../../shared/agent-detection'
 import { gitExecFileAsync, gitExecFileSync } from '../git/runner'
 import { isWslPath, parseWslPath, getWslHome } from '../wsl'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { rm } from 'fs/promises'
+import { OrchestrationDb } from './orchestration/db'
+import { formatMessagesForInjection } from './orchestration/formatter'
 import type { CreateWorktreeResult, Repo } from '../../shared/types'
 import { isFolderRepo } from '../../shared/repo-kind'
 import type {
   RuntimeGraphStatus,
   RuntimeRepoSearchRefs,
   RuntimeTerminalRead,
+  RuntimeTerminalRename,
   RuntimeTerminalSend,
+  RuntimeTerminalCreate,
+  RuntimeTerminalSplit,
+  RuntimeTerminalFocus,
+  RuntimeTerminalClose,
   RuntimeTerminalListResult,
   RuntimeTerminalState,
   RuntimeStatus,
   RuntimeTerminalWait,
+  RuntimeTerminalWaitCondition,
   RuntimeWorktreePsSummary,
   RuntimeTerminalShow,
   RuntimeTerminalSummary,
   RuntimeSyncedLeaf,
   RuntimeSyncedTab,
   RuntimeSyncWindowGraph,
-  RuntimeWorktreeListResult
+  RuntimeWorktreeListResult,
+  BrowserSnapshotResult,
+  BrowserClickResult,
+  BrowserGotoResult,
+  BrowserFillResult,
+  BrowserTypeResult,
+  BrowserSelectResult,
+  BrowserScrollResult,
+  BrowserBackResult,
+  BrowserReloadResult,
+  BrowserScreenshotResult,
+  BrowserEvalResult,
+  BrowserTabListResult,
+  BrowserTabSwitchResult,
+  BrowserHoverResult,
+  BrowserDragResult,
+  BrowserUploadResult,
+  BrowserWaitResult,
+  BrowserCheckResult,
+  BrowserFocusResult,
+  BrowserClearResult,
+  BrowserSelectAllResult,
+  BrowserKeypressResult,
+  BrowserPdfResult,
+  BrowserCookieGetResult,
+  BrowserCookieSetResult,
+  BrowserCookieDeleteResult,
+  BrowserViewportResult,
+  BrowserGeolocationResult,
+  BrowserInterceptEnableResult,
+  BrowserInterceptDisableResult,
+  BrowserCaptureStartResult,
+  BrowserCaptureStopResult,
+  BrowserConsoleResult,
+  BrowserNetworkLogResult
 } from '../../shared/runtime-types'
+import { BrowserWindow, ipcMain } from 'electron'
+import type { AgentBrowserBridge } from '../browser/agent-browser-bridge'
+import { BrowserError } from '../browser/cdp-bridge'
+import { waitForTabRegistration } from '../ipc/browser'
 import { getPRForBranch } from '../github/client'
 import {
   getGitUsername,
@@ -81,18 +133,30 @@ type RuntimeLeafRecord = RuntimeSyncedLeaf & {
   tailBuffer: string[]
   tailPartialLine: string
   tailTruncated: boolean
+  tailLinesTotal: number
   preview: string
+  lastAgentStatus: AgentStatus | null
 }
 
 type RuntimePtyController = {
   write(ptyId: string, data: string): boolean
   kill(ptyId: string): boolean
+  getForegroundProcess(ptyId: string): Promise<string | null>
 }
 
 type RuntimeNotifier = {
   worktreesChanged(repoId: string): void
   reposChanged(): void
   activateWorktree(repoId: string, worktreeId: string, setup?: CreateWorktreeResult['setup']): void
+  createTerminal(worktreeId: string, opts: { command?: string; title?: string }): void
+  splitTerminal(
+    tabId: string,
+    paneRuntimeId: number,
+    opts: { direction: 'horizontal' | 'vertical'; command?: string }
+  ): void
+  renameTerminal(tabId: string, title: string | null): void
+  focusTerminal(tabId: string, worktreeId: string): void
+  closeTerminal(tabId: string, paneRuntimeId?: number): void
 }
 
 type TerminalHandleRecord = {
@@ -108,8 +172,17 @@ type TerminalHandleRecord = {
 
 type TerminalWaiter = {
   handle: string
+  condition: RuntimeTerminalWaitCondition
   resolve: (result: RuntimeTerminalWait) => void
   reject: (error: Error) => void
+  timeout: NodeJS.Timeout | null
+  pollInterval: NodeJS.Timeout | null
+}
+
+type MessageWaiter = {
+  handle: string
+  typeFilter: string[] | undefined
+  resolve: (result: void) => void
   timeout: NodeJS.Timeout | null
 }
 
@@ -130,6 +203,16 @@ type ResolvedWorktree = {
   comment: string
 }
 
+type BrowserCommandTargetParams = {
+  worktree?: string
+  page?: string
+}
+
+type ResolvedBrowserCommandTarget = {
+  worktreeId?: string
+  browserPageId?: string
+}
+
 type ResolvedWorktreeCache = {
   expiresAt: number
   worktrees: ResolvedWorktree[]
@@ -146,17 +229,39 @@ export class OrcaRuntimeService {
   private leaves = new Map<string, RuntimeLeafRecord>()
   private handles = new Map<string, TerminalHandleRecord>()
   private handleByLeafKey = new Map<string, string>()
+  private handleByPtyId = new Map<string, string>()
+  private detachedPreAllocatedLeaves = new Map<string, RuntimeLeafRecord>()
+  private graphSyncCallbacks: (() => void)[] = []
   private waitersByHandle = new Map<string, Set<TerminalWaiter>>()
   private ptyController: RuntimePtyController | null = null
   private notifier: RuntimeNotifier | null = null
+  private agentBrowserBridge: AgentBrowserBridge | null = null
   private resolvedWorktreeCache: ResolvedWorktreeCache | null = null
   private agentDetector: AgentDetector | null = null
+  private _orchestrationDb: OrchestrationDb | null = null
+  private messageWaitersByHandle = new Map<string, Set<MessageWaiter>>()
 
   constructor(store: RuntimeStore | null = null, stats?: StatsCollector) {
     this.store = store
     if (stats) {
       this.agentDetector = new AgentDetector(stats)
     }
+  }
+
+  // Why: lazy initialization — the DB path depends on Electron's userData
+  // which may not be finalized until after app.ready. Also allows unit tests
+  // to inject an in-memory DB without touching the filesystem.
+  getOrchestrationDb(): OrchestrationDb {
+    if (!this._orchestrationDb) {
+      const { app } = require('electron')
+      const dbPath = join(app.getPath('userData'), 'orchestration.db')
+      this._orchestrationDb = new OrchestrationDb(dbPath)
+    }
+    return this._orchestrationDb
+  }
+
+  setOrchestrationDb(db: OrchestrationDb): void {
+    this._orchestrationDb = db
   }
 
   getRuntimeId(): string {
@@ -189,6 +294,14 @@ export class OrcaRuntimeService {
     this.notifier = notifier
   }
 
+  setAgentBrowserBridge(bridge: AgentBrowserBridge | null): void {
+    this.agentBrowserBridge = bridge
+  }
+
+  getAgentBrowserBridge(): AgentBrowserBridge | null {
+    return this.agentBrowserBridge
+  }
+
   attachWindow(windowId: number): void {
     if (this.authoritativeWindowId === null) {
       this.authoritativeWindowId = windowId
@@ -206,42 +319,112 @@ export class OrcaRuntimeService {
     this.tabs = new Map(graph.tabs.map((tab) => [tab.tabId, tab]))
     const nextLeaves = new Map<string, RuntimeLeafRecord>()
 
+    // Why: renderer reloads can briefly republish the same leaf with no ptyId;
+    // keep live CLI handles usable while the UI graph rebuilds.
+    const preserveLivePtysDuringReload = this.graphStatus === 'reloading'
     for (const leaf of graph.leaves) {
       const leafKey = this.getLeafKey(leaf.tabId, leaf.leafId)
       const existing = this.leaves.get(leafKey)
+      const ptyId =
+        preserveLivePtysDuringReload && leaf.ptyId === null && existing?.ptyId
+          ? existing.ptyId
+          : leaf.ptyId
       const ptyGeneration =
-        existing && existing.ptyId !== leaf.ptyId
+        existing && existing.ptyId !== ptyId
           ? existing.ptyGeneration + 1
           : (existing?.ptyGeneration ?? 0)
 
       nextLeaves.set(leafKey, {
         ...leaf,
+        ptyId,
         ptyGeneration,
-        connected: leaf.ptyId !== null,
-        writable: this.graphStatus === 'ready' && leaf.ptyId !== null,
-        lastOutputAt: existing?.ptyId === leaf.ptyId ? existing.lastOutputAt : null,
-        lastExitCode: existing?.ptyId === leaf.ptyId ? existing.lastExitCode : null,
-        tailBuffer: existing?.ptyId === leaf.ptyId ? existing.tailBuffer : [],
-        tailPartialLine: existing?.ptyId === leaf.ptyId ? existing.tailPartialLine : '',
-        tailTruncated: existing?.ptyId === leaf.ptyId ? existing.tailTruncated : false,
-        preview: existing?.ptyId === leaf.ptyId ? existing.preview : ''
+        connected: ptyId !== null,
+        writable: this.graphStatus === 'ready' && ptyId !== null,
+        lastOutputAt: existing?.ptyId === ptyId ? existing.lastOutputAt : null,
+        lastExitCode: existing?.ptyId === ptyId ? existing.lastExitCode : null,
+        tailBuffer: existing?.ptyId === ptyId ? existing.tailBuffer : [],
+        tailPartialLine: existing?.ptyId === ptyId ? existing.tailPartialLine : '',
+        tailTruncated: existing?.ptyId === ptyId ? existing.tailTruncated : false,
+        tailLinesTotal: existing?.ptyId === ptyId ? existing.tailLinesTotal : 0,
+        preview: existing?.ptyId === ptyId ? existing.preview : '',
+        lastAgentStatus: existing?.ptyId === ptyId ? existing.lastAgentStatus : null
       })
 
-      if (existing && (existing.ptyId !== leaf.ptyId || existing.ptyGeneration !== ptyGeneration)) {
+      if (existing && (existing.ptyId !== ptyId || existing.ptyGeneration !== ptyGeneration)) {
         this.invalidateLeafHandle(leafKey)
       }
     }
 
     for (const oldLeafKey of this.leaves.keys()) {
       if (!nextLeaves.has(oldLeafKey)) {
-        this.invalidateLeafHandle(oldLeafKey)
+        const oldLeaf = this.leaves.get(oldLeafKey)
+        if (
+          preserveLivePtysDuringReload &&
+          oldLeaf?.ptyId &&
+          this.handleByPtyId.has(oldLeaf.ptyId)
+        ) {
+          // Why: a CLI-created agent keeps using its exported handle even if
+          // the reloaded renderer has not rebound the pane yet.
+          nextLeaves.set(oldLeafKey, oldLeaf)
+        } else {
+          this.invalidateLeafHandle(oldLeafKey)
+        }
       }
+    }
+
+    const nextPtyIds = new Set(
+      [...nextLeaves.values()].map((leaf) => leaf.ptyId).filter((ptyId): ptyId is string => !!ptyId)
+    )
+    for (const [ptyId, leaf] of this.detachedPreAllocatedLeaves) {
+      if (nextPtyIds.has(ptyId) || !this.handleByPtyId.has(ptyId)) {
+        this.detachedPreAllocatedLeaves.delete(ptyId)
+        continue
+      }
+      nextLeaves.set(this.getLeafKey(leaf.tabId, leaf.leafId), leaf)
+      nextPtyIds.add(ptyId)
     }
 
     this.leaves = nextLeaves
     this.graphStatus = 'ready'
     this.refreshWritableFlags()
+    for (const leaf of this.leaves.values()) {
+      this.adoptPreAllocatedHandle(leaf)
+    }
+
+    // Why: createTerminal waits for the renderer's graph sync to populate the
+    // new leaf so it can return a handle. Drain callbacks after leaves update.
+    for (const cb of [...this.graphSyncCallbacks]) {
+      cb()
+    }
+
     return this.getStatus()
+  }
+
+  // Why: terminal handles are normally created lazily when first referenced via
+  // RPC, but agents need their own handle at spawn time (via ORCA_TERMINAL_HANDLE
+  // env var) so they can self-identify in orchestration messages without an
+  // extra RPC round-trip. Pre-allocating by ptyId lets issueHandle reuse it.
+  preAllocateHandleForPty(ptyId: string): string {
+    const existing = this.handleByPtyId.get(ptyId)
+    if (existing) {
+      return existing
+    }
+    const handle = this.createPreAllocatedTerminalHandle()
+    this.handleByPtyId.set(ptyId, handle)
+    return handle
+  }
+
+  createPreAllocatedTerminalHandle(): string {
+    return `term_${randomUUID()}`
+  }
+
+  registerPreAllocatedHandleForPty(ptyId: string, handle: string): void {
+    this.handleByPtyId.set(ptyId, handle)
+    for (const leaf of this.leaves.values()) {
+      if (leaf.ptyId === ptyId) {
+        this.adoptPreAllocatedHandle(leaf)
+      }
+    }
   }
 
   onPtySpawned(ptyId: string): void {
@@ -249,6 +432,7 @@ export class OrcaRuntimeService {
       if (leaf.ptyId === ptyId) {
         leaf.connected = true
         leaf.writable = this.graphStatus === 'ready'
+        this.adoptPreAllocatedHandle(leaf)
       }
     }
   }
@@ -257,6 +441,13 @@ export class OrcaRuntimeService {
     // Agent detection runs on raw data before leaf processing, since the
     // tail buffer logic normalizes away the OSC sequences we need.
     this.agentDetector?.onData(ptyId, data, at)
+
+    // Why: extract OSC title from raw PTY data before tail-buffer processing
+    // strips the escape sequences. Agent CLIs (Claude Code, Gemini, etc.)
+    // announce status via OSC 0/1/2 title sequences — this is the same
+    // detection path the renderer uses for notifications and sidebar badges.
+    const oscTitle = extractLastOscTitle(data)
+    const agentStatus = oscTitle ? detectAgentStatusFromTitle(oscTitle) : null
 
     for (const leaf of this.leaves.values()) {
       if (leaf.ptyId !== ptyId) {
@@ -269,7 +460,23 @@ export class OrcaRuntimeService {
       leaf.tailBuffer = nextTail.lines
       leaf.tailPartialLine = nextTail.partialLine
       leaf.tailTruncated = leaf.tailTruncated || nextTail.truncated
+      leaf.tailLinesTotal += nextTail.newCompleteLines
       leaf.preview = buildPreview(leaf.tailBuffer, leaf.tailPartialLine)
+
+      if (agentStatus !== null) {
+        const prevStatus = leaf.lastAgentStatus
+        leaf.lastAgentStatus = agentStatus
+        // Why: resolve tui-idle on any transition TO idle (not just working→idle).
+        // Claude Code may skip "working" entirely on fast tasks, going null→idle,
+        // and the coordinator's tui-idle waiter would hang forever waiting for a
+        // working→idle transition that never comes. Permission→idle is excluded:
+        // it means the agent was blocked on user approval and the user said no,
+        // which isn't a task-completion signal.
+        if (agentStatus === 'idle' && prevStatus !== 'idle') {
+          this.resolveTuiIdleWaiters(leaf)
+          this.deliverPendingMessages(leaf)
+        }
+      }
     }
   }
 
@@ -280,10 +487,54 @@ export class OrcaRuntimeService {
       if (leaf.ptyId !== ptyId) {
         continue
       }
+      this.detachedPreAllocatedLeaves.delete(ptyId)
       leaf.connected = false
       leaf.writable = false
       leaf.lastExitCode = exitCode
       this.resolveExitWaiters(leaf)
+      this.failActiveDispatchOnExit(leaf, exitCode)
+    }
+  }
+
+  // Why: Section 7.2 — the runtime detects agent exit directly and updates
+  // dispatch contexts immediately, rather than waiting for the coordinator's
+  // next poll cycle. This catches agent crashes and unexpected exits within
+  // milliseconds. The task is set back to 'pending' so it can be re-dispatched.
+  private failActiveDispatchOnExit(leaf: RuntimeLeafRecord, exitCode: number): void {
+    if (!this._orchestrationDb) {
+      return
+    }
+
+    const handle = this.handleByLeafKey.get(this.getLeafKey(leaf.tabId, leaf.leafId))
+    if (!handle) {
+      return
+    }
+
+    const dispatch = this._orchestrationDb.getActiveDispatchForTerminal(handle)
+    if (!dispatch) {
+      return
+    }
+
+    const errorContext = `Agent exited with code ${exitCode}`
+    this._orchestrationDb.failDispatch(dispatch.id, errorContext)
+
+    // Why: create an escalation message so the coordinator is notified about
+    // the unexpected exit on its next check cycle, even if the circuit breaker
+    // hasn't tripped yet.
+    const run = this._orchestrationDb.getActiveCoordinatorRun()
+    if (run) {
+      this._orchestrationDb.insertMessage({
+        from: handle,
+        to: run.coordinator_handle,
+        subject: `Agent exited unexpectedly (code ${exitCode})`,
+        type: 'escalation',
+        priority: 'high',
+        payload: JSON.stringify({
+          taskId: dispatch.task_id,
+          exitCode,
+          handle
+        })
+      })
     }
   }
 
@@ -315,6 +566,41 @@ export class OrcaRuntimeService {
     }
   }
 
+  // Why: when --terminal is omitted, the CLI auto-resolves to the active
+  // terminal in the current worktree — matching browser's implicit active tab.
+  async resolveActiveTerminal(worktreeSelector?: string): Promise<string> {
+    this.assertGraphReady()
+
+    const targetWorktreeId = worktreeSelector
+      ? (await this.resolveWorktreeSelector(worktreeSelector)).id
+      : null
+
+    // Prefer the tab's activeLeafId — this is the pane the user last focused
+    for (const tab of this.tabs.values()) {
+      if (targetWorktreeId && tab.worktreeId !== targetWorktreeId) {
+        continue
+      }
+      if (!tab.activeLeafId) {
+        continue
+      }
+      const leafKey = this.getLeafKey(tab.tabId, tab.activeLeafId)
+      const leaf = this.leaves.get(leafKey)
+      if (leaf) {
+        return this.issueHandle(leaf)
+      }
+    }
+
+    // Fallback: any leaf in the target worktree
+    for (const leaf of this.leaves.values()) {
+      if (targetWorktreeId && leaf.worktreeId !== targetWorktreeId) {
+        continue
+      }
+      return this.issueHandle(leaf)
+    }
+
+    throw new Error('no_active_terminal')
+  }
+
   async showTerminal(handle: string): Promise<RuntimeTerminalShow> {
     const graphEpoch = this.captureReadyGraphEpoch()
     const worktreesById = await this.getResolvedWorktreeMap()
@@ -329,19 +615,43 @@ export class OrcaRuntimeService {
     }
   }
 
-  async readTerminal(handle: string): Promise<RuntimeTerminalRead> {
+  async readTerminal(handle: string, opts: { cursor?: number } = {}): Promise<RuntimeTerminalRead> {
     const { leaf } = this.getLiveLeafForHandle(handle)
-    const tail = buildTailLines(leaf.tailBuffer, leaf.tailPartialLine)
-    return {
-      handle,
-      status: getTerminalState(leaf),
+    const allLines = buildTailLines(leaf.tailBuffer, leaf.tailPartialLine)
+
+    let tail: string[]
+    let truncated: boolean
+
+    if (typeof opts.cursor === 'number' && opts.cursor >= 0) {
+      // Why: the buffer only retains the last MAX_TAIL_LINES lines. If the
+      // caller's cursor points to lines that were already evicted, we can only
+      // return what's still in memory and mark truncated=true to signal the gap.
+      const bufferStart = leaf.tailLinesTotal - leaf.tailBuffer.length
+      const sliceFrom = Math.max(0, opts.cursor - bufferStart)
+      // Why: cursor-based reads return only completed lines, excluding the
+      // trailing partial line. Including the partial would cause duplication:
+      // the consumer sees "hel" now, then "hello\n" on the next read after
+      // the line completes — same content delivered twice.
+      tail = leaf.tailBuffer.slice(sliceFrom)
+      truncated = opts.cursor < bufferStart
+    } else {
+      tail = allLines
       // Why: Orca does not have a truthful main-owned screen model yet,
       // especially for hidden panes. Focused v1 therefore returns the bounded
       // tail lines directly instead of duplicating the same text in a fake
       // screen field that would waste agent tokens.
+      truncated = leaf.tailTruncated
+    }
+
+    return {
+      handle,
+      status: getTerminalState(leaf),
       tail,
-      truncated: leaf.tailTruncated,
-      nextCursor: null
+      truncated,
+      // Why: cursors advance by completed lines only. If we count the current
+      // partial line here, later reads can skip continued output on that same
+      // line because no new complete line was emitted yet.
+      nextCursor: String(leaf.tailLinesTotal)
     }
   }
 
@@ -361,10 +671,33 @@ export class OrcaRuntimeService {
     if (payload === null) {
       throw new Error('invalid_terminal_send')
     }
-    const wrote = this.ptyController?.write(leaf.ptyId, payload) ?? false
-    if (!wrote) {
-      throw new Error('terminal_not_writable')
+
+    // Why: TUI apps (Claude Code, etc.) treat a single large write as a paste
+    // event. If \r is included in the same write as multi-line text, the TUI
+    // interprets it as part of the paste rather than a discrete Enter keypress.
+    // Splitting the text and the trailing control characters into separate
+    // writes with a small delay ensures the TUI processes the paste first,
+    // then receives Enter as a distinct input event.
+    const hasText = typeof action.text === 'string' && action.text.length > 0
+    const hasSuffix = action.enter || action.interrupt
+    if (hasText && hasSuffix) {
+      const textWrote = this.ptyController?.write(leaf.ptyId, action.text!) ?? false
+      if (!textWrote) {
+        throw new Error('terminal_not_writable')
+      }
+      const suffix = (action.enter ? '\r' : '') + (action.interrupt ? '\x03' : '')
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const suffixWrote = this.ptyController?.write(leaf.ptyId, suffix) ?? false
+      if (!suffixWrote) {
+        throw new Error('terminal_not_writable')
+      }
+    } else {
+      const wrote = this.ptyController?.write(leaf.ptyId, payload) ?? false
+      if (!wrote) {
+        throw new Error('terminal_not_writable')
+      }
     }
+
     return {
       handle,
       accepted: true,
@@ -375,27 +708,51 @@ export class OrcaRuntimeService {
   async waitForTerminal(
     handle: string,
     options?: {
+      condition?: RuntimeTerminalWaitCondition
       timeoutMs?: number
     }
   ): Promise<RuntimeTerminalWait> {
+    const condition = options?.condition ?? 'exit'
     const { leaf } = this.getLiveLeafForHandle(handle)
-    if (getTerminalState(leaf) === 'exited') {
-      return buildTerminalWaitResult(handle, leaf)
+
+    if (condition === 'exit' && getTerminalState(leaf) === 'exited') {
+      return buildTerminalWaitResult(handle, condition, leaf)
+    }
+
+    // Why: if the agent already transitioned to idle (or permission) before the
+    // waiter was registered, resolve immediately. This uses the same OSC title
+    // detection that powers the renderer's "Task complete" notifications.
+    // Why: only 'idle' satisfies tui-idle, not 'permission'. Permission means the
+    // agent is blocked on user approval, not finished with its task.
+    if (condition === 'tui-idle' && leaf.lastAgentStatus === 'idle') {
+      return buildTerminalWaitResult(handle, condition, leaf)
     }
 
     return await new Promise<RuntimeTerminalWait>((resolve, reject) => {
+      // Why: tui-idle depends on OSC title transitions from a recognized agent.
+      // If no agent is detected, the waiter would hang forever. Enforce a default
+      // timeout so unsupported CLIs fail predictably instead of silently blocking.
+      const effectiveTimeoutMs =
+        typeof options?.timeoutMs === 'number' && options.timeoutMs > 0
+          ? options.timeoutMs
+          : condition === 'tui-idle'
+            ? TUI_IDLE_DEFAULT_TIMEOUT_MS
+            : 0
+
       const waiter: TerminalWaiter = {
         handle,
+        condition,
         resolve,
         reject,
-        timeout: null
+        timeout: null,
+        pollInterval: null
       }
 
-      if (typeof options?.timeoutMs === 'number' && options.timeoutMs > 0) {
+      if (effectiveTimeoutMs > 0) {
         waiter.timeout = setTimeout(() => {
           this.removeWaiter(waiter)
           reject(new Error('timeout'))
-        }, options.timeoutMs)
+        }, effectiveTimeoutMs)
       }
 
       let waiters = this.waitersByHandle.get(handle)
@@ -411,7 +768,23 @@ export class OrcaRuntimeService {
       try {
         const live = this.getLiveLeafForHandle(handle)
         if (getTerminalState(live.leaf) === 'exited') {
-          this.resolveWaiter(waiter, buildTerminalWaitResult(handle, live.leaf))
+          this.resolveWaiter(waiter, buildTerminalWaitResult(handle, condition, live.leaf))
+        } else if (condition === 'tui-idle' && live.leaf.lastAgentStatus === 'idle') {
+          // Why: don't clear lastAgentStatus here. It's a factual record of the
+          // last detected OSC state, not a one-shot signal. Clearing it causes
+          // subsequent tui-idle waiters to hang even though the agent is idle —
+          // the first waiter consumes the status and all later ones see null.
+          this.resolveWaiter(waiter, buildTerminalWaitResult(handle, condition, live.leaf))
+        } else if (condition === 'tui-idle' && live.leaf.lastAgentStatus === null) {
+          // Why: for daemon-hosted terminals, lastAgentStatus stays null because
+          // PTY data doesn't flow through onPtyData. Check the renderer-synced
+          // title as a fast path before falling back to polling.
+          const fastPathTitle = live.leaf.paneTitle ?? this.tabs.get(live.leaf.tabId)?.title
+          if (fastPathTitle && detectAgentStatusFromTitle(fastPathTitle) === 'idle') {
+            this.resolveWaiter(waiter, buildTerminalWaitResult(handle, condition, live.leaf))
+          } else {
+            this.startTuiIdleFallbackPoll(waiter, live.leaf)
+          }
         }
       } catch (error) {
         this.removeWaiter(waiter)
@@ -576,6 +949,7 @@ export class OrcaRuntimeService {
     baseBranch?: string
     linkedIssue?: number | null
     comment?: string
+    runHooks?: boolean
   }): Promise<CreateWorktreeResult> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
@@ -619,6 +993,15 @@ export class OrcaRuntimeService {
     const workspaceRoot = wslHome ? join(wslHome, 'orca', 'workspaces') : settings.workspaceDir
     worktreePath = ensurePathWithinWorkspace(worktreePath, workspaceRoot)
     const baseBranch = args.baseBranch || repo.worktreeBaseRef || getDefaultBaseRef(repo.path)
+    if (!baseBranch) {
+      // Why: getDefaultBaseRef returns null when no suitable ref exists.
+      // Don't fabricate 'origin/main' — passing it to addWorktree would
+      // produce an opaque git failure. Surface a clear error so the CLI
+      // caller can pick an explicit --base ref.
+      throw new Error(
+        'Could not resolve a default base ref for this repo. Pass an explicit --base and try again.'
+      )
+    }
 
     const remote = baseBranch.includes('/') ? baseBranch.split('/')[0] : 'origin'
     try {
@@ -653,7 +1036,7 @@ export class OrcaRuntimeService {
 
     let setup: CreateWorktreeResult['setup']
     const hooks = getEffectiveHooks(repo)
-    if (hooks?.scripts.setup) {
+    if (hooks?.scripts.setup && args.runHooks === true) {
       if (this.authoritativeWindowId !== null) {
         try {
           // Why: CLI-created worktrees must use the same runner-script path as the
@@ -674,6 +1057,9 @@ export class OrcaRuntimeService {
           }
         })
       }
+    } else if (hooks?.scripts.setup) {
+      // Runtime RPC calls have no renderer trust prompt, so hooks require explicit CLI opt-in.
+      console.info(`[hooks] setup hook skipped for ${worktreePath}; pass --run-hooks to run it`)
     }
 
     this.notifier?.worktreesChanged(repo.id)
@@ -719,7 +1105,11 @@ export class OrcaRuntimeService {
     return mergeWorktree(worktree.repoId, worktree.git, meta)
   }
 
-  async removeManagedWorktree(worktreeSelector: string, force = false): Promise<void> {
+  async removeManagedWorktree(
+    worktreeSelector: string,
+    force = false,
+    runHooks = false
+  ): Promise<void> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
     }
@@ -733,11 +1123,14 @@ export class OrcaRuntimeService {
     }
 
     const hooks = getEffectiveHooks(repo)
-    if (hooks?.scripts.archive) {
+    if (hooks?.scripts.archive && runHooks) {
       const result = await runHook('archive', worktree.path, repo)
       if (!result.success) {
         console.error(`[hooks] archive hook failed for ${worktree.path}:`, result.output)
       }
+    } else if (hooks?.scripts.archive) {
+      // Runtime RPC calls have no renderer trust prompt, so hooks require explicit CLI opt-in.
+      console.info(`[hooks] archive hook skipped for ${worktree.path}; pass --run-hooks to run it`)
     }
 
     try {
@@ -763,6 +1156,220 @@ export class OrcaRuntimeService {
     this.invalidateResolvedWorktreeCache()
     invalidateAuthorizedRootsCache()
     this.notifier?.worktreesChanged(repo.id)
+  }
+
+  async renameTerminal(handle: string, title: string | null): Promise<RuntimeTerminalRename> {
+    this.assertGraphReady()
+    const { leaf } = this.getLiveLeafForHandle(handle)
+    this.notifier?.renameTerminal(leaf.tabId, title)
+    return { handle, tabId: leaf.tabId, title }
+  }
+
+  async createTerminal(
+    worktreeSelector?: string,
+    opts: { command?: string; title?: string } = {}
+  ): Promise<RuntimeTerminalCreate> {
+    this.assertGraphReady()
+    const win = this.getAuthoritativeWindow()
+    // Why: mirrors browserTabCreate — when no worktree is specified, pass
+    // undefined so the renderer uses its current active worktree.
+    const worktreeId = worktreeSelector
+      ? (await this.resolveWorktreeSelector(worktreeSelector)).id
+      : undefined
+    const requestId = randomUUID()
+
+    // Why: terminal creation is a renderer-side Zustand store operation (like
+    // browser tab creation). The main process sends a request, the renderer
+    // creates the tab and replies with the tabId so we can resolve the handle.
+    const reply = await new Promise<{ tabId: string; title: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        ipcMain.removeListener('terminal:tabCreateReply', handler)
+        reject(new Error('Terminal creation timed out'))
+      }, 10_000)
+
+      const handler = (
+        _event: Electron.IpcMainEvent,
+        r: { requestId: string; tabId?: string; title?: string; error?: string }
+      ): void => {
+        if (r.requestId !== requestId) {
+          return
+        }
+        clearTimeout(timer)
+        ipcMain.removeListener('terminal:tabCreateReply', handler)
+        if (r.error) {
+          reject(new Error(r.error))
+        } else {
+          resolve({ tabId: r.tabId!, title: r.title ?? opts.title ?? '' })
+        }
+      }
+      ipcMain.on('terminal:tabCreateReply', handler)
+      win.webContents.send('terminal:requestTabCreate', {
+        requestId,
+        worktreeId,
+        command: opts.command,
+        title: opts.title
+      })
+    })
+
+    // Why: the renderer created the tab immediately, but the graph sync that
+    // populates this.leaves may not have arrived yet. Wait for the leaf to
+    // appear so we can return a valid handle the caller can use right away.
+    const handle = await this.waitForTerminalHandle(reply.tabId)
+    return { handle, worktreeId: worktreeId ?? '', title: reply.title }
+  }
+
+  private waitForTerminalHandle(tabId: string, timeoutMs = 10_000): Promise<string> {
+    const existing = this.resolveHandleForTab(tabId)
+    if (existing) {
+      return Promise.resolve(existing)
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = this.graphSyncCallbacks.indexOf(check)
+        if (idx !== -1) {
+          this.graphSyncCallbacks.splice(idx, 1)
+        }
+        reject(new Error('Timed out waiting for terminal handle after creation'))
+      }, timeoutMs)
+
+      const check = (): void => {
+        const handle = this.resolveHandleForTab(tabId)
+        if (handle) {
+          clearTimeout(timer)
+          const idx = this.graphSyncCallbacks.indexOf(check)
+          if (idx !== -1) {
+            this.graphSyncCallbacks.splice(idx, 1)
+          }
+          resolve(handle)
+        }
+      }
+      this.graphSyncCallbacks.push(check)
+      // Why: the graph sync may have fired between the initial check and
+      // callback registration. Re-check immediately to avoid a missed wake-up.
+      check()
+    })
+  }
+
+  // Why: a leaf appears in the graph before its PTY spawns. If we issue a
+  // handle while ptyId is null, the next graph sync after PTY spawn will
+  // change ptyId and invalidate the handle. Wait for a connected PTY so
+  // the handle is stable and immediately usable for send/read/wait.
+  private countLeavesInTab(tabId: string): number {
+    let count = 0
+    for (const leaf of this.leaves.values()) {
+      if (leaf.tabId === tabId) {
+        count++
+      }
+    }
+    return count
+  }
+
+  private resolveHandleForTab(tabId: string): string | null {
+    for (const leaf of this.leaves.values()) {
+      if (leaf.tabId === tabId && leaf.ptyId !== null) {
+        return this.issueHandle(leaf)
+      }
+    }
+    return null
+  }
+
+  async focusTerminal(handle: string): Promise<RuntimeTerminalFocus> {
+    this.assertGraphReady()
+    const { leaf } = this.getLiveLeafForHandle(handle)
+    this.notifier?.focusTerminal(leaf.tabId, leaf.worktreeId)
+    return { handle, tabId: leaf.tabId, worktreeId: leaf.worktreeId }
+  }
+
+  async closeTerminal(handle: string): Promise<RuntimeTerminalClose> {
+    this.assertGraphReady()
+    const { leaf } = this.getLiveLeafForHandle(handle)
+    let ptyKilled = false
+    if (leaf.ptyId) {
+      ptyKilled = this.ptyController?.kill(leaf.ptyId) ?? false
+    }
+    // Why: killing the PTY in a multi-pane tab is sufficient — the renderer's
+    // PTY exit handler already calls PaneManager.closePane() for split layouts.
+    // Sending an additional IPC close would race with the exit handler and
+    // incorrectly close the entire tab (the pane count drops to 1 before the
+    // IPC arrives, triggering the single-pane fallback path).
+    // We only send the notifier close when the PTY wasn't killed (e.g. PTY not
+    // yet spawned) or when this is the only pane in the tab.
+    const siblingCount = this.countLeavesInTab(leaf.tabId)
+    if (!ptyKilled || siblingCount <= 1) {
+      this.notifier?.closeTerminal(leaf.tabId, leaf.paneRuntimeId)
+    }
+    return { handle, tabId: leaf.tabId, ptyKilled }
+  }
+
+  async splitTerminal(
+    handle: string,
+    opts: { direction?: 'horizontal' | 'vertical'; command?: string } = {}
+  ): Promise<RuntimeTerminalSplit> {
+    this.assertGraphReady()
+    const { leaf } = this.getLiveLeafForHandle(handle)
+    const direction = opts.direction ?? 'horizontal'
+
+    // Why: snapshot current leaf keys for this tab so we can detect the new
+    // pane that appears after the split via graph sync delta.
+    const leafKeysBefore = new Set<string>()
+    for (const [key, l] of this.leaves) {
+      if (l.tabId === leaf.tabId) {
+        leafKeysBefore.add(key)
+      }
+    }
+
+    this.notifier?.splitTerminal(leaf.tabId, leaf.paneRuntimeId, {
+      direction,
+      command: opts.command
+    })
+
+    const newHandle = await this.waitForNewLeafInTab(leaf.tabId, leafKeysBefore)
+    return { handle: newHandle, tabId: leaf.tabId, paneRuntimeId: leaf.paneRuntimeId }
+  }
+
+  private waitForNewLeafInTab(
+    tabId: string,
+    existingLeafKeys: Set<string>,
+    timeoutMs = 10_000
+  ): Promise<string> {
+    const tryResolve = (): string | null => {
+      for (const [key, leaf] of this.leaves) {
+        if (leaf.tabId === tabId && !existingLeafKeys.has(key) && leaf.ptyId !== null) {
+          return this.issueHandle(leaf)
+        }
+      }
+      return null
+    }
+
+    const existing = tryResolve()
+    if (existing) {
+      return Promise.resolve(existing)
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = this.graphSyncCallbacks.indexOf(check)
+        if (idx !== -1) {
+          this.graphSyncCallbacks.splice(idx, 1)
+        }
+        reject(new Error('Timed out waiting for split pane handle'))
+      }, timeoutMs)
+
+      const check = (): void => {
+        const handle = tryResolve()
+        if (handle) {
+          clearTimeout(timer)
+          const idx = this.graphSyncCallbacks.indexOf(check)
+          if (idx !== -1) {
+            this.graphSyncCallbacks.splice(idx, 1)
+          }
+          resolve(handle)
+        }
+      }
+      this.graphSyncCallbacks.push(check)
+      check()
+    })
   }
 
   async stopTerminalsForWorktree(worktreeSelector: string): Promise<{ stopped: number }> {
@@ -799,6 +1406,7 @@ export class OrcaRuntimeService {
     // against whatever the renderer rebuilds next.
     this.rendererGraphEpoch += 1
     this.graphStatus = 'reloading'
+    this.rememberDetachedPreAllocatedLeaves()
     this.handles.clear()
     this.handleByLeafKey.clear()
     this.rejectAllWaiters('terminal_handle_stale')
@@ -824,6 +1432,7 @@ export class OrcaRuntimeService {
     }
     this.graphStatus = 'unavailable'
     this.authoritativeWindowId = null
+    this.rememberDetachedPreAllocatedLeaves()
     this.tabs.clear()
     this.leaves.clear()
     this.handles.clear()
@@ -990,6 +1599,123 @@ export class OrcaRuntimeService {
     }
   }
 
+  // Why: group address resolution (Section 4.5) needs to query per-handle agent
+  // status without throwing on stale handles, so this returns null on any error.
+  getAgentStatusForHandle(handle: string): string | null {
+    try {
+      const { leaf } = this.getLiveLeafForHandle(handle)
+      return leaf.lastAgentStatus
+    } catch {
+      return null
+    }
+  }
+
+  // Why: OSC title detection via onPtyData is the tightest signal for agent
+  // presence, but the runtime may not see PTY data for daemon-hosted terminals
+  // (the daemon adapter stubs getForegroundProcess). This checks three signals
+  // in order: (1) lastAgentStatus from PTY data OSC titles, (2) the renderer-
+  // synced tab title (which reflects OSC titles from the xterm instance), and
+  // (3) the PTY foreground process. Returns true if any signal indicates a
+  // non-shell agent is running.
+  async isTerminalRunningAgent(handle: string): Promise<boolean> {
+    try {
+      const { leaf } = this.getLiveLeafForHandle(handle)
+      if (leaf.lastAgentStatus !== null) {
+        return true
+      }
+      // Why: check both the leaf-level pane title (synced from the renderer's
+      // runtimePaneTitlesByTabId) and the tab-level title. The tab title already
+      // includes OSC-enriched agent indicators (e.g. ✳ prefix) synced from the
+      // renderer's xterm instance.
+      const titleToCheck = leaf.paneTitle ?? this.tabs.get(leaf.tabId)?.title
+      if (titleToCheck && detectAgentStatusFromTitle(titleToCheck) !== null) {
+        return true
+      }
+      if (!leaf.ptyId || !this.ptyController) {
+        return false
+      }
+      const fg = await this.ptyController.getForegroundProcess(leaf.ptyId)
+      if (!fg) {
+        return false
+      }
+      return !isShellProcess(fg)
+    } catch {
+      return false
+    }
+  }
+
+  deliverPendingMessagesForHandle(handle: string): void {
+    try {
+      const { leaf } = this.getLiveLeafForHandle(handle)
+      if (leaf.lastAgentStatus === 'idle') {
+        this.deliverPendingMessages(leaf)
+      }
+    } catch {
+      // Unknown or stale handles cannot be pushed immediately; the persisted
+      // message remains available via explicit check or future idle delivery.
+    }
+  }
+
+  // Why: after a message is inserted for a recipient, any blocking
+  // orchestration.check --wait calls watching that handle must be woken
+  // so they can return the new message immediately instead of polling.
+  notifyMessageArrived(handle: string): void {
+    const waiters = this.messageWaitersByHandle.get(handle)
+    if (!waiters || waiters.size === 0) {
+      return
+    }
+    for (const waiter of [...waiters]) {
+      this.resolveMessageWaiter(waiter)
+    }
+  }
+
+  waitForMessage(
+    handle: string,
+    options?: { typeFilter?: string[]; timeoutMs?: number }
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      const timeoutMs = options?.timeoutMs ?? MESSAGE_WAIT_DEFAULT_TIMEOUT_MS
+
+      const waiter: MessageWaiter = {
+        handle,
+        typeFilter: options?.typeFilter,
+        resolve,
+        timeout: null
+      }
+
+      waiter.timeout = setTimeout(() => {
+        this.removeMessageWaiter(waiter)
+        resolve()
+      }, timeoutMs)
+
+      let waiters = this.messageWaitersByHandle.get(handle)
+      if (!waiters) {
+        waiters = new Set()
+        this.messageWaitersByHandle.set(handle, waiters)
+      }
+      waiters.add(waiter)
+    })
+  }
+
+  private resolveMessageWaiter(waiter: MessageWaiter): void {
+    this.removeMessageWaiter(waiter)
+    waiter.resolve()
+  }
+
+  private removeMessageWaiter(waiter: MessageWaiter): void {
+    if (waiter.timeout) {
+      clearTimeout(waiter.timeout)
+      waiter.timeout = null
+    }
+    const waiters = this.messageWaitersByHandle.get(waiter.handle)
+    if (waiters) {
+      waiters.delete(waiter)
+      if (waiters.size === 0) {
+        this.messageWaitersByHandle.delete(waiter.handle)
+      }
+    }
+  }
+
   private getLiveLeafForHandle(handle: string): {
     record: TerminalHandleRecord
     leaf: RuntimeLeafRecord
@@ -1025,7 +1751,10 @@ export class OrcaRuntimeService {
       }
     }
 
-    const handle = `term_${randomUUID()}`
+    const handle = this.adoptPreAllocatedHandle(leaf) ?? `term_${randomUUID()}`
+    if (this.handles.has(handle)) {
+      return handle
+    }
     this.handles.set(handle, {
       handle,
       runtimeId: this.runtimeId,
@@ -1038,6 +1767,29 @@ export class OrcaRuntimeService {
     })
     this.handleByLeafKey.set(leafKey, handle)
     return handle
+  }
+
+  private adoptPreAllocatedHandle(leaf: RuntimeLeafRecord): string | null {
+    if (!leaf.ptyId) {
+      return null
+    }
+    const preAllocated = this.handleByPtyId.get(leaf.ptyId)
+    if (!preAllocated) {
+      return null
+    }
+    const leafKey = this.getLeafKey(leaf.tabId, leaf.leafId)
+    this.handles.set(preAllocated, {
+      handle: preAllocated,
+      runtimeId: this.runtimeId,
+      rendererGraphEpoch: this.rendererGraphEpoch,
+      worktreeId: leaf.worktreeId,
+      tabId: leaf.tabId,
+      leafId: leaf.leafId,
+      ptyId: leaf.ptyId,
+      ptyGeneration: leaf.ptyGeneration
+    })
+    this.handleByLeafKey.set(leafKey, preAllocated)
+    return preAllocated
   }
 
   private refreshWritableFlags(): void {
@@ -1056,7 +1808,39 @@ export class OrcaRuntimeService {
     this.rejectWaitersForHandle(handle, 'terminal_handle_stale')
   }
 
+  private rememberDetachedPreAllocatedLeaves(): void {
+    for (const leaf of this.leaves.values()) {
+      if (leaf.ptyId && this.handleByPtyId.has(leaf.ptyId)) {
+        // Why: ORCA_TERMINAL_HANDLE is an agent identity, so CLI control should
+        // survive renderer graph loss as long as the underlying PTY is alive.
+        this.detachedPreAllocatedLeaves.set(leaf.ptyId, leaf)
+      }
+    }
+  }
+
   private resolveExitWaiters(leaf: RuntimeLeafRecord): void {
+    const handle = this.issueHandle(leaf)
+    if (!handle) {
+      return
+    }
+    const waiters = this.waitersByHandle.get(handle)
+    if (!waiters || waiters.size === 0) {
+      return
+    }
+    for (const waiter of [...waiters]) {
+      if (waiter.condition === 'exit') {
+        this.resolveWaiter(waiter, buildTerminalWaitResult(handle, 'exit', leaf))
+      } else {
+        // Why: if the terminal exited, conditions like tui-idle can never be
+        // satisfied. Reject immediately instead of letting the poll interval
+        // spin until timeout on a dead process.
+        this.removeWaiter(waiter)
+        waiter.reject(new Error('terminal_exited'))
+      }
+    }
+  }
+
+  private resolveTuiIdleWaiters(leaf: RuntimeLeafRecord): void {
     const handle = this.handleByLeafKey.get(this.getLeafKey(leaf.tabId, leaf.leafId))
     if (!handle) {
       return
@@ -1066,8 +1850,113 @@ export class OrcaRuntimeService {
       return
     }
     for (const waiter of [...waiters]) {
-      this.resolveWaiter(waiter, buildTerminalWaitResult(handle, leaf))
+      if (waiter.condition === 'tui-idle') {
+        this.resolveWaiter(waiter, buildTerminalWaitResult(handle, 'tui-idle', leaf))
+      }
     }
+  }
+
+  // Why: OSC title detection via onPtyData is the primary signal for tui-idle,
+  // but daemon-hosted terminals don't flow PTY data through the runtime, and
+  // some agents don't emit recognized titles on startup. This fallback polls
+  // two signals: (1) the renderer-synced tab title (reflects xterm's OSC title
+  // handler, works even for daemon terminals), and (2) the PTY foreground process
+  // + output quiescence. The poll self-cancels when the primary OSC path fires.
+  private startTuiIdleFallbackPoll(waiter: TerminalWaiter, leaf: RuntimeLeafRecord): void {
+    waiter.pollInterval = setInterval(async () => {
+      try {
+        // If OSC detection via onPtyData kicked in, stop — the primary path
+        // will handle (or has already handled) resolution.
+        if (leaf.lastAgentStatus !== null) {
+          if (waiter.pollInterval) {
+            clearInterval(waiter.pollInterval)
+            waiter.pollInterval = null
+          }
+          return
+        }
+        // Why: check the renderer-synced title. For daemon-hosted terminals,
+        // this is the only path where OSC titles are visible to the runtime.
+        const pollTitle = leaf.paneTitle ?? this.tabs.get(leaf.tabId)?.title
+        if (pollTitle) {
+          const titleStatus = detectAgentStatusFromTitle(pollTitle)
+          if (titleStatus === 'idle') {
+            if (waiter.pollInterval) {
+              clearInterval(waiter.pollInterval)
+              waiter.pollInterval = null
+            }
+            this.resolveWaiter(waiter, buildTerminalWaitResult(waiter.handle, 'tui-idle', leaf))
+            return
+          }
+        }
+        // Foreground process fallback: if the daemon/local provider can report
+        // the process and it's a non-shell with quiet output, treat as idle.
+        if (leaf.ptyId && this.ptyController) {
+          const fg = await this.ptyController.getForegroundProcess(leaf.ptyId)
+          if (fg && !isShellProcess(fg)) {
+            const quietMs = leaf.lastOutputAt ? Date.now() - leaf.lastOutputAt : 0
+            if (quietMs >= TUI_IDLE_QUIESCENCE_MS) {
+              if (waiter.pollInterval) {
+                clearInterval(waiter.pollInterval)
+                waiter.pollInterval = null
+              }
+              this.resolveWaiter(waiter, buildTerminalWaitResult(waiter.handle, 'tui-idle', leaf))
+            }
+          }
+        }
+      } catch {
+        // Swallow transient PTY inspection errors and keep polling.
+      }
+    }, TUI_IDLE_POLL_INTERVAL_MS)
+  }
+
+  // Why: push-on-idle delivery — when an agent transitions working→idle, check
+  // for unread orchestration messages addressed to that terminal and inject them
+  // into the PTY. This is event-driven (no polling) because the runtime owns
+  // both the message store and terminal status detection.
+  private deliverPendingMessages(leaf: RuntimeLeafRecord): void {
+    if (!this._orchestrationDb) {
+      return
+    }
+
+    const handle = this.handleByLeafKey.get(this.getLeafKey(leaf.tabId, leaf.leafId))
+    if (!handle) {
+      return
+    }
+
+    const unread = this._orchestrationDb.getUnreadMessages(handle)
+    if (unread.length === 0) {
+      return
+    }
+
+    if (!leaf.writable || !leaf.ptyId) {
+      return
+    }
+
+    const payload = formatMessagesForInjection(unread)
+    const wrote = this.ptyController?.write(leaf.ptyId, payload) ?? false
+    if (!wrote) {
+      return
+    }
+
+    // Why: Claude Code treats large single PTY writes as paste events and
+    // swallows a \r included in the same write. Send Enter separately after
+    // a delay so the agent processes the pasted message first. Mark messages
+    // as read only after \r is confirmed, so failed deliveries stay queued.
+    const ptyId = leaf.ptyId
+    setTimeout(() => {
+      try {
+        if (!leaf.writable) {
+          return
+        }
+        const submitted = this.ptyController?.write(ptyId, '\r') ?? false
+        if (submitted) {
+          this._orchestrationDb?.markAsRead(unread.map((m) => m.id))
+        }
+      } catch {
+        // Terminal may have closed during the delay — messages stay unread
+        // and will be re-delivered on the next idle transition.
+      }
+    }, 500)
   }
 
   private resolveWaiter(waiter: TerminalWaiter, result: RuntimeTerminalWait): void {
@@ -1096,6 +1985,9 @@ export class OrcaRuntimeService {
     if (waiter.timeout) {
       clearTimeout(waiter.timeout)
     }
+    if (waiter.pollInterval) {
+      clearInterval(waiter.pollInterval)
+    }
     const waiters = this.waitersByHandle.get(waiter.handle)
     if (!waiters) {
       return
@@ -1108,6 +2000,1065 @@ export class OrcaRuntimeService {
 
   private getLeafKey(tabId: string, leafId: string): string {
     return `${tabId}::${leafId}`
+  }
+
+  // ── Browser automation ──
+
+  private requireAgentBrowserBridge(): AgentBrowserBridge {
+    if (!this.agentBrowserBridge) {
+      throw new BrowserError('browser_no_tab', 'No browser session is active')
+    }
+    return this.agentBrowserBridge
+  }
+
+  // Why: the CLI sends worktree selectors (e.g. "path:/Users/...") but the
+  // bridge stores worktreeIds in "repoId::path" format (from the renderer's
+  // Zustand store). This helper resolves the selector to the store-compatible
+  // ID so the bridge can filter tabs correctly.
+  private async resolveBrowserWorktreeId(selector?: string): Promise<string | undefined> {
+    if (!selector) {
+      // Why: after app restart, webviews only mount when the browser pane is visible.
+      // Without --worktree, we still need to activate the view so persisted tabs
+      // become operable via registerGuest.
+      const bridge = this.agentBrowserBridge
+      if (bridge && bridge.getRegisteredTabs().size === 0) {
+        try {
+          const win = this.getAuthoritativeWindow()
+          win.webContents.send('browser:activateView', {})
+          await new Promise((resolve) => setTimeout(resolve, 500))
+        } catch {
+          // Window may not exist yet (e.g. during startup or in tests)
+        }
+      }
+      return undefined
+    }
+
+    const worktreeId = (await this.resolveWorktreeSelector(selector)).id
+    // Why: explicit worktree selectors are user intent, so resolution errors
+    // must surface instead of silently widening browser routing scope. Only the
+    // activation step remains best-effort because missing windows during tests
+    // or startup should not erase the validated worktree target itself.
+    const bridge = this.agentBrowserBridge
+    if (bridge && bridge.getRegisteredTabs(worktreeId).size === 0) {
+      try {
+        await this.ensureBrowserWorktreeActive(worktreeId)
+      } catch {
+        // Fall through with the validated worktree id so downstream routing
+        // still stays scoped to the caller's explicit selector.
+      }
+    }
+    return worktreeId
+  }
+
+  private async resolveBrowserCommandTarget(
+    params: BrowserCommandTargetParams
+  ): Promise<ResolvedBrowserCommandTarget> {
+    const browserPageId =
+      typeof params.page === 'string' && params.page.length > 0 ? params.page : undefined
+    if (!browserPageId) {
+      return {
+        worktreeId: await this.resolveBrowserWorktreeId(params.worktree)
+      }
+    }
+
+    return {
+      // Why: explicit browserPageId is already a stable tab identity, so we do
+      // not auto-resolve cwd worktree scoping on top of it. Only honor an
+      // explicit --worktree when the caller asked for that extra validation.
+      worktreeId: params.worktree
+        ? await this.resolveBrowserWorktreeId(params.worktree)
+        : undefined,
+      browserPageId
+    }
+  }
+
+  // Why: browser tabs only mount (and become operable) when their worktree is
+  // the active worktree in the renderer AND activeTabType is 'browser'. If either
+  // condition is false, the webview stays in display:none and Electron won't start
+  // its guest process — dom-ready never fires, registerGuest never runs, and CLI
+  // browser commands fail with "CDP connection refused".
+  private async ensureBrowserWorktreeActive(worktreeId: string): Promise<void> {
+    const win = this.getAuthoritativeWindow()
+    const repoId = worktreeId.split('::')[0]
+    if (!repoId) {
+      return
+    }
+    win.webContents.send('ui:activateWorktree', { repoId, worktreeId })
+    // Why: switching worktree alone sets activeView='terminal'. Browser webviews
+    // won't mount until activeTabType is 'browser'. Send a second IPC to flip it.
+    win.webContents.send('browser:activateView', { worktreeId })
+    // Why: give the renderer time to mount the webview after switching worktrees.
+    // The webview needs to attach and fire dom-ready before registerGuest runs.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+
+  // Why: agent-browser drives navigation via CDP, which bypasses Electron's
+  // webview event system. The renderer's did-navigate / page-title-updated
+  // listeners never fire, leaving the Zustand store (and thus the Orca UI's
+  // address bar and tab title) stale. Push updates from main → renderer after
+  // any navigation-causing command so the UI stays in sync.
+  private notifyRendererNavigation(browserPageId: string, url: string, title: string): void {
+    try {
+      const win = this.getAuthoritativeWindow()
+      win.webContents.send('browser:navigation-update', { browserPageId, url, title })
+    } catch {
+      // Window may not exist during shutdown
+    }
+  }
+
+  async browserSnapshot(params: BrowserCommandTargetParams): Promise<BrowserSnapshotResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().snapshot(target.worktreeId, target.browserPageId)
+  }
+
+  async browserClick(
+    params: { element: string } & BrowserCommandTargetParams
+  ): Promise<BrowserClickResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    const bridge = this.requireAgentBrowserBridge()
+    const result = await bridge.click(params.element, target.worktreeId, target.browserPageId)
+    // Why: clicks can trigger navigation (e.g. submitting a form, clicking a link).
+    // Read the target tab's live URL/title after the click and push to the
+    // renderer so the UI updates even when automation targeted a non-active page.
+    const page = bridge.getPageInfo(target.worktreeId, target.browserPageId)
+    if (page) {
+      this.notifyRendererNavigation(page.browserPageId, page.url, page.title)
+    }
+    return result
+  }
+
+  async browserGoto(
+    params: { url: string } & BrowserCommandTargetParams
+  ): Promise<BrowserGotoResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    const bridge = this.requireAgentBrowserBridge()
+    const result = await bridge.goto(params.url, target.worktreeId, target.browserPageId)
+    const pageId = bridge.getActivePageId(target.worktreeId, target.browserPageId)
+    if (pageId) {
+      this.notifyRendererNavigation(pageId, result.url, result.title)
+    }
+    return result
+  }
+
+  async browserFill(
+    params: {
+      element: string
+      value: string
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserFillResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().fill(
+      params.element,
+      params.value,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserType(
+    params: { input: string } & BrowserCommandTargetParams
+  ): Promise<BrowserTypeResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().type(
+      params.input,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserSelect(
+    params: {
+      element: string
+      value: string
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserSelectResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().select(
+      params.element,
+      params.value,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserScroll(
+    params: { direction: 'up' | 'down'; amount?: number } & BrowserCommandTargetParams
+  ): Promise<BrowserScrollResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().scroll(
+      params.direction,
+      params.amount,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserBack(params: BrowserCommandTargetParams): Promise<BrowserBackResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    const bridge = this.requireAgentBrowserBridge()
+    const result = await bridge.back(target.worktreeId, target.browserPageId)
+    const pageId = bridge.getActivePageId(target.worktreeId, target.browserPageId)
+    if (pageId) {
+      this.notifyRendererNavigation(pageId, result.url, result.title)
+    }
+    return result
+  }
+
+  async browserReload(params: BrowserCommandTargetParams): Promise<BrowserReloadResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    const bridge = this.requireAgentBrowserBridge()
+    const result = await bridge.reload(target.worktreeId, target.browserPageId)
+    const pageId = bridge.getActivePageId(target.worktreeId, target.browserPageId)
+    if (pageId) {
+      this.notifyRendererNavigation(pageId, result.url, result.title)
+    }
+    return result
+  }
+
+  async browserScreenshot(
+    params: {
+      format?: 'png' | 'jpeg'
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserScreenshotResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().screenshot(
+      params.format,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserEval(
+    params: { expression: string } & BrowserCommandTargetParams
+  ): Promise<BrowserEvalResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().evaluate(
+      params.expression,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserTabList(params: { worktree?: string }): Promise<BrowserTabListResult> {
+    const worktreeId = await this.resolveBrowserWorktreeId(params.worktree)
+    return this.requireAgentBrowserBridge().tabList(worktreeId)
+  }
+
+  async browserTabSwitch(
+    params: {
+      index?: number
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserTabSwitchResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().tabSwitch(
+      params.index,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserHover(
+    params: { element: string } & BrowserCommandTargetParams
+  ): Promise<BrowserHoverResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().hover(
+      params.element,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserDrag(
+    params: {
+      from: string
+      to: string
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserDragResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().drag(
+      params.from,
+      params.to,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserUpload(
+    params: { element: string; files: string[] } & BrowserCommandTargetParams
+  ): Promise<BrowserUploadResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().upload(
+      params.element,
+      params.files,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserWait(
+    params: {
+      selector?: string
+      timeout?: number
+      text?: string
+      url?: string
+      load?: string
+      fn?: string
+      state?: string
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserWaitResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    const { worktree: _, page: __, ...options } = params
+    return this.requireAgentBrowserBridge().wait(options, target.worktreeId, target.browserPageId)
+  }
+
+  async browserCheck(
+    params: { element: string; checked: boolean } & BrowserCommandTargetParams
+  ): Promise<BrowserCheckResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().check(
+      params.element,
+      params.checked,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserFocus(
+    params: { element: string } & BrowserCommandTargetParams
+  ): Promise<BrowserFocusResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().focus(
+      params.element,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserClear(
+    params: { element: string } & BrowserCommandTargetParams
+  ): Promise<BrowserClearResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().clear(
+      params.element,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserSelectAll(
+    params: { element: string } & BrowserCommandTargetParams
+  ): Promise<BrowserSelectAllResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().selectAll(
+      params.element,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserKeypress(
+    params: { key: string } & BrowserCommandTargetParams
+  ): Promise<BrowserKeypressResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().keypress(
+      params.key,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserPdf(params: BrowserCommandTargetParams): Promise<BrowserPdfResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().pdf(target.worktreeId, target.browserPageId)
+  }
+
+  async browserFullScreenshot(
+    params: {
+      format?: 'png' | 'jpeg'
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserScreenshotResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().fullPageScreenshot(
+      params.format,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Cookie management ──
+
+  async browserCookieGet(
+    params: { url?: string } & BrowserCommandTargetParams
+  ): Promise<BrowserCookieGetResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().cookieGet(
+      params.url,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserCookieSet(
+    params: {
+      name: string
+      value: string
+      domain?: string
+      path?: string
+      secure?: boolean
+      httpOnly?: boolean
+      sameSite?: string
+      expires?: number
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserCookieSetResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().cookieSet(
+      params,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserCookieDelete(
+    params: {
+      name: string
+      domain?: string
+      url?: string
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserCookieDeleteResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().cookieDelete(
+      params.name,
+      params.domain,
+      params.url,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Viewport ──
+
+  async browserSetViewport(
+    params: {
+      width: number
+      height: number
+      deviceScaleFactor?: number
+      mobile?: boolean
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserViewportResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().setViewport(
+      params.width,
+      params.height,
+      params.deviceScaleFactor,
+      params.mobile,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Geolocation ──
+
+  async browserSetGeolocation(
+    params: {
+      latitude: number
+      longitude: number
+      accuracy?: number
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserGeolocationResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().setGeolocation(
+      params.latitude,
+      params.longitude,
+      params.accuracy,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Request interception ──
+
+  async browserInterceptEnable(
+    params: {
+      patterns?: string[]
+    } & BrowserCommandTargetParams
+  ): Promise<BrowserInterceptEnableResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().interceptEnable(
+      params.patterns,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserInterceptDisable(
+    params: BrowserCommandTargetParams
+  ): Promise<BrowserInterceptDisableResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().interceptDisable(
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserInterceptList(params: BrowserCommandTargetParams): Promise<{ requests: unknown[] }> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().interceptList(target.worktreeId, target.browserPageId)
+  }
+
+  // ── Console/network capture ──
+
+  async browserCaptureStart(
+    params: BrowserCommandTargetParams
+  ): Promise<BrowserCaptureStartResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().captureStart(target.worktreeId, target.browserPageId)
+  }
+
+  async browserCaptureStop(params: BrowserCommandTargetParams): Promise<BrowserCaptureStopResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().captureStop(target.worktreeId, target.browserPageId)
+  }
+
+  async browserConsoleLog(
+    params: { limit?: number } & BrowserCommandTargetParams
+  ): Promise<BrowserConsoleResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().consoleLog(
+      params.limit,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserNetworkLog(
+    params: { limit?: number } & BrowserCommandTargetParams
+  ): Promise<BrowserNetworkLogResult> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().networkLog(
+      params.limit,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Additional core commands ──
+
+  async browserDblclick(
+    params: { element: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().dblclick(
+      params.element,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserForward(params: BrowserCommandTargetParams): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().forward(target.worktreeId, target.browserPageId)
+  }
+
+  async browserScrollIntoView(
+    params: { element: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().scrollIntoView(
+      params.element,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserGet(
+    params: {
+      what: string
+      selector?: string
+    } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().get(
+      params.what,
+      params.selector,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserIs(
+    params: { what: string; selector: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().is(
+      params.what,
+      params.selector,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Keyboard insert text ──
+
+  async browserKeyboardInsertText(
+    params: { text: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().keyboardInsertText(
+      params.text,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Mouse commands ──
+
+  async browserMouseMove(
+    params: { x: number; y: number } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().mouseMove(
+      params.x,
+      params.y,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserMouseDown(
+    params: { button?: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().mouseDown(
+      params.button,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserMouseUp(params: { button?: string } & BrowserCommandTargetParams): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().mouseUp(
+      params.button,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserMouseWheel(
+    params: {
+      dy: number
+      dx?: number
+    } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().mouseWheel(
+      params.dy,
+      params.dx,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Find (semantic locators) ──
+
+  async browserFind(
+    params: {
+      locator: string
+      value: string
+      action: string
+      text?: string
+    } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().find(
+      params.locator,
+      params.value,
+      params.action,
+      params.text,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Set commands ──
+
+  async browserSetDevice(params: { name: string } & BrowserCommandTargetParams): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().setDevice(
+      params.name,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserSetOffline(
+    params: { state?: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().setOffline(
+      params.state,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserSetHeaders(
+    params: { headers: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().setHeaders(
+      params.headers,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserSetCredentials(
+    params: {
+      user: string
+      pass: string
+    } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().setCredentials(
+      params.user,
+      params.pass,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserSetMedia(
+    params: {
+      colorScheme?: string
+      reducedMotion?: string
+    } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().setMedia(
+      params.colorScheme,
+      params.reducedMotion,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Clipboard commands ──
+
+  async browserClipboardRead(params: BrowserCommandTargetParams): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().clipboardRead(target.worktreeId, target.browserPageId)
+  }
+
+  async browserClipboardWrite(
+    params: { text: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().clipboardWrite(
+      params.text,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Dialog commands ──
+
+  async browserDialogAccept(
+    params: { text?: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().dialogAccept(
+      params.text,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserDialogDismiss(params: BrowserCommandTargetParams): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().dialogDismiss(target.worktreeId, target.browserPageId)
+  }
+
+  // ── Storage commands ──
+
+  async browserStorageLocalGet(
+    params: { key: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().storageLocalGet(
+      params.key,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserStorageLocalSet(
+    params: {
+      key: string
+      value: string
+    } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().storageLocalSet(
+      params.key,
+      params.value,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserStorageLocalClear(params: BrowserCommandTargetParams): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().storageLocalClear(
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserStorageSessionGet(
+    params: { key: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().storageSessionGet(
+      params.key,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserStorageSessionSet(
+    params: {
+      key: string
+      value: string
+    } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().storageSessionSet(
+      params.key,
+      params.value,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserStorageSessionClear(params: BrowserCommandTargetParams): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().storageSessionClear(
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Download command ──
+
+  async browserDownload(
+    params: {
+      selector: string
+      path: string
+    } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().download(
+      params.selector,
+      params.path,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── Highlight command ──
+
+  async browserHighlight(
+    params: { selector: string } & BrowserCommandTargetParams
+  ): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().highlight(
+      params.selector,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  // ── New: exec passthrough + tab lifecycle ──
+
+  async browserExec(params: { command: string } & BrowserCommandTargetParams): Promise<unknown> {
+    const target = await this.resolveBrowserCommandTarget(params)
+    return this.requireAgentBrowserBridge().exec(
+      params.command,
+      target.worktreeId,
+      target.browserPageId
+    )
+  }
+
+  async browserTabCreate(params: {
+    url?: string
+    worktree?: string
+  }): Promise<{ browserPageId: string }> {
+    const win = this.getAuthoritativeWindow()
+    const requestId = randomUUID()
+    const url = params.url ?? 'about:blank'
+
+    // Why: the renderer's Zustand store keys browser tabs by worktreeId in
+    // "repoId::path" format. The CLI sends a selector (e.g. "path:/Users/...").
+    // Resolve it here so the renderer receives the store-compatible ID.
+    const worktreeId = params.worktree
+      ? (await this.resolveWorktreeSelector(params.worktree)).id
+      : undefined
+
+    // Why: browser webviews only mount when their worktree is active in the UI.
+    // Switch to it before creating the tab so the webview attaches immediately.
+    if (worktreeId) {
+      await this.ensureBrowserWorktreeActive(worktreeId)
+    }
+
+    // Why: tab creation is a renderer-side Zustand store operation. The main process
+    // sends a request, the renderer creates the tab and replies with the workspace ID
+    // (which is the browserPageId used by registerGuest and the bridge).
+    const browserPageId = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        ipcMain.removeListener('browser:tabCreateReply', handler)
+        reject(new Error('Tab creation timed out'))
+      }, 10_000)
+
+      const handler = (
+        _event: Electron.IpcMainEvent,
+        reply: { requestId: string; browserPageId?: string; error?: string }
+      ): void => {
+        if (reply.requestId !== requestId) {
+          return
+        }
+        clearTimeout(timer)
+        ipcMain.removeListener('browser:tabCreateReply', handler)
+        if (reply.error) {
+          reject(new Error(reply.error))
+        } else {
+          resolve(reply.browserPageId!)
+        }
+      }
+      ipcMain.on('browser:tabCreateReply', handler)
+      win.webContents.send('browser:requestTabCreate', { requestId, url, worktreeId })
+    })
+
+    // Why: the renderer creates the Zustand tab immediately, but the webview must
+    // mount and fire dom-ready before registerGuest runs. Waiting here ensures the
+    // tab is operable by subsequent CLI commands (snapshot, click, etc.).
+    // If registration doesn't complete within timeout, return the ID anyway — the
+    // tab exists in the UI but may not be ready for automation commands yet.
+    try {
+      await waitForTabRegistration(browserPageId)
+    } catch {
+      // Tab was created in the renderer but the webview hasn't finished mounting.
+      // Return success since the tab exists; subsequent commands will fail with a
+      // clear "tab not available" error if the webview never loads.
+    }
+
+    // Why: newly created tabs should be auto-activated so subsequent commands
+    // (snapshot, click, goto) target the new tab without requiring an explicit
+    // tab switch. Without this, the bridge's active tab still points at the
+    // previously active tab and the new tab shows active: false in tab list.
+    const bridge = this.requireAgentBrowserBridge()
+    const wcId = bridge.getRegisteredTabs(worktreeId).get(browserPageId)
+    if (wcId != null) {
+      bridge.setActiveTab(wcId, worktreeId)
+    }
+
+    // Why: the renderer sets webview.src=url on mount, but agent-browser connects
+    // via CDP after the webview loads about:blank. Without an explicit goto, the
+    // page stays blank from agent-browser's perspective. Navigate via the bridge
+    // so agent-browser's CDP session tracks the correct page state.
+    if (url && url !== 'about:blank') {
+      try {
+        const result = await bridge.goto(url, worktreeId, browserPageId)
+        this.notifyRendererNavigation(browserPageId, result.url, result.title)
+      } catch {
+        // Tab exists but navigation failed — caller can retry with explicit goto
+      }
+    }
+
+    return { browserPageId }
+  }
+
+  async browserTabClose(params: {
+    index?: number
+    page?: string
+    worktree?: string
+  }): Promise<{ closed: boolean }> {
+    const bridge = this.requireAgentBrowserBridge()
+    const worktreeId = await this.resolveBrowserWorktreeId(params.worktree)
+
+    let tabId: string | null = null
+    if (typeof params.page === 'string' && params.page.length > 0) {
+      if (!bridge.getRegisteredTabs(worktreeId).has(params.page)) {
+        const scope = worktreeId ? ' in this worktree' : ''
+        throw new BrowserError(
+          'browser_tab_not_found',
+          `Browser page ${params.page} was not found${scope}`
+        )
+      }
+      tabId = params.page
+    } else if (params.index !== undefined) {
+      const tabs = bridge.getRegisteredTabs(worktreeId)
+      const entries = [...tabs.entries()]
+      if (params.index < 0 || params.index >= entries.length) {
+        throw new Error(`Tab index ${params.index} out of range (0-${entries.length - 1})`)
+      }
+      tabId = entries[params.index][0]
+    } else {
+      // Why: try the bridge first (registered tabs with webviews), then fall back
+      // to asking the renderer to close its active browser tab (handles cases where
+      // the webview hasn't mounted yet, e.g. tab was just created).
+      const tabs = bridge.getRegisteredTabs(worktreeId)
+      const entries = [...tabs.entries()]
+      const activeEntry = entries.find(([, wcId]) => wcId === bridge.getActiveWebContentsId())
+      if (activeEntry) {
+        tabId = activeEntry[0]
+      }
+    }
+
+    const win = this.getAuthoritativeWindow()
+    const requestId = randomUUID()
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        ipcMain.removeListener('browser:tabCloseReply', handler)
+        reject(new Error('Tab close timed out'))
+      }, 10_000)
+
+      const handler = (
+        _event: Electron.IpcMainEvent,
+        reply: { requestId: string; error?: string }
+      ): void => {
+        if (reply.requestId !== requestId) {
+          return
+        }
+        clearTimeout(timer)
+        ipcMain.removeListener('browser:tabCloseReply', handler)
+        if (reply.error) {
+          reject(new Error(reply.error))
+        } else {
+          resolve()
+        }
+      }
+      ipcMain.on('browser:tabCloseReply', handler)
+      // Why: when main cannot resolve a concrete tab id itself (for example if a
+      // browser workspace exists in the renderer before its guest mounts), the
+      // renderer still needs the intended worktree scope. Otherwise it falls
+      // back to the globally active browser tab and can close a tab in the
+      // wrong worktree.
+      win.webContents.send('browser:requestTabClose', { requestId, tabId, worktreeId })
+    })
+
+    return { closed: true }
+  }
+
+  private getAuthoritativeWindow(): BrowserWindow {
+    if (this.authoritativeWindowId === null) {
+      throw new Error('No renderer window available')
+    }
+    const win = BrowserWindow.fromId(this.authoritativeWindowId)
+    if (!win || win.isDestroyed()) {
+      throw new Error('No renderer window available')
+    }
+    return win
   }
 }
 
@@ -1139,18 +3090,21 @@ function appendToTailBuffer(
   lines: string[]
   partialLine: string
   truncated: boolean
+  newCompleteLines: number
 } {
   const normalizedChunk = normalizeTerminalChunk(chunk)
   if (normalizedChunk.length === 0) {
     return {
       lines: previousLines,
       partialLine: previousPartialLine,
-      truncated: false
+      truncated: false,
+      newCompleteLines: 0
     }
   }
 
   const pieces = `${previousPartialLine}${normalizedChunk}`.split('\n')
   const nextPartialLine = (pieces.pop() ?? '').replace(/[ \t]+$/g, '')
+  const newCompleteLines = pieces.length
   const nextLines = [...previousLines, ...pieces.map((line) => line.replace(/[ \t]+$/g, ''))]
   let truncated = false
 
@@ -1168,7 +3122,8 @@ function appendToTailBuffer(
   return {
     lines: nextLines,
     partialLine: nextPartialLine.slice(-MAX_TAIL_CHARS),
-    truncated
+    truncated,
+    newCompleteLines
   }
 }
 
@@ -1204,10 +3159,23 @@ function buildSendPayload(action: {
   return payload.length > 0 ? payload : null
 }
 
-function buildTerminalWaitResult(handle: string, leaf: RuntimeLeafRecord): RuntimeTerminalWait {
+// Why: tui-idle relies on recognized agent CLIs setting OSC titles. If the
+// terminal runs an unsupported CLI (or a plain shell), no title transition
+// will ever fire. A 5-minute ceiling prevents indefinite hangs while still
+// giving real agent tasks plenty of time to complete.
+const TUI_IDLE_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
+const TUI_IDLE_POLL_INTERVAL_MS = 2000
+const TUI_IDLE_QUIESCENCE_MS = 3000
+const MESSAGE_WAIT_DEFAULT_TIMEOUT_MS = 2 * 60 * 1000
+
+function buildTerminalWaitResult(
+  handle: string,
+  condition: RuntimeTerminalWaitCondition,
+  leaf: RuntimeLeafRecord
+): RuntimeTerminalWait {
   return {
     handle,
-    condition: 'exit',
+    condition,
     satisfied: true,
     status: getTerminalState(leaf),
     exitCode: leaf.lastExitCode

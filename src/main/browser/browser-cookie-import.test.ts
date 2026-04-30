@@ -11,14 +11,7 @@ vi.mock('electron', () => ({
   session: { fromPartition: sessionFromPartitionMock }
 }))
 
-import {
-  importCookiesFromFile,
-  detectInstalledBrowsers,
-  getBrowserCookiePathCandidates,
-  getBrowserLocalStateCandidates,
-  localStateUsesAppBoundEncryptionFromText,
-  localStateHasEncryptedKeyFromText
-} from './browser-cookie-import'
+import { importCookiesFromFile, detectInstalledBrowsers } from './browser-cookie-import'
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -26,15 +19,13 @@ import { tmpdir } from 'node:os'
 describe('importCookiesFromFile', () => {
   let tmpDir: string
   let cookiesSetMock: ReturnType<typeof vi.fn>
-  let cookiesFlushStoreMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'orca-cookie-test-'))
     cookiesSetMock = vi.fn().mockResolvedValue(undefined)
-    cookiesFlushStoreMock = vi.fn().mockResolvedValue(undefined)
     sessionFromPartitionMock.mockReset()
     sessionFromPartitionMock.mockReturnValue({
-      cookies: { set: cookiesSetMock, flushStore: cookiesFlushStoreMock }
+      cookies: { set: cookiesSetMock }
     })
   })
 
@@ -83,7 +74,6 @@ describe('importCookiesFromFile', () => {
     expect(result.summary.domains).toContain('example.com')
 
     expect(cookiesSetMock).toHaveBeenCalledTimes(2)
-    expect(cookiesFlushStoreMock).toHaveBeenCalledTimes(1)
     const firstCall = cookiesSetMock.mock.calls[0][0]
     expect(firstCall.name).toBe('_gh_sess')
     expect(firstCall.domain).toBe('.github.com')
@@ -216,29 +206,6 @@ describe('importCookiesFromFile', () => {
     }
     expect(result.summary.importedCookies).toBe(1)
     expect(result.summary.skippedCookies).toBe(1)
-    expect(cookiesFlushStoreMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('promotes imported session cookies to a persistent expiration date', async () => {
-    vi.useFakeTimers()
-    try {
-      vi.setSystemTime(new Date('2026-04-16T10:00:00Z'))
-
-      const filePath = writeCookieFile([{ domain: '.example.com', name: 'session', value: 'abc' }])
-
-      const result = await importCookiesFromFile(filePath, 'persist:test')
-      expect(result.ok).toBe(true)
-      if (!result.ok) {
-        return
-      }
-
-      expect(cookiesSetMock).toHaveBeenCalledTimes(1)
-      expect(cookiesSetMock.mock.calls[0][0].expirationDate).toBe(
-        Math.floor(new Date('2026-04-16T10:00:00Z').getTime() / 1000) + 400 * 24 * 60 * 60
-      )
-    } finally {
-      vi.useRealTimers()
-    }
   })
 })
 
@@ -250,73 +217,19 @@ describe('detectInstalledBrowsers', () => {
       expect(browser).toHaveProperty('family')
       expect(browser).toHaveProperty('label')
       expect(browser).toHaveProperty('cookiesPath')
-      expect(browser).toHaveProperty('available')
+      // keychainService/keychainAccount are only present for Chromium-based browsers
+      if (['chrome', 'edge', 'arc', 'chromium'].includes(browser.family)) {
+        expect(browser).toHaveProperty('keychainService')
+        expect(browser).toHaveProperty('keychainAccount')
+      }
     }
   })
 
   it('each detected browser has a valid family', () => {
     const browsers = detectInstalledBrowsers()
-    const validFamilies = ['chrome', 'edge', 'arc', 'chromium']
+    const validFamilies = ['chrome', 'edge', 'arc', 'chromium', 'firefox', 'safari']
     for (const browser of browsers) {
       expect(validFamilies).toContain(browser.family)
     }
-  })
-
-  it('uses the Windows Chromium Network/Cookies path candidates', () => {
-    expect(getBrowserCookiePathCandidates('chrome', 'win32')).toContain(
-      join(
-        process.env.LOCALAPPDATA ?? '',
-        'Google',
-        'Chrome',
-        'User Data',
-        'Default',
-        'Network',
-        'Cookies'
-      )
-    )
-    expect(getBrowserCookiePathCandidates('edge', 'win32')).toContain(
-      join(
-        process.env.LOCALAPPDATA ?? '',
-        'Microsoft',
-        'Edge',
-        'User Data',
-        'Default',
-        'Network',
-        'Cookies'
-      )
-    )
-  })
-
-  it('uses the Windows Local State candidates for Chromium browsers', () => {
-    expect(getBrowserLocalStateCandidates('chrome', 'win32')).toContain(
-      join(process.env.LOCALAPPDATA ?? '', 'Google', 'Chrome', 'User Data', 'Local State')
-    )
-    expect(getBrowserLocalStateCandidates('edge', 'win32')).toContain(
-      join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'Edge', 'User Data', 'Local State')
-    )
-  })
-
-  it('detects app-bound encryption from Local State', () => {
-    expect(
-      localStateUsesAppBoundEncryptionFromText(
-        JSON.stringify({ os_crypt: { app_bound_encrypted_key: 'abc' } })
-      )
-    ).toBe(true)
-    expect(
-      localStateUsesAppBoundEncryptionFromText(
-        JSON.stringify({ os_crypt: { encrypted_key: 'abc' } })
-      )
-    ).toBe(false)
-  })
-
-  it('detects the classic Windows encrypted_key from Local State', () => {
-    expect(
-      localStateHasEncryptedKeyFromText(JSON.stringify({ os_crypt: { encrypted_key: 'abc' } }))
-    ).toBe(true)
-    expect(
-      localStateHasEncryptedKeyFromText(
-        JSON.stringify({ os_crypt: { app_bound_encrypted_key: 'abc' } })
-      )
-    ).toBe(false)
   })
 })

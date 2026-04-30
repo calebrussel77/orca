@@ -3,14 +3,29 @@ renderer and Electron. Keeping the IPC surface co-located in one file makes secu
 review and type drift checks easier than scattering these bindings across modules. */
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import { preloadE2EConfig } from './e2e-config'
+import type { AppRuntimeFlags } from './api-types'
 import type { CliInstallStatus } from '../shared/cli-install-types'
+import type { AgentHookInstallStatus } from '../shared/agent-hook-types'
 import type {
+  BaseRefDefaultResult,
   FsChangedPayload,
+  GitHubAssignableUser,
+  GitHubCommentResult,
+  GhosttyImportPreview,
+  MemorySnapshot,
   NotificationDispatchResult,
-  OpenCodeStatusEvent
+  SearchResult
 } from '../shared/types'
 import type { RuntimeStatus, RuntimeSyncWindowGraph } from '../shared/runtime-types'
 import type { RateLimitState } from '../shared/rate-limit-types'
+import type {
+  SshConnectionState,
+  SshTarget,
+  PortForwardEntry,
+  DetectedPort
+} from '../shared/ssh-types'
+import type { AgentStatusState } from '../shared/agent-status-types'
 import {
   ORCA_EDITOR_SAVE_DIRTY_FILES_EVENT,
   type EditorSaveDirtyFilesDetail
@@ -23,6 +38,7 @@ import {
 type NativeDropResolution =
   | { target: 'editor' }
   | { target: 'terminal' }
+  | { target: 'composer' }
   | { target: 'file-explorer'; destinationDir: string }
   // Why: returned when the explorer marker was found but no destinationDir
   // could be resolved. The caller must suppress the drop entirely instead of
@@ -50,7 +66,7 @@ function resolveNativeFileDrop(event: DragEvent): NativeDropResolution | null {
     }
 
     const target = entry.dataset.nativeFileDropTarget
-    if (target === 'editor' || target === 'terminal') {
+    if (target === 'editor' || target === 'terminal' || target === 'composer') {
       return { target }
     }
     if (target === 'file-explorer') {
@@ -158,6 +174,22 @@ document.addEventListener(
 
 // Custom APIs for renderer
 const api = {
+  app: {
+    getRuntimeFlags: (): Promise<AppRuntimeFlags> => ipcRenderer.invoke('app:getRuntimeFlags'),
+    relaunch: (): Promise<void> => ipcRenderer.invoke('app:relaunch'),
+    // Why: on macOS this returns AppleCurrentKeyboardLayoutInputSourceID so
+    // the renderer's keyboard-layout probe can distinguish Polish Pro / US
+    // Extended / ABC Extended / IME Roman modes from plain US QWERTY (see
+    // src/renderer/src/lib/keyboard-layout/input-source-id.ts, issue #1205).
+    // Returns null on non-Darwin or when the defaults read fails.
+    getKeyboardInputSourceId: (): Promise<string | null> =>
+      ipcRenderer.invoke('app:getKeyboardInputSourceId')
+  },
+
+  wsl: {
+    isAvailable: (): Promise<boolean> => ipcRenderer.invoke('wsl:isAvailable')
+  },
+
   repos: {
     list: (): Promise<unknown[]> => ipcRenderer.invoke('repos:list'),
 
@@ -199,7 +231,7 @@ const api = {
     getGitUsername: (args: { repoId: string }): Promise<string> =>
       ipcRenderer.invoke('repos:getGitUsername', args),
 
-    getBaseRefDefault: (args: { repoId: string }): Promise<string> =>
+    getBaseRefDefault: (args: { repoId: string }): Promise<BaseRefDefaultResult> =>
       ipcRenderer.invoke('repos:getBaseRefDefault', args),
 
     searchBaseRefs: (args: { repoId: string; query: string; limit?: number }): Promise<string[]> =>
@@ -225,16 +257,21 @@ const api = {
       setupDecision?: 'inherit' | 'run' | 'skip'
     }): Promise<unknown> => ipcRenderer.invoke('worktrees:create', args),
 
-    remove: (args: { worktreeId: string; force?: boolean }): Promise<void> =>
+    resolvePrBase: (args: {
+      repoId: string
+      prNumber: number
+      headRefName?: string
+      isCrossRepository?: boolean
+    }): Promise<{ baseBranch: string } | { error: string }> =>
+      ipcRenderer.invoke('worktrees:resolvePrBase', args),
+
+    remove: (args: { worktreeId: string; force?: boolean; skipArchive?: boolean }): Promise<void> =>
       ipcRenderer.invoke('worktrees:remove', args),
 
     updateMeta: (args: {
       worktreeId: string
       updates: Record<string, unknown>
     }): Promise<unknown> => ipcRenderer.invoke('worktrees:updateMeta', args),
-
-    persistSidebarOrder: (args: { orderedIds: string[] }): Promise<void> =>
-      ipcRenderer.invoke('worktrees:persistSidebarOrder', args),
 
     persistSortOrder: (args: { orderedIds: string[] }): Promise<void> =>
       ipcRenderer.invoke('worktrees:persistSortOrder', args),
@@ -256,7 +293,19 @@ const api = {
       command?: string
       connectionId?: string | null
       worktreeId?: string
-    }): Promise<{ id: string }> => ipcRenderer.invoke('pty:spawn', opts),
+      sessionId?: string
+      shellOverride?: string
+    }): Promise<{
+      id: string
+      snapshot?: string
+      snapshotCols?: number
+      snapshotRows?: number
+      isReattach?: boolean
+      isAlternateScreen?: boolean
+      replay?: string
+      sessionExpired?: boolean
+      coldRestore?: { scrollback: string; cwd: string }
+    }> => ipcRenderer.invoke('pty:spawn', opts),
 
     write: (id: string, data: string): void => {
       ipcRenderer.send('pty:write', { id, data })
@@ -266,7 +315,18 @@ const api = {
       ipcRenderer.send('pty:resize', { id, cols, rows })
     },
 
+    signal: (id: string, signal: string): void => {
+      ipcRenderer.send('pty:signal', { id, signal })
+    },
+
+    ackColdRestore: (id: string): void => {
+      ipcRenderer.send('pty:ackColdRestore', { id })
+    },
+
     kill: (id: string): Promise<void> => ipcRenderer.invoke('pty:kill', { id }),
+
+    listSessions: (): Promise<{ id: string; cwd: string; title: string }[]> =>
+      ipcRenderer.invoke('pty:listSessions'),
 
     /** Check if a PTY's shell has child processes (e.g. a running command).
      *  Returns false for an idle shell prompt. */
@@ -277,6 +337,10 @@ const api = {
     getForegroundProcess: (id: string): Promise<string | null> =>
       ipcRenderer.invoke('pty:getForegroundProcess', { id }),
 
+    /** Resolve the live cwd of a PTY via `/proc` (Linux) or `lsof` (macOS).
+     *  Returns `''` when the id is unknown or the platform cannot resolve one. */
+    getCwd: (id: string): Promise<string> => ipcRenderer.invoke('pty:getCwd', { id }),
+
     onData: (callback: (data: { id: string; data: string }) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { id: string; data: string }) =>
         callback(data)
@@ -284,23 +348,44 @@ const api = {
       return () => ipcRenderer.removeListener('pty:data', listener)
     },
 
+    onReplay: (callback: (data: { id: string; data: string }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { id: string; data: string }) =>
+        callback(data)
+      ipcRenderer.on('pty:replay', listener)
+      return () => ipcRenderer.removeListener('pty:replay', listener)
+    },
+
     onExit: (callback: (data: { id: string; code: number }) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { id: string; code: number }) =>
         callback(data)
       ipcRenderer.on('pty:exit', listener)
       return () => ipcRenderer.removeListener('pty:exit', listener)
-    },
-
-    onOpenCodeStatus: (callback: (event: OpenCodeStatusEvent) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: OpenCodeStatusEvent) =>
-        callback(data)
-      ipcRenderer.on('pty:opencode-status', listener)
-      return () => ipcRenderer.removeListener('pty:opencode-status', listener)
     }
+  },
+
+  feedback: {
+    submit: (args: {
+      feedback: string
+      githubLogin: string | null
+      githubEmail: string | null
+    }): Promise<{ ok: true } | { ok: false; status: number | null; error: string }> =>
+      ipcRenderer.invoke('feedback:submit', args)
+  },
+
+  export: {
+    htmlToPdf: (args: {
+      html: string
+      title: string
+    }): Promise<
+      { success: true; filePath: string } | { success: false; cancelled?: boolean; error?: string }
+    > => ipcRenderer.invoke('export:html-to-pdf', args)
   },
 
   gh: {
     viewer: (): Promise<unknown> => ipcRenderer.invoke('gh:viewer'),
+
+    repoSlug: (args: { repoPath: string }): Promise<unknown> =>
+      ipcRenderer.invoke('gh:repoSlug', args),
 
     prForBranch: (args: { repoPath: string; branch: string }): Promise<unknown> =>
       ipcRenderer.invoke('gh:prForBranch', args),
@@ -308,8 +393,47 @@ const api = {
     issue: (args: { repoPath: string; number: number }): Promise<unknown> =>
       ipcRenderer.invoke('gh:issue', args),
 
+    workItem: (args: {
+      repoPath: string
+      number: number
+      type?: 'issue' | 'pr'
+    }): Promise<unknown> => ipcRenderer.invoke('gh:workItem', args),
+
+    workItemDetails: (args: {
+      repoPath: string
+      number: number
+      type?: 'issue' | 'pr'
+    }): Promise<unknown> => ipcRenderer.invoke('gh:workItemDetails', args),
+
+    prFileContents: (args: {
+      repoPath: string
+      prNumber: number
+      path: string
+      oldPath?: string
+      status: string
+      headSha: string
+      baseSha: string
+    }): Promise<unknown> => ipcRenderer.invoke('gh:prFileContents', args),
+
     listIssues: (args: { repoPath: string; limit?: number }): Promise<unknown[]> =>
       ipcRenderer.invoke('gh:listIssues', args),
+
+    createIssue: (args: {
+      repoPath: string
+      title: string
+      body: string
+    }): Promise<{ ok: true; number: number; url: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('gh:createIssue', args),
+
+    countWorkItems: (args: { repoPath: string; query?: string }): Promise<number> =>
+      ipcRenderer.invoke('gh:countWorkItems', args),
+
+    listWorkItems: (args: {
+      repoPath: string
+      limit?: number
+      query?: string
+      before?: string
+    }): Promise<unknown[]> => ipcRenderer.invoke('gh:listWorkItems', args),
 
     prChecks: (args: {
       repoPath: string
@@ -343,8 +467,117 @@ const api = {
     }): Promise<{ ok: true } | { ok: false; error: string }> =>
       ipcRenderer.invoke('gh:mergePR', args),
 
+    updateIssue: (args: {
+      repoPath: string
+      number: number
+      updates: unknown
+    }): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('gh:updateIssue', args),
+
+    addIssueComment: (args: {
+      repoPath: string
+      number: number
+      body: string
+    }): Promise<GitHubCommentResult> => ipcRenderer.invoke('gh:addIssueComment', args),
+
+    addPRReviewCommentReply: (args: {
+      repoPath: string
+      prNumber: number
+      commentId: number
+      body: string
+      threadId?: string
+      path?: string
+      line?: number
+    }): Promise<GitHubCommentResult> => ipcRenderer.invoke('gh:addPRReviewCommentReply', args),
+
+    addPRReviewComment: (args: {
+      repoPath: string
+      prNumber: number
+      commitId: string
+      path: string
+      line: number
+      startLine?: number
+      body: string
+    }): Promise<GitHubCommentResult> => ipcRenderer.invoke('gh:addPRReviewComment', args),
+
+    listLabels: (args: { repoPath: string }): Promise<string[]> =>
+      ipcRenderer.invoke('gh:listLabels', args),
+
+    listAssignableUsers: (args: { repoPath: string }): Promise<GitHubAssignableUser[]> =>
+      ipcRenderer.invoke('gh:listAssignableUsers', args),
+
     checkOrcaStarred: (): Promise<boolean | null> => ipcRenderer.invoke('gh:checkOrcaStarred'),
     starOrca: (): Promise<boolean> => ipcRenderer.invoke('gh:starOrca')
+  },
+
+  linear: {
+    connect: (args: {
+      apiKey: string
+    }): Promise<{ ok: true; viewer: unknown } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('linear:connect', args),
+
+    disconnect: (): Promise<void> => ipcRenderer.invoke('linear:disconnect'),
+
+    status: (): Promise<unknown> => ipcRenderer.invoke('linear:status'),
+
+    testConnection: (): Promise<{ ok: true; viewer: unknown } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('linear:testConnection'),
+
+    searchIssues: (args: { query: string; limit?: number }): Promise<unknown[]> =>
+      ipcRenderer.invoke('linear:searchIssues', args),
+
+    listIssues: (args?: {
+      filter?: 'assigned' | 'created' | 'all' | 'completed'
+      limit?: number
+    }): Promise<unknown[]> => ipcRenderer.invoke('linear:listIssues', args),
+
+    createIssue: (args: {
+      teamId: string
+      title: string
+      description?: string
+    }): Promise<
+      { ok: true; id: string; identifier: string; url: string } | { ok: false; error: string }
+    > => ipcRenderer.invoke('linear:createIssue', args),
+
+    getIssue: (args: { id: string }): Promise<unknown> =>
+      ipcRenderer.invoke('linear:getIssue', args),
+
+    updateIssue: (args: {
+      id: string
+      updates: unknown
+    }): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('linear:updateIssue', args),
+
+    addIssueComment: (args: {
+      issueId: string
+      body: string
+    }): Promise<{ ok: true; id: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('linear:addIssueComment', args),
+
+    issueComments: (args: { issueId: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('linear:issueComments', args),
+
+    listTeams: (): Promise<unknown[]> => ipcRenderer.invoke('linear:listTeams'),
+
+    teamStates: (args: { teamId: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('linear:teamStates', args),
+
+    teamLabels: (args: { teamId: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('linear:teamLabels', args),
+
+    teamMembers: (args: { teamId: string }): Promise<unknown[]> =>
+      ipcRenderer.invoke('linear:teamMembers', args)
+  },
+
+  starNag: {
+    onShow: (callback: () => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent): void => callback()
+      ipcRenderer.on('star-nag:show', listener)
+      return () => ipcRenderer.removeListener('star-nag:show', listener)
+    },
+    dismiss: (): Promise<void> => ipcRenderer.invoke('star-nag:dismiss'),
+    complete: (): Promise<void> => ipcRenderer.invoke('star-nag:complete'),
+    forceShow: (): Promise<void> => ipcRenderer.invoke('star-nag:forceShow')
   },
 
   settings: {
@@ -353,7 +586,10 @@ const api = {
     set: (args: Record<string, unknown>): Promise<unknown> =>
       ipcRenderer.invoke('settings:set', args),
 
-    listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:listFonts')
+    listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:listFonts'),
+
+    previewGhosttyImport: (): Promise<GhosttyImportPreview> =>
+      ipcRenderer.invoke('settings:previewGhosttyImport')
   },
 
   codexAccounts: {
@@ -367,10 +603,32 @@ const api = {
       ipcRenderer.invoke('codexAccounts:select', args)
   },
 
+  claudeAccounts: {
+    list: (): Promise<unknown> => ipcRenderer.invoke('claudeAccounts:list'),
+    add: (): Promise<unknown> => ipcRenderer.invoke('claudeAccounts:add'),
+    reauthenticate: (args: { accountId: string }): Promise<unknown> =>
+      ipcRenderer.invoke('claudeAccounts:reauthenticate', args),
+    remove: (args: { accountId: string }): Promise<unknown> =>
+      ipcRenderer.invoke('claudeAccounts:remove', args),
+    select: (args: { accountId: string | null }): Promise<unknown> =>
+      ipcRenderer.invoke('claudeAccounts:select', args)
+  },
+
   cli: {
     getInstallStatus: (): Promise<CliInstallStatus> => ipcRenderer.invoke('cli:getInstallStatus'),
     install: (): Promise<CliInstallStatus> => ipcRenderer.invoke('cli:install'),
     remove: (): Promise<CliInstallStatus> => ipcRenderer.invoke('cli:remove')
+  },
+
+  agentHooks: {
+    claudeStatus: (): Promise<AgentHookInstallStatus> =>
+      ipcRenderer.invoke('agentHooks:claudeStatus'),
+    codexStatus: (): Promise<AgentHookInstallStatus> =>
+      ipcRenderer.invoke('agentHooks:codexStatus'),
+    geminiStatus: (): Promise<AgentHookInstallStatus> =>
+      ipcRenderer.invoke('agentHooks:geminiStatus'),
+    cursorStatus: (): Promise<AgentHookInstallStatus> =>
+      ipcRenderer.invoke('agentHooks:cursorStatus')
   },
 
   preflight: {
@@ -379,13 +637,30 @@ const api = {
     }): Promise<{
       git: { installed: boolean }
       gh: { installed: boolean; authenticated: boolean }
-    }> => ipcRenderer.invoke('preflight:check', args)
+      linear: { connected: boolean }
+    }> => ipcRenderer.invoke('preflight:check', args),
+    detectAgents: (): Promise<string[]> => ipcRenderer.invoke('preflight:detectAgents'),
+    refreshAgents: (): Promise<{
+      agents: string[]
+      addedPathSegments: string[]
+      shellHydrationOk: boolean
+    }> => ipcRenderer.invoke('preflight:refreshAgents'),
+    detectRemoteAgents: (args: { connectionId: string }): Promise<string[]> =>
+      ipcRenderer.invoke('preflight:detectRemoteAgents', args)
   },
 
   notifications: {
     dispatch: (args: Record<string, unknown>): Promise<NotificationDispatchResult> =>
       ipcRenderer.invoke('notifications:dispatch', args),
     openSystemSettings: (): Promise<void> => ipcRenderer.invoke('notifications:openSystemSettings')
+  },
+
+  developerPermissions: {
+    getStatus: (): Promise<unknown> => ipcRenderer.invoke('developerPermissions:getStatus'),
+    request: (args: { id: string }): Promise<unknown> =>
+      ipcRenderer.invoke('developerPermissions:request', args),
+    openSettings: (args: { id: string }): Promise<void> =>
+      ipcRenderer.invoke('developerPermissions:openSettings', args)
   },
 
   shell: {
@@ -398,6 +673,8 @@ const api = {
     openFileUri: (uri: string): Promise<void> => ipcRenderer.invoke('shell:openFileUri', uri),
 
     pathExists: (path: string): Promise<boolean> => ipcRenderer.invoke('shell:pathExists', path),
+
+    pickAttachment: (): Promise<string | null> => ipcRenderer.invoke('shell:pickAttachment'),
 
     pickImage: (): Promise<string | null> => ipcRenderer.invoke('shell:pickImage'),
 
@@ -412,6 +689,7 @@ const api = {
     registerGuest: (args: {
       browserPageId: string
       workspaceId: string
+      worktreeId: string
       webContentsId: number
     }): Promise<void> => ipcRenderer.invoke('browser:registerGuest', args),
 
@@ -534,6 +812,8 @@ const api = {
         browserPageId: string
         x: number
         y: number
+        screenX: number
+        screenY: number
         pageUrl: string
         linkUrl: string | null
         canGoBack: boolean
@@ -546,6 +826,8 @@ const api = {
           browserPageId: string
           x: number
           y: number
+          screenX: number
+          screenY: number
           pageUrl: string
           linkUrl: string | null
           canGoBack: boolean
@@ -563,6 +845,24 @@ const api = {
         callback(data)
       ipcRenderer.on('browser:context-menu-dismissed', listener)
       return () => ipcRenderer.removeListener('browser:context-menu-dismissed', listener)
+    },
+
+    onNavigationUpdate: (
+      callback: (event: { browserPageId: string; url: string; title: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { browserPageId: string; url: string; title: string }
+      ) => callback(data)
+      ipcRenderer.on('browser:navigation-update', listener)
+      return () => ipcRenderer.removeListener('browser:navigation-update', listener)
+    },
+
+    onActivateView: (callback: (data: { worktreeId: string }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { worktreeId: string }) =>
+        callback(data)
+      ipcRenderer.on('browser:activateView', listener)
+      return () => ipcRenderer.removeListener('browser:activateView', listener)
     },
 
     onOpenLinkInOrcaTab: (
@@ -656,7 +956,10 @@ const api = {
     > => ipcRenderer.invoke('browser:session:importFromBrowser', args),
 
     sessionClearDefaultCookies: (): Promise<boolean> =>
-      ipcRenderer.invoke('browser:session:clearDefaultCookies')
+      ipcRenderer.invoke('browser:session:clearDefaultCookies'),
+
+    notifyActiveTabChanged: (args: { browserPageId: string }): Promise<boolean> =>
+      ipcRenderer.invoke('browser:activeTabChanged', args)
   },
 
   hooks: {
@@ -703,8 +1006,8 @@ const api = {
   updater: {
     getStatus: (): Promise<unknown> => ipcRenderer.invoke('updater:getStatus'),
     getVersion: (): Promise<string> => ipcRenderer.invoke('updater:getVersion'),
-    getReleaseInfo: (): Promise<unknown> => ipcRenderer.invoke('updater:getReleaseInfo'),
-    check: (): Promise<void> => ipcRenderer.invoke('updater:check'),
+    check: (options?: { includePrerelease?: boolean }): Promise<void> =>
+      ipcRenderer.invoke('updater:check', options),
     download: (): Promise<void> => ipcRenderer.invoke('updater:download'),
     dismissNudge: (): Promise<void> => ipcRenderer.invoke('updater:dismissNudge'),
     quitAndInstall: async (): Promise<void> => {
@@ -796,8 +1099,11 @@ const api = {
       ipcRenderer.invoke('fs:createDir', args),
     rename: (args: { oldPath: string; newPath: string; connectionId?: string }): Promise<void> =>
       ipcRenderer.invoke('fs:rename', args),
-    deletePath: (args: { targetPath: string; connectionId?: string }): Promise<void> =>
-      ipcRenderer.invoke('fs:deletePath', args),
+    deletePath: (args: {
+      targetPath: string
+      connectionId?: string
+      recursive?: boolean
+    }): Promise<void> => ipcRenderer.invoke('fs:deletePath', args),
     authorizeExternalPath: (args: { targetPath: string }): Promise<void> =>
       ipcRenderer.invoke('fs:authorizeExternalPath', args),
     stat: (args: {
@@ -805,8 +1111,11 @@ const api = {
       connectionId?: string
     }): Promise<{ size: number; isDirectory: boolean; mtime: number }> =>
       ipcRenderer.invoke('fs:stat', args),
-    listFiles: (args: { rootPath: string; connectionId?: string }): Promise<string[]> =>
-      ipcRenderer.invoke('fs:listFiles', args),
+    listFiles: (args: {
+      rootPath: string
+      connectionId?: string
+      excludePaths?: string[]
+    }): Promise<string[]> => ipcRenderer.invoke('fs:listFiles', args),
     search: (args: {
       query: string
       rootPath: string
@@ -817,15 +1126,7 @@ const api = {
       excludePattern?: string
       maxResults?: number
       connectionId?: string
-    }): Promise<{
-      files: {
-        filePath: string
-        relativePath: string
-        matches: { line: number; column: number; matchLength: number; lineContent: string }[]
-      }[]
-      totalMatches: number
-      truncated: boolean
-    }> => ipcRenderer.invoke('fs:search', args),
+    }): Promise<SearchResult> => ipcRenderer.invoke('fs:search', args),
     importExternalPaths: (args: {
       sourcePaths: string[]
       destDir: string
@@ -946,15 +1247,63 @@ const api = {
       ipcRenderer.on('ui:openQuickOpen', listener)
       return () => ipcRenderer.removeListener('ui:openQuickOpen', listener)
     },
+    onOpenNewWorkspace: (callback: (tab: 'quick' | 'create-from') => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, tab: 'quick' | 'create-from') => {
+        // Why: older main-process builds may send this event without a payload
+        // — default to 'quick' so the preload contract stays forward-compatible
+        // during a partial rollout where only one side has shipped the tab arg.
+        callback(tab ?? 'quick')
+      }
+      ipcRenderer.on('ui:openNewWorkspace', listener)
+      return () => ipcRenderer.removeListener('ui:openNewWorkspace', listener)
+    },
     onJumpToWorktreeIndex: (callback: (index: number) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, index: number) => callback(index)
       ipcRenderer.on('ui:jumpToWorktreeIndex', listener)
       return () => ipcRenderer.removeListener('ui:jumpToWorktreeIndex', listener)
     },
+    onWorktreeHistoryNavigate: (
+      callback: (direction: 'back' | 'forward') => void
+    ): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, direction: 'back' | 'forward') =>
+        callback(direction)
+      ipcRenderer.on('ui:worktreeHistoryNavigate', listener)
+      return () => ipcRenderer.removeListener('ui:worktreeHistoryNavigate', listener)
+    },
     onNewBrowserTab: (callback: () => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
       ipcRenderer.on('ui:newBrowserTab', listener)
       return () => ipcRenderer.removeListener('ui:newBrowserTab', listener)
+    },
+    onRequestTabCreate: (
+      callback: (data: { requestId: string; url: string; worktreeId?: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { requestId: string; url: string; worktreeId?: string }
+      ) => callback(data)
+      ipcRenderer.on('browser:requestTabCreate', listener)
+      return () => ipcRenderer.removeListener('browser:requestTabCreate', listener)
+    },
+    replyTabCreate: (reply: {
+      requestId: string
+      browserPageId?: string
+      error?: string
+    }): void => {
+      ipcRenderer.send('browser:tabCreateReply', reply)
+    },
+    onRequestTabClose: (
+      callback: (data: { requestId: string; tabId: string | null; worktreeId?: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { requestId: string; tabId: string | null; worktreeId?: string }
+      ) => callback(data)
+      ipcRenderer.on('browser:requestTabClose', listener)
+      return () => ipcRenderer.removeListener('browser:requestTabClose', listener)
+    },
+    replyTabClose: (reply: { requestId: string; error?: string }): void => {
+      ipcRenderer.send('browser:tabCloseReply', reply)
     },
     onNewTerminalTab: (callback: () => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
@@ -965,6 +1314,11 @@ const api = {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
       ipcRenderer.on('ui:focusBrowserAddressBar', listener)
       return () => ipcRenderer.removeListener('ui:focusBrowserAddressBar', listener)
+    },
+    onFindInBrowserPage: (callback: () => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent) => callback()
+      ipcRenderer.on('ui:findInBrowserPage', listener)
+      return () => ipcRenderer.removeListener('ui:findInBrowserPage', listener)
     },
     onReloadBrowserPage: (callback: () => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
@@ -986,10 +1340,20 @@ const api = {
       ipcRenderer.on('ui:switchTab', listener)
       return () => ipcRenderer.removeListener('ui:switchTab', listener)
     },
+    onSwitchTerminalTab: (callback: (direction: 1 | -1) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, direction: 1 | -1) => callback(direction)
+      ipcRenderer.on('ui:switchTerminalTab', listener)
+      return () => ipcRenderer.removeListener('ui:switchTerminalTab', listener)
+    },
     onToggleStatusBar: (callback: () => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent) => callback()
       ipcRenderer.on('ui:toggleStatusBar', listener)
       return () => ipcRenderer.removeListener('ui:toggleStatusBar', listener)
+    },
+    onExportPdfRequested: (callback: () => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent) => callback()
+      ipcRenderer.on('export:requestPdf', listener)
+      return () => ipcRenderer.removeListener('export:requestPdf', listener)
     },
     onActivateWorktree: (
       callback: (data: {
@@ -1009,6 +1373,89 @@ const api = {
       ipcRenderer.on('ui:activateWorktree', listener)
       return () => ipcRenderer.removeListener('ui:activateWorktree', listener)
     },
+    onCreateTerminal: (
+      callback: (data: { worktreeId: string; command?: string; title?: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { worktreeId: string; command?: string; title?: string }
+      ) => callback(data)
+      ipcRenderer.on('ui:createTerminal', listener)
+      return () => ipcRenderer.removeListener('ui:createTerminal', listener)
+    },
+    onRequestTerminalCreate: (
+      callback: (data: {
+        requestId: string
+        worktreeId?: string
+        command?: string
+        title?: string
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { requestId: string; worktreeId?: string; command?: string; title?: string }
+      ) => callback(data)
+      ipcRenderer.on('terminal:requestTabCreate', listener)
+      return () => ipcRenderer.removeListener('terminal:requestTabCreate', listener)
+    },
+    replyTerminalCreate: (reply: {
+      requestId: string
+      tabId?: string
+      title?: string
+      error?: string
+    }): void => {
+      ipcRenderer.send('terminal:tabCreateReply', reply)
+    },
+    onSplitTerminal: (
+      callback: (data: {
+        tabId: string
+        paneRuntimeId: number
+        direction: 'horizontal' | 'vertical'
+        command?: string
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: {
+          tabId: string
+          paneRuntimeId: number
+          direction: 'horizontal' | 'vertical'
+          command?: string
+        }
+      ) => callback(data)
+      ipcRenderer.on('ui:splitTerminal', listener)
+      return () => ipcRenderer.removeListener('ui:splitTerminal', listener)
+    },
+    onRenameTerminal: (
+      callback: (data: { tabId: string; title: string | null }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { tabId: string; title: string | null }
+      ) => callback(data)
+      ipcRenderer.on('ui:renameTerminal', listener)
+      return () => ipcRenderer.removeListener('ui:renameTerminal', listener)
+    },
+    onFocusTerminal: (
+      callback: (data: { tabId: string; worktreeId: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { tabId: string; worktreeId: string }
+      ) => callback(data)
+      ipcRenderer.on('ui:focusTerminal', listener)
+      return () => ipcRenderer.removeListener('ui:focusTerminal', listener)
+    },
+    onCloseTerminal: (
+      callback: (data: { tabId: string; paneRuntimeId?: number }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { tabId: string; paneRuntimeId?: number }
+      ) => callback(data)
+      ipcRenderer.on('ui:closeTerminal', listener)
+      return () => ipcRenderer.removeListener('ui:closeTerminal', listener)
+    },
     onTerminalZoom: (callback: (direction: 'in' | 'out' | 'reset') => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, direction: 'in' | 'out' | 'reset') =>
         callback(direction)
@@ -1027,6 +1474,7 @@ const api = {
         data:
           | { paths: string[]; target: 'editor' }
           | { paths: string[]; target: 'terminal' }
+          | { paths: string[]; target: 'composer' }
           | { paths: string[]; target: 'file-explorer'; destinationDir: string }
       ) => void
     ): (() => void) => {
@@ -1035,6 +1483,7 @@ const api = {
         data:
           | { paths: string[]; target: 'editor' }
           | { paths: string[]; target: 'terminal' }
+          | { paths: string[]; target: 'composer' }
           | { paths: string[]; target: 'file-explorer'; destinationDir: string }
       ) => callback(data)
       ipcRenderer.on('terminal:file-drop', listener)
@@ -1044,32 +1493,18 @@ const api = {
     setZoomLevel: (level: number): void => webFrame.setZoomLevel(level),
     syncTrafficLights: (zoomFactor: number): void =>
       ipcRenderer.send('ui:sync-traffic-lights', zoomFactor),
-    minimizeWindow: (): void => {
-      ipcRenderer.send('window:minimize')
+    // Why: one-way send (not invoke) so the main-process before-input-event
+    // handler can read the mirrored flag synchronously without a round-trip.
+    // The carve-out in createMainWindow.ts uses this to skip Cmd+B interception
+    // while the markdown editor owns focus, letting TipTap apply bold instead.
+    setMarkdownEditorFocused: (focused: boolean): void => {
+      ipcRenderer.send('ui:setMarkdownEditorFocused', focused)
     },
-    toggleMaximizeWindow: (): void => {
-      ipcRenderer.send('window:toggle-maximize')
-    },
-    closeWindow: (): void => {
-      ipcRenderer.send('window:close')
-    },
-    getWindowState: (): Promise<{ isFullScreen: boolean; isMaximized: boolean }> =>
-      ipcRenderer.invoke('window:get-state'),
     onFullscreenChanged: (callback: (isFullScreen: boolean) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, isFullScreen: boolean) =>
         callback(isFullScreen)
       ipcRenderer.on('window:fullscreen-changed', listener)
       return () => ipcRenderer.removeListener('window:fullscreen-changed', listener)
-    },
-    onWindowStateChanged: (
-      callback: (state: { isFullScreen: boolean; isMaximized: boolean }) => void
-    ): (() => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        state: { isFullScreen: boolean; isMaximized: boolean }
-      ) => callback(state)
-      ipcRenderer.on('window:state-changed', listener)
-      return () => ipcRenderer.removeListener('window:state-changed', listener)
     },
     /** Fired by the main process when the user tries to close the window
      *  (X button, Cmd+Q, etc.). Renderer should show a confirmation dialog
@@ -1095,6 +1530,10 @@ const api = {
       totalAgentTimeMs: number
       firstEventAt: number | null
     }> => ipcRenderer.invoke('stats:summary')
+  },
+
+  memory: {
+    getSnapshot: (): Promise<MemorySnapshot> => ipcRenderer.invoke('memory:getSnapshot')
   },
 
   claudeUsage: {
@@ -1140,6 +1579,10 @@ const api = {
     refresh: (): Promise<RateLimitState> => ipcRenderer.invoke('rateLimits:refresh'),
     setPollingInterval: (ms: number): Promise<void> =>
       ipcRenderer.invoke('rateLimits:setPollingInterval', ms),
+    fetchInactiveClaudeAccounts: (): Promise<void> =>
+      ipcRenderer.invoke('rateLimits:fetchInactiveClaudeAccounts'),
+    fetchInactiveCodexAccounts: (): Promise<void> =>
+      ipcRenderer.invoke('rateLimits:fetchInactiveCodexAccounts'),
     onUpdate: (callback: (state: RateLimitState) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, state: RateLimitState) => callback(state)
       ipcRenderer.on('rateLimits:update', listener)
@@ -1148,111 +1591,44 @@ const api = {
   },
 
   ssh: {
-    listTargets: (): Promise<unknown[]> => ipcRenderer.invoke('ssh:listTargets'),
+    listTargets: (): Promise<SshTarget[]> => ipcRenderer.invoke('ssh:listTargets'),
 
-    addTarget: (args: { target: Record<string, unknown> }): Promise<unknown> =>
+    addTarget: (args: { target: Omit<SshTarget, 'id'> }): Promise<SshTarget> =>
       ipcRenderer.invoke('ssh:addTarget', args),
 
-    updateTarget: (args: { id: string; updates: Record<string, unknown> }): Promise<unknown> =>
-      ipcRenderer.invoke('ssh:updateTarget', args),
+    updateTarget: (args: {
+      id: string
+      updates: Partial<Omit<SshTarget, 'id'>>
+    }): Promise<SshTarget> => ipcRenderer.invoke('ssh:updateTarget', args),
 
     removeTarget: (args: { id: string }): Promise<void> =>
       ipcRenderer.invoke('ssh:removeTarget', args),
 
-    importConfig: (): Promise<unknown[]> => ipcRenderer.invoke('ssh:importConfig'),
+    importConfig: (): Promise<SshTarget[]> => ipcRenderer.invoke('ssh:importConfig'),
 
-    connect: (args: { targetId: string }): Promise<unknown> =>
+    connect: (args: { targetId: string }): Promise<SshConnectionState | null> =>
       ipcRenderer.invoke('ssh:connect', args),
 
     disconnect: (args: { targetId: string }): Promise<void> =>
       ipcRenderer.invoke('ssh:disconnect', args),
 
-    getState: (args: { targetId: string }): Promise<unknown> =>
+    getState: (args: { targetId: string }): Promise<SshConnectionState | null> =>
       ipcRenderer.invoke('ssh:getState', args),
 
     testConnection: (args: {
       targetId: string
-    }): Promise<{ success: boolean; error?: string; state?: unknown }> =>
+    }): Promise<{ success: boolean; error?: string; state?: SshConnectionState }> =>
       ipcRenderer.invoke('ssh:testConnection', args),
 
     onStateChanged: (
-      callback: (data: { targetId: string; state: unknown }) => void
+      callback: (data: { targetId: string; state: SshConnectionState }) => void
     ): (() => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        data: { targetId: string; state: unknown }
+        data: { targetId: string; state: SshConnectionState }
       ) => callback(data)
       ipcRenderer.on('ssh:state-changed', listener)
       return () => ipcRenderer.removeListener('ssh:state-changed', listener)
-    },
-
-    onHostKeyVerify: (
-      callback: (data: {
-        host: string
-        ip: string
-        fingerprint: string
-        keyType: string
-        responseChannel: string
-      }) => void
-    ): (() => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        data: {
-          host: string
-          ip: string
-          fingerprint: string
-          keyType: string
-          responseChannel: string
-        }
-      ) => callback(data)
-      ipcRenderer.on('ssh:host-key-verify', listener)
-      return () => ipcRenderer.removeListener('ssh:host-key-verify', listener)
-    },
-
-    respondHostKeyVerify: (args: { channel: string; accepted: boolean }): void => {
-      ipcRenderer.send(args.channel, args.accepted)
-    },
-
-    onAuthChallenge: (
-      callback: (data: {
-        targetId: string
-        name: string
-        instructions: string
-        prompts: { prompt: string; echo: boolean }[]
-        responseChannel: string
-      }) => void
-    ): (() => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        data: {
-          targetId: string
-          name: string
-          instructions: string
-          prompts: { prompt: string; echo: boolean }[]
-          responseChannel: string
-        }
-      ) => callback(data)
-      ipcRenderer.on('ssh:auth-challenge', listener)
-      return () => ipcRenderer.removeListener('ssh:auth-challenge', listener)
-    },
-
-    respondAuthChallenge: (args: { channel: string; responses: string[] }): void => {
-      ipcRenderer.send(args.channel, args.responses)
-    },
-
-    onPasswordPrompt: (
-      callback: (data: { targetId: string; responseChannel: string }) => void
-    ): (() => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        data: { targetId: string; responseChannel: string }
-      ) => callback(data)
-      ipcRenderer.on('ssh:password-prompt', listener)
-      return () => ipcRenderer.removeListener('ssh:password-prompt', listener)
-    },
-
-    respondPassword: (args: { channel: string; password: string | null }): void => {
-      ipcRenderer.send(args.channel, args.password)
     },
 
     addPortForward: (args: {
@@ -1261,13 +1637,47 @@ const api = {
       remoteHost: string
       remotePort: number
       label?: string
-    }): Promise<unknown> => ipcRenderer.invoke('ssh:addPortForward', args),
+    }): Promise<PortForwardEntry> => ipcRenderer.invoke('ssh:addPortForward', args),
 
-    removePortForward: (args: { id: string }): Promise<boolean> =>
+    updatePortForward: (args: {
+      id: string
+      targetId: string
+      localPort: number
+      remoteHost: string
+      remotePort: number
+      label?: string
+    }): Promise<PortForwardEntry> => ipcRenderer.invoke('ssh:updatePortForward', args),
+
+    removePortForward: (args: { id: string }): Promise<PortForwardEntry | null> =>
       ipcRenderer.invoke('ssh:removePortForward', args),
 
-    listPortForwards: (args?: { targetId?: string }): Promise<unknown[]> =>
+    listPortForwards: (args?: { targetId?: string }): Promise<PortForwardEntry[]> =>
       ipcRenderer.invoke('ssh:listPortForwards', args),
+
+    listDetectedPorts: (args: { targetId: string }): Promise<DetectedPort[]> =>
+      ipcRenderer.invoke('ssh:listDetectedPorts', args),
+
+    onPortForwardsChanged: (
+      callback: (data: { targetId: string; forwards: PortForwardEntry[] }) => void
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: { targetId: string; forwards: PortForwardEntry[] }
+      ) => callback(data)
+      ipcRenderer.on('ssh:port-forwards-changed', handler)
+      return () => ipcRenderer.removeListener('ssh:port-forwards-changed', handler)
+    },
+
+    onDetectedPortsChanged: (
+      callback: (data: { targetId: string; ports: DetectedPort[] }) => void
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: { targetId: string; ports: DetectedPort[] }
+      ) => callback(data)
+      ipcRenderer.on('ssh:detected-ports-changed', handler)
+      return () => ipcRenderer.removeListener('ssh:detected-ports-changed', handler)
+    },
 
     browseDir: (args: {
       targetId: string
@@ -1275,7 +1685,77 @@ const api = {
     }): Promise<{
       entries: { name: string; isDirectory: boolean }[]
       resolvedPath: string
-    }> => ipcRenderer.invoke('ssh:browseDir', args)
+    }> => ipcRenderer.invoke('ssh:browseDir', args),
+
+    onCredentialRequest: (
+      callback: (data: {
+        requestId: string
+        targetId: string
+        kind: 'passphrase' | 'password'
+        detail: string
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: {
+          requestId: string
+          targetId: string
+          kind: 'passphrase' | 'password'
+          detail: string
+        }
+      ) => callback(data)
+      ipcRenderer.on('ssh:credential-request', listener)
+      return () => ipcRenderer.removeListener('ssh:credential-request', listener)
+    },
+
+    onCredentialResolved: (callback: (data: { requestId: string }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { requestId: string }) =>
+        callback(data)
+      ipcRenderer.on('ssh:credential-resolved', listener)
+      return () => ipcRenderer.removeListener('ssh:credential-resolved', listener)
+    },
+
+    submitCredential: (args: { requestId: string; value: string | null }): Promise<void> =>
+      ipcRenderer.invoke('ssh:submitCredential', args)
+  },
+  e2e: {
+    getConfig: () => preloadE2EConfig
+  },
+
+  agentStatus: {
+    /** Listen for agent status updates forwarded from native hook receivers. */
+    onSet: (
+      callback: (data: {
+        paneKey: string
+        tabId?: string
+        worktreeId?: string
+        state: AgentStatusState
+        prompt?: string
+        agentType?: string
+        toolName?: string
+        toolInput?: string
+        lastAssistantMessage?: string
+        interrupted?: boolean
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: {
+          paneKey: string
+          tabId?: string
+          worktreeId?: string
+          state: AgentStatusState
+          prompt?: string
+          agentType?: string
+          toolName?: string
+          toolInput?: string
+          lastAssistantMessage?: string
+          interrupted?: boolean
+        }
+      ) => callback(data)
+      ipcRenderer.on('agentStatus:set', listener)
+      return () => ipcRenderer.removeListener('agentStatus:set', listener)
+    }
   }
 }
 

@@ -24,7 +24,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
   const worktreesByRepo = useAppStore((s) => s.worktreesByRepo)
   const fetchWorktrees = useAppStore((s) => s.fetchWorktrees)
   const openModal = useAppStore((s) => s.openModal)
-  const setActiveView = useAppStore((s) => s.setActiveView)
+  const openSettingsPage = useAppStore((s) => s.openSettingsPage)
   const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
 
   const [step, setStep] = useState<'add' | 'clone' | 'remote' | 'setup'>('add')
@@ -52,7 +52,8 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
     setRemoteError,
     resetRemoteState,
     handleOpenRemoteStep,
-    handleAddRemoteRepo
+    handleAddRemoteRepo,
+    handleConnectTarget
   } = useRemoteRepo(fetchWorktrees, setStep, setAddedRepo, closeModal)
   useEffect(() => {
     if (!isCloning) {
@@ -185,18 +186,20 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
   )
 
   const handleCreateWorktree = useCallback(() => {
+    // Why: small delay so the Add Project dialog close animation finishes before
+    // the composer modal takes focus; otherwise the dialog teardown can steal
+    // the first focus frame from the composer's prompt textarea.
     closeModal()
-    // Why: small delay so the close animation finishes before the create dialog opens.
     setTimeout(() => {
-      openModal('create-worktree', { preselectedRepoId: repoId })
+      openModal('new-workspace-composer', { initialRepoId: repoId })
     }, 150)
   }, [closeModal, openModal, repoId])
 
   const handleConfigureRepo = useCallback(() => {
     closeModal()
     openSettingsTarget({ pane: 'repo', repoId })
-    setActiveView('settings')
-  }, [closeModal, openSettingsTarget, setActiveView, repoId])
+    openSettingsPage()
+  }, [closeModal, openSettingsTarget, openSettingsPage, repoId])
 
   // Why: handleBack reuses resetState which already aborts clones and resets all fields.
   const handleBack = resetState
@@ -211,9 +214,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
         }
       }}
     >
-      {/* Why: the option cards include a title plus helper copy, so a wider chooser with
-          constrained text blocks prevents labels from visually running together at desktop scales. */}
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-lg">
         {/* Step indicator row — back button (step 2 only), dots, X is rendered by DialogContent */}
         <div className="flex items-center justify-center -mt-1">
           {(step === 'clone' || step === 'remote') && (
@@ -231,7 +232,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               onClick={handleBack}
             >
               <ArrowLeft className="size-3" />
-              Add another repo
+              Add another project
             </button>
           )}
           <div className="flex items-center gap-1.5">
@@ -246,27 +247,27 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
 
         {step === 'add' ? (
           <>
-            <DialogHeader className="pr-8">
-              <DialogTitle>Add a repository</DialogTitle>
+            <DialogHeader>
+              <DialogTitle>Add a project</DialogTitle>
               <DialogDescription>
                 {repos.length === 0
-                  ? 'Add a repository to get started with Orca.'
-                  : 'Add another repository to manage with Orca.'}
+                  ? 'Add a project to get started with Orca.'
+                  : 'Add another project to manage with Orca.'}
               </DialogDescription>
             </DialogHeader>
 
-            <div className="grid grid-cols-3 gap-4 pt-3">
+            <div className="grid grid-cols-3 gap-3 pt-2">
               <Button
                 onClick={handleBrowse}
                 disabled={isAdding}
                 variant="outline"
-                className="flex h-auto min-w-0 flex-col items-center gap-3 rounded-lg px-3 py-5 text-center whitespace-normal sm:px-4 sm:py-6"
+                className="h-auto py-5 px-2 flex flex-col items-center gap-2 text-center border-border/80"
               >
-                <FolderOpen className="size-6 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 space-y-1">
-                  <p className="text-sm leading-snug font-medium">Browse folder</p>
-                  <p className="text-[11px] leading-relaxed text-muted-foreground font-normal whitespace-normal">
-                    Local repo or folder
+                <FolderOpen className="size-6 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">Browse folder</p>
+                  <p className="text-[11px] text-muted-foreground font-normal mt-0.5">
+                    Local Git project or folder
                   </p>
                 </div>
               </Button>
@@ -274,12 +275,12 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               <Button
                 onClick={() => setStep('clone')}
                 variant="outline"
-                className="flex h-auto min-w-0 flex-col items-center gap-3 rounded-lg px-3 py-5 text-center whitespace-normal sm:px-4 sm:py-6"
+                className="h-auto py-5 px-2 flex flex-col items-center gap-2 text-center border-border/80"
               >
-                <Globe className="size-6 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 space-y-1">
-                  <p className="text-sm leading-snug font-medium">Clone from URL</p>
-                  <p className="text-[11px] leading-relaxed text-muted-foreground font-normal whitespace-normal">
+                <Globe className="size-6 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">Clone from URL</p>
+                  <p className="text-[11px] text-muted-foreground font-normal mt-0.5">
                     Remote Git repository
                   </p>
                 </div>
@@ -288,12 +289,12 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               <Button
                 onClick={handleOpenRemoteStep}
                 variant="outline"
-                className="flex h-auto min-w-0 flex-col items-center gap-3 rounded-lg px-3 py-5 text-center whitespace-normal sm:px-4 sm:py-6"
+                className="h-auto py-5 px-2 flex flex-col items-center gap-2 text-center border-border/80"
               >
-                <Monitor className="size-6 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 space-y-1">
-                  <p className="text-sm leading-snug font-medium">Remote repo</p>
-                  <p className="text-[11px] leading-relaxed text-muted-foreground font-normal whitespace-normal">
+                <Monitor className="size-6 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">Remote project</p>
+                  <p className="text-[11px] text-muted-foreground font-normal mt-0.5">
                     SSH connected target
                   </p>
                 </div>
@@ -316,6 +317,12 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
               setRemoteError(null)
             }}
             onAdd={handleAddRemoteRepo}
+            onOpenSshSettings={() => {
+              closeModal()
+              openSettingsTarget({ pane: 'ssh', repoId: null, sectionId: 'ssh' })
+              openSettingsPage()
+            }}
+            onConnectTarget={handleConnectTarget}
           />
         ) : step === 'clone' ? (
           <CloneStep
@@ -349,7 +356,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
             </DialogHeader>
 
             {hasWorktrees && (
-              <div className="space-y-2">
+              <div className="space-y-2 min-w-0">
                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                   Existing worktrees
                 </p>
@@ -377,7 +384,7 @@ const AddRepoDialog = React.memo(function AddRepoDialog() {
                   onClick={handleConfigureRepo}
                 >
                   <Settings className="size-3" />
-                  Configure repo
+                  Configure project
                 </button>
                 <Button
                   variant="ghost"

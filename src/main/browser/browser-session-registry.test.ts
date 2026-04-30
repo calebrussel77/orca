@@ -18,6 +18,7 @@ vi.mock('./browser-manager', () => ({
 }))
 
 import { browserSessionRegistry } from './browser-session-registry'
+import { setupClientHintsOverride } from './browser-session-ua'
 import { ORCA_BROWSER_PARTITION } from '../../shared/constants'
 
 describe('BrowserSessionRegistry', () => {
@@ -50,27 +51,36 @@ describe('BrowserSessionRegistry', () => {
 
   it('creates an isolated profile with a unique partition', () => {
     const profile = browserSessionRegistry.createProfile('isolated', 'Test Isolated')
-    expect(profile.scope).toBe('isolated')
-    expect(profile.partition).toMatch(/^persist:orca-browser-session-/)
-    expect(profile.partition).not.toBe(ORCA_BROWSER_PARTITION)
-    expect(profile.label).toBe('Test Isolated')
-    expect(profile.source).toBeNull()
+    expect(profile).not.toBeNull()
+    expect(profile!.scope).toBe('isolated')
+    expect(profile!.partition).toMatch(/^persist:orca-browser-session-/)
+    expect(profile!.partition).not.toBe(ORCA_BROWSER_PARTITION)
+    expect(profile!.label).toBe('Test Isolated')
+    expect(profile!.source).toBeNull()
+  })
+
+  it('rejects creating a profile with scope default', () => {
+    const profile = browserSessionRegistry.createProfile('default', 'Sneaky')
+    expect(profile).toBeNull()
   })
 
   it('allows created profile partitions', () => {
     const profile = browserSessionRegistry.createProfile('isolated', 'Allowed')
-    expect(browserSessionRegistry.isAllowedPartition(profile.partition)).toBe(true)
+    expect(profile).not.toBeNull()
+    expect(browserSessionRegistry.isAllowedPartition(profile!.partition)).toBe(true)
   })
 
   it('creates an imported profile', () => {
     const profile = browserSessionRegistry.createProfile('imported', 'My Import')
-    expect(profile.scope).toBe('imported')
-    expect(profile.partition).toMatch(/^persist:orca-browser-session-/)
+    expect(profile).not.toBeNull()
+    expect(profile!.scope).toBe('imported')
+    expect(profile!.partition).toMatch(/^persist:orca-browser-session-/)
   })
 
   it('resolves partition for a known profile', () => {
     const profile = browserSessionRegistry.createProfile('isolated', 'Resolve Test')
-    expect(browserSessionRegistry.resolvePartition(profile.id)).toBe(profile.partition)
+    expect(profile).not.toBeNull()
+    expect(browserSessionRegistry.resolvePartition(profile!.id)).toBe(profile!.partition)
   })
 
   it('resolves default partition for null/undefined profileId', () => {
@@ -91,7 +101,8 @@ describe('BrowserSessionRegistry', () => {
 
   it('updates profile source', () => {
     const profile = browserSessionRegistry.createProfile('imported', 'Source Test')
-    const updated = browserSessionRegistry.updateProfileSource(profile.id, {
+    expect(profile).not.toBeNull()
+    const updated = browserSessionRegistry.updateProfileSource(profile!.id, {
       browserFamily: 'edge',
       importedAt: Date.now()
     })
@@ -101,11 +112,12 @@ describe('BrowserSessionRegistry', () => {
 
   it('deletes a non-default profile', async () => {
     const profile = browserSessionRegistry.createProfile('isolated', 'Delete Test')
-    expect(browserSessionRegistry.isAllowedPartition(profile.partition)).toBe(true)
-    const deleted = await browserSessionRegistry.deleteProfile(profile.id)
+    expect(profile).not.toBeNull()
+    expect(browserSessionRegistry.isAllowedPartition(profile!.partition)).toBe(true)
+    const deleted = await browserSessionRegistry.deleteProfile(profile!.id)
     expect(deleted).toBe(true)
-    expect(browserSessionRegistry.isAllowedPartition(profile.partition)).toBe(false)
-    expect(browserSessionRegistry.getProfile(profile.id)).toBeNull()
+    expect(browserSessionRegistry.isAllowedPartition(profile!.partition)).toBe(false)
+    expect(browserSessionRegistry.getProfile(profile!.id)).toBeNull()
   })
 
   it('refuses to delete the default profile', async () => {
@@ -116,14 +128,14 @@ describe('BrowserSessionRegistry', () => {
 
   it('hydrates profiles from persisted data', () => {
     const fakeProfile = {
-      id: 'hydrate-test-id',
+      id: '00000000-0000-0000-0000-000000000001',
       scope: 'imported' as const,
-      partition: 'persist:orca-browser-session-hydrate-test-id',
+      partition: 'persist:orca-browser-session-00000000-0000-0000-0000-000000000001',
       label: 'Hydrated',
       source: { browserFamily: 'manual' as const, importedAt: 1000 }
     }
     browserSessionRegistry.hydrateFromPersisted([fakeProfile])
-    expect(browserSessionRegistry.getProfile('hydrate-test-id')).not.toBeNull()
+    expect(browserSessionRegistry.getProfile('00000000-0000-0000-0000-000000000001')).not.toBeNull()
     expect(browserSessionRegistry.isAllowedPartition(fakeProfile.partition)).toBe(true)
   })
 
@@ -139,14 +151,22 @@ describe('BrowserSessionRegistry', () => {
     browserSessionRegistry.createProfile('isolated', 'Clipboard Policy Test')
     const mockSession = sessionFromPartitionMock.mock.results[0]?.value
     const permissionHandler = mockSession?.setPermissionRequestHandler.mock.calls[0]?.[0] as
-      | ((wc: { id: number; getURL: () => string }, permission: string, callback: (allowed: boolean) => void) => void)
+      | ((
+          wc: { id: number; getURL: () => string },
+          permission: string,
+          callback: (allowed: boolean) => void
+        ) => void)
       | undefined
     const permissionCheckHandler = mockSession?.setPermissionCheckHandler.mock.calls[0]?.[0] as
       | ((wc: unknown, permission: string) => boolean)
       | undefined
 
     const callback = vi.fn()
-    permissionHandler?.({ id: 55, getURL: () => 'https://skills.sh' }, 'clipboard-sanitized-write', callback)
+    permissionHandler?.(
+      { id: 55, getURL: () => 'https://skills.sh' },
+      'clipboard-sanitized-write',
+      callback
+    )
     permissionHandler?.({ id: 55, getURL: () => 'https://skills.sh' }, 'notifications', callback)
 
     expect(callback.mock.calls).toEqual([[true], [false]])
@@ -161,7 +181,7 @@ describe('BrowserSessionRegistry', () => {
       const edgeUa =
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.6890.3 Safari/537.36 Edg/147.0.3210.5'
 
-      browserSessionRegistry.setupClientHintsOverride(mockSess, edgeUa)
+      setupClientHintsOverride(mockSess, edgeUa)
 
       expect(onBeforeSendHeaders).toHaveBeenCalledWith(
         { urls: ['https://*/*'] },
@@ -186,7 +206,7 @@ describe('BrowserSessionRegistry', () => {
       const chromeUa =
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.6890.3 Safari/537.36'
 
-      browserSessionRegistry.setupClientHintsOverride(mockSess, chromeUa)
+      setupClientHintsOverride(mockSess, chromeUa)
 
       const callback = vi.fn()
       const listener = onBeforeSendHeaders.mock.calls[0][1]
@@ -200,10 +220,7 @@ describe('BrowserSessionRegistry', () => {
       const onBeforeSendHeaders = vi.fn()
       const mockSess = { webRequest: { onBeforeSendHeaders } } as never
 
-      browserSessionRegistry.setupClientHintsOverride(
-        mockSess,
-        'Mozilla/5.0 (compatible; MSIE 10.0)'
-      )
+      setupClientHintsOverride(mockSess, 'Mozilla/5.0 (compatible; MSIE 10.0)')
 
       expect(onBeforeSendHeaders).not.toHaveBeenCalled()
     })
@@ -211,10 +228,7 @@ describe('BrowserSessionRegistry', () => {
     it('leaves non-Client-Hints headers unchanged', () => {
       const onBeforeSendHeaders = vi.fn()
       const mockSess = { webRequest: { onBeforeSendHeaders } } as never
-      browserSessionRegistry.setupClientHintsOverride(
-        mockSess,
-        'Mozilla/5.0 Chrome/147.0.0.0 Safari/537.36'
-      )
+      setupClientHintsOverride(mockSess, 'Mozilla/5.0 Chrome/147.0.0.0 Safari/537.36')
 
       const callback = vi.fn()
       const listener = onBeforeSendHeaders.mock.calls[0][1]

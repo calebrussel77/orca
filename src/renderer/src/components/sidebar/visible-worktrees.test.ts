@@ -15,9 +15,10 @@ function makeWorktree(id: string, repoId = 'repo1'): Worktree {
     comment: '',
     linkedIssue: null,
     linkedPR: null,
+    linkedLinearIssue: null,
     isArchived: false,
     isUnread: false,
-    sidebarOrder: -1,
+    isPinned: false,
     sortOrder: 0,
     lastActivityAt: 0
   }

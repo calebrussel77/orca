@@ -1,9 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { existsSyncMock, statSyncMock, accessSyncMock, spawnMock } = vi.hoisted(() => ({
+const {
+  existsSyncMock,
+  statSyncMock,
+  accessSyncMock,
+  mkdirSyncMock,
+  writeFileSyncMock,
+  spawnMock
+} = vi.hoisted(() => ({
   existsSyncMock: vi.fn(),
   statSyncMock: vi.fn(),
   accessSyncMock: vi.fn(),
+  mkdirSyncMock: vi.fn(),
+  writeFileSyncMock: vi.fn(),
   spawnMock: vi.fn()
 }))
 
@@ -11,8 +20,16 @@ vi.mock('fs', () => ({
   existsSync: existsSyncMock,
   statSync: statSyncMock,
   accessSync: accessSyncMock,
+  mkdirSync: mkdirSyncMock,
+  writeFileSync: writeFileSyncMock,
   chmodSync: vi.fn(),
   constants: { X_OK: 1 }
+}))
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: vi.fn(() => '/tmp/orca-user-data')
+  }
 }))
 
 vi.mock('node-pty', () => ({
@@ -38,20 +55,16 @@ describe('LocalPtyProvider', () => {
   }
   let exitCb: ((info: { exitCode: number }) => void) | undefined
   let origShell: string | undefined
-  let originalPlatform: string
 
   beforeEach(() => {
-    originalPlatform = process.platform
-    Object.defineProperty(process, 'platform', {
-      configurable: true,
-      value: 'darwin'
-    })
     origShell = process.env.SHELL
     process.env.SHELL = '/bin/zsh'
 
     existsSyncMock.mockReturnValue(true)
     statSyncMock.mockReturnValue({ isDirectory: () => true, mode: 0o755 })
     accessSyncMock.mockReturnValue(undefined)
+    mkdirSyncMock.mockReset()
+    writeFileSyncMock.mockReset()
 
     exitCb = undefined
     mockProc = {
@@ -73,10 +86,6 @@ describe('LocalPtyProvider', () => {
   })
 
   afterEach(() => {
-    Object.defineProperty(process, 'platform', {
-      configurable: true,
-      value: originalPlatform
-    })
     if (origShell === undefined) {
       delete process.env.SHELL
     } else {
@@ -128,6 +137,47 @@ describe('LocalPtyProvider', () => {
 
       const spawnCall = spawnMock.mock.calls.at(-1)!
       expect(spawnCall[2].env.CUSTOM_VAR).toBe('custom-value')
+    })
+
+    it('combines HOMEDRIVE and HOMEPATH for Windows default cwd', async () => {
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+      const originalUserProfile = process.env.USERPROFILE
+      const originalHomeDrive = process.env.HOMEDRIVE
+      const originalHomePath = process.env.HOMEPATH
+
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      delete process.env.USERPROFILE
+      process.env.HOMEDRIVE = 'D:'
+      process.env.HOMEPATH = '\\Users\\orca'
+
+      try {
+        await provider.spawn({ cols: 80, rows: 24 })
+      } finally {
+        if (platform) {
+          Object.defineProperty(process, 'platform', platform)
+        }
+        if (originalUserProfile === undefined) {
+          delete process.env.USERPROFILE
+        } else {
+          process.env.USERPROFILE = originalUserProfile
+        }
+        if (originalHomeDrive === undefined) {
+          delete process.env.HOMEDRIVE
+        } else {
+          process.env.HOMEDRIVE = originalHomeDrive
+        }
+        if (originalHomePath === undefined) {
+          delete process.env.HOMEPATH
+        } else {
+          process.env.HOMEPATH = originalHomePath
+        }
+      }
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        expect.objectContaining({ cwd: 'D:\\Users\\orca' })
+      )
     })
   })
 
@@ -262,72 +312,6 @@ describe('LocalPtyProvider', () => {
           delete process.env.SHELL
         } else {
           process.env.SHELL = originalShell
-        }
-      }
-    })
-
-    it('prefers PowerShell on Windows even when COMSPEC is cmd.exe', async () => {
-      const originalPlatform = process.platform
-      const originalComspec = process.env.COMSPEC
-      const originalPath = process.env.PATH
-      try {
-        Object.defineProperty(process, 'platform', {
-          configurable: true,
-          value: 'win32'
-        })
-        process.env.COMSPEC = 'C:\\Windows\\System32\\cmd.exe'
-        process.env.PATH = ''
-        existsSyncMock.mockReturnValue(false)
-
-        expect(await provider.getDefaultShell()).toBe('powershell.exe')
-      } finally {
-        Object.defineProperty(process, 'platform', {
-          configurable: true,
-          value: originalPlatform
-        })
-        if (originalComspec === undefined) {
-          delete process.env.COMSPEC
-        } else {
-          process.env.COMSPEC = originalComspec
-        }
-        if (originalPath === undefined) {
-          delete process.env.PATH
-        } else {
-          process.env.PATH = originalPath
-        }
-      }
-    })
-
-    it('prefers pwsh.exe on Windows when PowerShell 7 is available on PATH', async () => {
-      const originalPlatform = process.platform
-      const originalComspec = process.env.COMSPEC
-      const originalPath = process.env.PATH
-      try {
-        Object.defineProperty(process, 'platform', {
-          configurable: true,
-          value: 'win32'
-        })
-        process.env.COMSPEC = 'C:\\Windows\\System32\\cmd.exe'
-        process.env.PATH = 'C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32'
-        existsSyncMock.mockImplementation((targetPath: string) => {
-          return targetPath === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
-        })
-
-        expect(await provider.getDefaultShell()).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe')
-      } finally {
-        Object.defineProperty(process, 'platform', {
-          configurable: true,
-          value: originalPlatform
-        })
-        if (originalComspec === undefined) {
-          delete process.env.COMSPEC
-        } else {
-          process.env.COMSPEC = originalComspec
-        }
-        if (originalPath === undefined) {
-          delete process.env.PATH
-        } else {
-          process.env.PATH = originalPath
         }
       }
     })

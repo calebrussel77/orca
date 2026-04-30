@@ -1,17 +1,23 @@
 import { useEffect, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
-import { Globe, X, ExternalLink } from 'lucide-react'
+import { Globe, X, ExternalLink, Columns2, Rows2, Copy } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { ORCA_BROWSER_BLANK_URL } from '../../../../shared/constants'
 import type { BrowserTab as BrowserTabState } from '../../../../shared/types'
 import { CLOSE_ALL_CONTEXT_MENUS_EVENT } from './SortableTab'
 import { getLiveBrowserUrl } from '../browser-pane/browser-runtime'
+import type { TabDragItemData } from '../tab-group/useTabDragSplit'
+import {
+  ACTIVE_TAB_INDICATOR_CLASSES,
+  getDropIndicatorClasses,
+  type DropIndicator
+} from './drop-indicator'
 
 function formatBrowserTabUrlLabel(url: string): string {
   if (url === ORCA_BROWSER_BLANK_URL || url === 'about:blank') {
@@ -25,7 +31,7 @@ function formatBrowserTabUrlLabel(url: string): string {
   }
 }
 
-function getBrowserTabLabel(tab: BrowserTabState): string {
+export function getBrowserTabLabel(tab: BrowserTabState): string {
   if (
     !tab.title ||
     tab.title === tab.url ||
@@ -47,7 +53,11 @@ export default function BrowserTab({
   hasTabsToRight,
   onActivate,
   onClose,
-  onCloseToRight
+  onCloseToRight,
+  onSplitGroup,
+  onDuplicate,
+  dragData,
+  dropIndicator
 }: {
   tab: BrowserTabState
   isActive: boolean
@@ -55,9 +65,16 @@ export default function BrowserTab({
   onActivate: () => void
   onClose: () => void
   onCloseToRight: () => void
+  onSplitGroup: (direction: 'left' | 'right' | 'up' | 'down', sourceVisibleTabId: string) => void
+  onDuplicate: () => void
+  dragData: TabDragItemData
+  dropIndicator?: DropIndicator
 }): React.JSX.Element {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: tab.id
+  // Why: no transform/transition/isDragging styling — the drag design is
+  // that tabs stay visually anchored; only the blue insertion bar moves.
+  const { attributes, listeners, setNodeRef } = useSortable({
+    id: tab.id,
+    data: dragData
   })
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPoint, setMenuPoint] = useState({ x: 0, y: 0 })
@@ -92,18 +109,10 @@ export default function BrowserTab({
       >
         <div
           ref={setNodeRef}
-          style={{
-            transform: CSS.Transform.toString(transform),
-            transition,
-            zIndex: isDragging ? 10 : undefined,
-            opacity: isDragging ? 0.8 : 1
-          }}
           {...attributes}
           {...listeners}
-          className={`group relative flex items-center h-full px-3 text-sm cursor-pointer select-none shrink-0 border-r border-border ${
-            isActive
-              ? 'bg-accent/40 text-foreground border-b-transparent'
-              : 'bg-card text-muted-foreground hover:text-foreground hover:bg-accent/50'
+          className={`group relative flex items-center h-full px-1.5 text-xs cursor-pointer select-none shrink-0 outline-none focus:outline-none focus-visible:outline-none border-t ${hasTabsToRight ? 'border-r' : ''} border-border bg-card ${getDropIndicatorClasses(dropIndicator ?? null)} ${
+            isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
           }`}
           onPointerDown={(e) => {
             if (e.button !== 0) {
@@ -125,12 +134,13 @@ export default function BrowserTab({
             }
           }}
         >
+          {isActive && <span className={ACTIVE_TAB_INDICATOR_CLASSES} aria-hidden />}
           <Globe
-            className={`w-3.5 h-3.5 mr-1.5 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground'}`}
+            className={`w-3 h-3 mr-1 shrink-0 ${isActive ? 'text-foreground' : 'text-muted-foreground'}`}
           />
-          <span className="truncate max-w-[180px] mr-1.5">{getBrowserTabLabel(tab)}</span>
+          <span className="truncate max-w-[100px] mr-1">{getBrowserTabLabel(tab)}</span>
           {tab.loading && !tab.loadError && !isBlankBrowserTab(tab) && (
-            <span className="mr-1.5 size-1.5 rounded-full bg-sky-500/80 shrink-0" />
+            <span className="mr-1 size-1.5 rounded-full bg-sky-500/80 shrink-0" />
           )}
           <button
             className={`flex items-center justify-center w-4 h-4 rounded-sm shrink-0 ${
@@ -163,6 +173,28 @@ export default function BrowserTab({
           sideOffset={0}
           align="start"
         >
+          <DropdownMenuItem onSelect={() => onSplitGroup('up', tab.id)}>
+            <Rows2 className="mr-1.5 size-3.5" />
+            Split Up
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSplitGroup('down', tab.id)}>
+            <Rows2 className="mr-1.5 size-3.5" />
+            Split Down
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSplitGroup('left', tab.id)}>
+            <Columns2 className="mr-1.5 size-3.5" />
+            Split Left
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onSplitGroup('right', tab.id)}>
+            <Columns2 className="mr-1.5 size-3.5" />
+            Split Right
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={onDuplicate}>
+            <Copy className="mr-1.5 size-3.5" />
+            Duplicate Tab
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={onClose}>Close</DropdownMenuItem>
           <DropdownMenuItem onSelect={onCloseToRight} disabled={!hasTabsToRight}>
             Close Tabs To The Right

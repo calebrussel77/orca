@@ -9,15 +9,6 @@ body:
       value: |
         Use this form for Orca bugs. Include enough detail for someone else to reproduce the issue.
 
-  - type: input
-    id: summary
-    attributes:
-      label: Summary
-      description: Short description of the problem
-      placeholder: Orca crashes when opening a repository with a nested package.json
-    validations:
-      required: true
-
   - type: dropdown
     id: os
     attributes:
@@ -34,17 +25,20 @@ body:
     id: orca_version
     attributes:
       label: Orca version
-      description: Include the exact Orca version if you know it
+      description: Include the exact Orca version if you can. You can find it in `Orca > About Orca`.
       placeholder: v0.14.2
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: details
     attributes:
       label: Details
-      description: Describe the bug in your own words. Please include reproduction steps and anything else that seems relevant.
+      description: Describe the bug in your own words. Include a short summary, reproduction steps, and anything else that seems relevant.
       placeholder: |
+        Short summary:
+        Orca crashes when ...
+
         What happened?
 
         How can we reproduce it?

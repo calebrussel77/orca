@@ -2,14 +2,15 @@
    trust boundary (isTrustedBrowserRenderer) and handler teardown stay consistent. */
 import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { browserManager } from '../browser/browser-manager'
+import type { AgentBrowserBridge } from '../browser/agent-browser-bridge'
 import { browserSessionRegistry } from '../browser/browser-session-registry'
 import {
   pickCookieFile,
   importCookiesFromFile,
   detectInstalledBrowsers,
+  selectBrowserProfile,
   importCookiesFromBrowser
 } from '../browser/browser-cookie-import'
-import type { DetectedBrowser } from '../browser/browser-cookie-import'
 import type {
   BrowserSetGrabModeArgs,
   BrowserSetGrabModeResult,
@@ -28,9 +29,35 @@ import type {
 } from '../../shared/types'
 
 let trustedBrowserRendererWebContentsId: number | null = null
+let agentBrowserBridgeRef: AgentBrowserBridge | null = null
+
+// Why: CLI-driven tab creation must wait until the renderer mounts the webview
+// and calls registerGuest, so the tab has a webContentsId and is operable by
+// subsequent commands. This map holds one-shot resolvers keyed by browserPageId.
+const pendingTabRegistrations = new Map<string, () => void>()
+
+export function waitForTabRegistration(browserPageId: string, timeoutMs = 8_000): Promise<void> {
+  if (browserManager.getGuestWebContentsId(browserPageId) !== null) {
+    return Promise.resolve()
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingTabRegistrations.delete(browserPageId)
+      reject(new Error('Tab registration timed out'))
+    }, timeoutMs)
+    pendingTabRegistrations.set(browserPageId, () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
 
 export function setTrustedBrowserRendererWebContentsId(webContentsId: number | null): void {
   trustedBrowserRendererWebContentsId = webContentsId
+}
+
+export function setAgentBrowserBridgeRef(bridge: AgentBrowserBridge | null): void {
+  agentBrowserBridgeRef = bridge
 }
 
 function isTrustedBrowserRenderer(sender: Electron.WebContents): boolean {
@@ -64,17 +91,39 @@ export function registerBrowserHandlers(): void {
   ipcMain.removeHandler('browser:cancelGrab')
   ipcMain.removeHandler('browser:captureSelectionScreenshot')
   ipcMain.removeHandler('browser:extractHoverPayload')
+  ipcMain.removeHandler('browser:activeTabChanged')
 
   ipcMain.handle(
     'browser:registerGuest',
-    (event, args: { browserPageId: string; workspaceId: string; webContentsId: number }) => {
+    (
+      event,
+      args: {
+        browserPageId: string
+        workspaceId: string
+        worktreeId: string
+        webContentsId: number
+      }
+    ) => {
       if (!isTrustedBrowserRenderer(event.sender)) {
         return false
       }
+      // Why: when Chromium swaps a guest's renderer process (navigation,
+      // crash recovery), the renderer re-registers the same browserPageId
+      // with a new webContentsId. The bridge must destroy the old session's
+      // proxy (its webContents is gone) and let the next command recreate it.
+      const previousWcId = browserManager.getGuestWebContentsId(args.browserPageId)
       browserManager.registerGuest({
         ...args,
         rendererWebContentsId: event.sender.id
       })
+      if (agentBrowserBridgeRef && previousWcId !== null && previousWcId !== args.webContentsId) {
+        agentBrowserBridgeRef.onProcessSwap(args.browserPageId, args.webContentsId, previousWcId)
+      }
+      const pendingResolve = pendingTabRegistrations.get(args.browserPageId)
+      if (pendingResolve) {
+        pendingTabRegistrations.delete(args.browserPageId)
+        pendingResolve()
+      }
       return true
     }
   )
@@ -83,7 +132,36 @@ export function registerBrowserHandlers(): void {
     if (!isTrustedBrowserRenderer(event.sender)) {
       return false
     }
+    // Why: notify bridge before unregistering so it can destroy the session
+    // process and proxy. Must happen before unregisterGuest clears the mapping.
+    const wcId = browserManager.getGuestWebContentsId(args.browserPageId)
+    if (wcId !== null && agentBrowserBridgeRef) {
+      agentBrowserBridgeRef.onTabClosed(wcId)
+    }
     browserManager.unregisterGuest(args.browserPageId)
+    return true
+  })
+
+  // Why: keeps the bridge's active tab in sync with the renderer's UI state.
+  // Without this, a user switching tabs in the UI would leave the agent operating
+  // on the previous tab, which is confusing.
+  ipcMain.handle('browser:activeTabChanged', (event, args: { browserPageId: string }) => {
+    if (!isTrustedBrowserRenderer(event.sender)) {
+      return false
+    }
+    if (!agentBrowserBridgeRef) {
+      return false
+    }
+    const wcId = browserManager.getGuestWebContentsId(args.browserPageId)
+    if (wcId !== null) {
+      // Why: renderer tab changes are scoped to a worktree. If we only update
+      // the global active guest, later worktree-scoped commands can still
+      // resolve to the previously active page inside that worktree.
+      agentBrowserBridgeRef.onTabChanged(
+        wcId,
+        browserManager.getWorktreeIdForTab(args.browserPageId)
+      )
+    }
     return true
   })
 
@@ -313,18 +391,36 @@ export function registerBrowserHandlers(): void {
   ipcMain.removeHandler('browser:session:detectBrowsers')
   ipcMain.removeHandler('browser:session:importFromBrowser')
 
-  ipcMain.handle('browser:session:detectBrowsers', (event): DetectedBrowser[] => {
-    if (!isTrustedBrowserRenderer(event.sender)) {
-      return []
+  ipcMain.handle(
+    'browser:session:detectBrowsers',
+    (
+      event
+    ): {
+      family: string
+      label: string
+      profiles: { name: string; directory: string }[]
+      selectedProfile: string
+    }[] => {
+      if (!isTrustedBrowserRenderer(event.sender)) {
+        return []
+      }
+      // Why: the renderer only needs family/label/profiles for the UI picker.
+      // Strip cookiesPath, keychainService, and keychainAccount to avoid
+      // exposing filesystem paths and credential store identifiers to the renderer.
+      return detectInstalledBrowsers().map((b) => ({
+        family: b.family,
+        label: b.label,
+        profiles: b.profiles,
+        selectedProfile: b.selectedProfile
+      }))
     }
-    return detectInstalledBrowsers()
-  })
+  )
 
   ipcMain.handle(
     'browser:session:importFromBrowser',
     async (
       event,
-      args: { profileId: string; browserFamily: string }
+      args: { profileId: string; browserFamily: string; browserProfile?: string }
     ): Promise<BrowserCookieImportResult> => {
       if (!isTrustedBrowserRenderer(event.sender)) {
         return { ok: false, reason: 'Not authorized' }
@@ -334,17 +430,43 @@ export function registerBrowserHandlers(): void {
         return { ok: false, reason: 'Session profile not found.' }
       }
 
+      // Why: browserProfile comes from the renderer and is used to construct
+      // a filesystem path. Reject traversal characters to prevent a compromised
+      // renderer from reading arbitrary files via the cookie import pipeline.
+      if (
+        args.browserProfile &&
+        (/[/\\]/.test(args.browserProfile) || args.browserProfile.includes('..'))
+      ) {
+        return { ok: false, reason: 'Invalid browser profile name.' }
+      }
+
       const browsers = detectInstalledBrowsers()
-      const browser = browsers.find((b) => b.family === args.browserFamily)
+      let browser = browsers.find((b) => b.family === args.browserFamily)
       if (!browser) {
         return { ok: false, reason: 'Browser not found on this system.' }
       }
 
+      // Why: if the user selected a non-default profile from the picker,
+      // resolve the cookies path for that specific profile.
+      if (args.browserProfile && args.browserProfile !== browser.selectedProfile) {
+        const reselected = selectBrowserProfile(browser, args.browserProfile)
+        if (!reselected) {
+          return {
+            ok: false,
+            reason: `No cookies database found for profile "${args.browserProfile}".`
+          }
+        }
+        browser = reselected
+      }
+
       const result = await importCookiesFromBrowser(browser, profile.partition)
       if (result.ok) {
+        const profileName =
+          browser.profiles.find((p) => p.directory === browser.selectedProfile)?.name ??
+          browser.selectedProfile
         browserSessionRegistry.updateProfileSource(args.profileId, {
           browserFamily: browser.family,
-          profileName: 'Default',
+          profileName,
           importedAt: Date.now()
         })
         return { ...result, profileId: args.profileId }

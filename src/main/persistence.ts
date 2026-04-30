@@ -1,5 +1,8 @@
-import { app } from 'electron'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'fs'
+/* eslint-disable max-lines -- Why: persistence keeps schema defaults, migration,
+load/save, and flush logic in one file so the full storage contract is reviewable
+as a unit instead of being scattered across modules. */
+import { app, safeStorage } from 'electron'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync } from 'fs'
 import { writeFile, rename, mkdir, rm } from 'fs/promises'
 import { join, dirname } from 'path'
 import { homedir } from 'os'
@@ -14,6 +17,36 @@ import {
   getDefaultRepoHookSettings,
   getDefaultWorkspaceSession
 } from '../shared/constants'
+import { parseWorkspaceSession } from '../shared/workspace-session-schema'
+
+function encrypt(plaintext: string): string {
+  if (!plaintext || !safeStorage.isEncryptionAvailable()) {
+    return plaintext
+  }
+  try {
+    return safeStorage.encryptString(plaintext).toString('base64')
+  } catch (err) {
+    console.error('[persistence] Encryption failed:', err)
+    return plaintext
+  }
+}
+
+function decrypt(ciphertext: string): string {
+  if (!ciphertext || !safeStorage.isEncryptionAvailable()) {
+    return ciphertext
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(ciphertext, 'base64'))
+  } catch {
+    // Why: if decryption fails, it likely means the value was stored as
+    // plaintext (pre-encryption build) or the OS keychain changed. Fall
+    // back to the raw string so users don't lose their cookie after upgrade.
+    console.warn(
+      '[persistence] safeStorage decryption failed — returning ciphertext as-is. Possible keychain reset.'
+    )
+    return ciphertext
+  }
+}
 
 // Why: the data-file path must not be a module-level constant. Module-level
 // code runs at import time — before configureDevUserDataPath() redirects the
@@ -42,14 +75,17 @@ function getDataFile(): string {
   return _dataFile
 }
 
-function normalizeSortBy(sortBy: unknown): 'manual' | 'name' | 'recent' | 'repo' {
-  if (sortBy === 'manual' || sortBy === 'recent' || sortBy === 'repo' || sortBy === 'name') {
+function normalizeSortBy(sortBy: unknown): 'name' | 'smart' | 'recent' | 'repo' {
+  if (sortBy === 'smart' || sortBy === 'recent' || sortBy === 'repo' || sortBy === 'name') {
     return sortBy
   }
-  if (sortBy === 'smart') {
-    return 'recent'
-  }
   return getDefaultUIState().sortBy
+}
+
+// Why: old persisted targets predate configHost. Default to label-based lookup
+// so imported SSH aliases keep resolving through ssh -G after upgrade.
+function normalizeSshTarget(t: SshTarget): SshTarget {
+  return { ...t, configHost: t.configHost ?? t.label ?? t.host }
 }
 
 export class Store {
@@ -69,26 +105,83 @@ export class Store {
       if (existsSync(dataFile)) {
         const raw = readFileSync(dataFile, 'utf-8')
         const parsed = JSON.parse(raw) as PersistedState
+
+        // Why: opencodeSessionCookie is stored encrypted on disk via safeStorage.
+        // Decrypt at the load boundary so the rest of the app sees plaintext.
+        if (parsed.settings?.opencodeSessionCookie) {
+          parsed.settings.opencodeSessionCookie = decrypt(parsed.settings.opencodeSessionCookie)
+        }
+
         // Merge with defaults in case new fields were added
         const defaults = getDefaultPersistedState(homedir())
+        // Why: before the layout-aware 'auto' mode shipped (issue #903),
+        // terminalMacOptionAsAlt defaulted to 'true' globally. That silently
+        // broke Option-layer characters (@ on Turkish via Option+Q, @ on
+        // German via Option+L, € on French via Option+E) for non-US users.
+        // We can't distinguish a persisted 'true' that the user chose
+        // explicitly from one they inherited from the old default — so on
+        // first launch after upgrade, flip 'true' back to 'auto' and let
+        // the renderer's keyboard-layout probe pick the right value per
+        // layout. US users land on 'true' via detection (no change); non-US
+        // users land on 'false' (correct). 'false'/'left'/'right' are
+        // definitionally explicit choices (they never matched the old
+        // default) so we carry those forward unchanged. The migrated flag
+        // guards against re-running this on subsequent launches.
+        const rawOptionAsAlt = parsed.settings?.terminalMacOptionAsAlt
+        const alreadyMigrated = parsed.settings?.terminalMacOptionAsAltMigrated === true
+        const migratedOptionAsAlt: 'auto' | 'true' | 'false' | 'left' | 'right' = alreadyMigrated
+          ? (rawOptionAsAlt ?? 'auto')
+          : rawOptionAsAlt === undefined || rawOptionAsAlt === 'true'
+            ? 'auto'
+            : rawOptionAsAlt
         return {
           ...defaults,
           ...parsed,
           settings: {
             ...defaults.settings,
             ...parsed.settings,
+            terminalMacOptionAsAlt: migratedOptionAsAlt,
+            terminalMacOptionAsAltMigrated: true,
             notifications: {
               ...getDefaultNotificationSettings(),
               ...parsed.settings?.notifications
             }
           },
-          ui: {
-            ...defaults.ui,
-            ...parsed.ui,
-            sortBy: normalizeSortBy(parsed.ui?.sortBy)
-          },
-          workspaceSession: { ...defaults.workspaceSession, ...parsed.workspaceSession },
-          sshTargets: parsed.sshTargets ?? []
+          // Why: 'recent' used to mean the weighted smart sort. One-shot
+          // migration moves it to 'smart'; the flag prevents re-firing after
+          // a user intentionally selects the new last-activity 'recent' sort.
+          ui: (() => {
+            const sort = normalizeSortBy(parsed.ui?.sortBy)
+            const migrate = !parsed.ui?._sortBySmartMigrated && sort === 'recent'
+            return {
+              ...defaults.ui,
+              ...parsed.ui,
+              sortBy: migrate ? ('smart' as const) : sort,
+              _sortBySmartMigrated: true
+            }
+          })(),
+          // Why: the workspace session is the most volatile persisted surface
+          // (schema evolves per release, daemon session IDs embedded in it).
+          // Zod-validate at the read boundary so a field-type flip from an
+          // older build — or a truncated write from a crash — gets rejected
+          // cleanly instead of poisoning Zustand state and crashing the
+          // renderer on mount. On validation failure, fall back to defaults
+          // and log; a corrupt session file shouldn't trap the user out.
+          workspaceSession: (() => {
+            if (parsed.workspaceSession === undefined) {
+              return defaults.workspaceSession
+            }
+            const result = parseWorkspaceSession(parsed.workspaceSession)
+            if (!result.ok) {
+              console.error(
+                '[persistence] Corrupt workspace session, using defaults:',
+                result.error
+              )
+              return defaults.workspaceSession
+            }
+            return { ...defaults.workspaceSession, ...result.value }
+          })(),
+          sshTargets: (parsed.sshTargets ?? []).map(normalizeSshTarget)
         }
       }
     } catch (err) {
@@ -128,15 +221,36 @@ export class Store {
     const dir = dirname(dataFile)
     await mkdir(dir, { recursive: true }).catch(() => {})
     const tmpFile = `${dataFile}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
-    await writeFile(tmpFile, JSON.stringify(this.state, null, 2), 'utf-8')
-    // Why: if flush() ran while this async write was in-flight, it bumped
-    // writeGeneration and already wrote the latest state synchronously.
-    // Renaming this stale tmp file would overwrite the fresh data.
-    if (this.writeGeneration !== gen) {
-      await rm(tmpFile).catch(() => {})
-      return
+
+    // Why: opencodeSessionCookie must be encrypted on disk. Clone state so
+    // the in-memory this.state stays plaintext for the rest of the app.
+    const stateToSave = {
+      ...this.state,
+      settings: {
+        ...this.state.settings,
+        opencodeSessionCookie: encrypt(this.state.settings.opencodeSessionCookie)
+      }
     }
-    await rename(tmpFile, dataFile)
+
+    // Why: wrap write+rename in try/finally-on-error so any failure (ENOSPC,
+    // ENFILE, EIO, permission) removes the tmp file rather than leaving a
+    // multi-megabyte orphan behind. Successful rename consumes the tmp file.
+    let renamed = false
+    try {
+      await writeFile(tmpFile, JSON.stringify(stateToSave, null, 2), 'utf-8')
+      // Why: if flush() ran while this async write was in-flight, it bumped
+      // writeGeneration and already wrote the latest state synchronously.
+      // Renaming this stale tmp file would overwrite the fresh data.
+      if (this.writeGeneration !== gen) {
+        return
+      }
+      await rename(tmpFile, dataFile)
+      renamed = true
+    } finally {
+      if (!renamed) {
+        await rm(tmpFile).catch(() => {})
+      }
+    }
   }
 
   // Why: synchronous variant kept only for flush() at shutdown, where the
@@ -148,8 +262,34 @@ export class Store {
       mkdirSync(dir, { recursive: true })
     }
     const tmpFile = `${dataFile}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
-    writeFileSync(tmpFile, JSON.stringify(this.state, null, 2), 'utf-8')
-    renameSync(tmpFile, dataFile)
+
+    // Why: opencodeSessionCookie must be encrypted on disk. Clone state so
+    // the in-memory this.state stays plaintext for the rest of the app.
+    const stateToSave = {
+      ...this.state,
+      settings: {
+        ...this.state.settings,
+        opencodeSessionCookie: encrypt(this.state.settings.opencodeSessionCookie)
+      }
+    }
+
+    // Why: mirror the async path — on any failure between writeFileSync and
+    // renameSync, remove the tmp file so crashes during shutdown don't leak
+    // orphans into userData.
+    let renamed = false
+    try {
+      writeFileSync(tmpFile, JSON.stringify(stateToSave, null, 2), 'utf-8')
+      renameSync(tmpFile, dataFile)
+      renamed = true
+    } finally {
+      if (!renamed) {
+        try {
+          unlinkSync(tmpFile)
+        } catch {
+          // Best-effort cleanup; the write already failed, swallow secondary error.
+        }
+      }
+    }
   }
 
   // ── Repos ──────────────────────────────────────────────────────────
@@ -160,10 +300,7 @@ export class Store {
 
   getRepo(id: string): Repo | undefined {
     const repo = this.state.repos.find((r) => r.id === id)
-    if (!repo) {
-      return undefined
-    }
-    return this.hydrateRepo(repo)
+    return repo ? this.hydrateRepo(repo) : undefined
   }
 
   addRepo(repo: Repo): void {
@@ -311,18 +448,17 @@ export class Store {
   // ── SSH Targets ────────────────────────────────────────────────────
 
   getSshTargets(): SshTarget[] {
-    return this.state.sshTargets ?? []
+    return (this.state.sshTargets ?? []).map(normalizeSshTarget)
   }
 
   getSshTarget(id: string): SshTarget | undefined {
-    return this.state.sshTargets?.find((t) => t.id === id)
+    const target = this.state.sshTargets?.find((t) => t.id === id)
+    return target ? normalizeSshTarget(target) : undefined
   }
 
   addSshTarget(target: SshTarget): void {
-    if (!this.state.sshTargets) {
-      this.state.sshTargets = []
-    }
-    this.state.sshTargets.push(target)
+    this.state.sshTargets ??= []
+    this.state.sshTargets.push(normalizeSshTarget(target))
     this.scheduleSave()
   }
 
@@ -331,7 +467,7 @@ export class Store {
     if (!target) {
       return null
     }
-    Object.assign(target, updates)
+    Object.assign(target, updates, normalizeSshTarget({ ...target, ...updates }))
     this.scheduleSave()
     return { ...target }
   }
@@ -369,9 +505,10 @@ function getDefaultWorktreeMeta(): WorktreeMeta {
     comment: '',
     linkedIssue: null,
     linkedPR: null,
+    linkedLinearIssue: null,
     isArchived: false,
     isUnread: false,
-    sidebarOrder: -1,
+    isPinned: false,
     sortOrder: Date.now(),
     lastActivityAt: 0
   }

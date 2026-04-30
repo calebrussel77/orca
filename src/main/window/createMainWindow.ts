@@ -1,4 +1,5 @@
-import { BrowserWindow, ipcMain, nativeTheme, shell } from 'electron'
+/* oxlint-disable max-lines */
+import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import icon from '../../../resources/icon.png?asset'
@@ -11,6 +12,7 @@ import {
   normalizeExternalBrowserUrl
 } from '../../shared/browser-url'
 import { resolveWindowShortcutAction } from '../../shared/window-shortcut-policy'
+import { getMainE2EConfig } from '../e2e-config'
 
 function forceRepaint(window: BrowserWindow): void {
   if (window.isDestroyed()) {
@@ -36,6 +38,8 @@ function forceRepaint(window: BrowserWindow): void {
 const TITLEBAR_CSS_CENTER = 20
 const TRAFFIC_LIGHT_RADIUS = 6
 const TRAFFIC_LIGHT_X = 16
+const MIN_WIDTH = 600
+const MIN_HEIGHT = 400
 
 function syncTrafficLightPosition(win: BrowserWindow, zoomFactor: number): void {
   if (process.platform !== 'darwin' || win.isDestroyed()) {
@@ -61,24 +65,58 @@ export function createMainWindow(
   store: Store | null,
   opts?: CreateMainWindowOptions
 ): BrowserWindow {
+  const rawSavedBounds = store?.getUI().windowBounds
+  // Why: defense in depth — if a previous quit/update path persisted
+  // shrink-to-min bounds (see freezeBoundsOnQuit), discard them on restore
+  // rather than resurrecting a tiny window. Anything at or below the min
+  // dimensions is treated as corrupt and falls back to defaultBounds.
+  const savedBounds =
+    rawSavedBounds && rawSavedBounds.width > MIN_WIDTH && rawSavedBounds.height > MIN_HEIGHT
+      ? rawSavedBounds
+      : undefined
+  const savedMaximized = store?.getUI().windowMaximized ?? false
+  // Why: on first launch (no saved bounds), fill the primary display work area
+  // so the window feels spacious without calling maximize(). Saved bounds still
+  // win on subsequent launches.
+  const defaultBounds = (() => {
+    try {
+      const { width, height } = screen.getPrimaryDisplay().workAreaSize
+      return { width, height }
+    } catch {
+      return { width: 1200, height: 800 }
+    }
+  })()
+
+  const settings = store?.getSettings()
+  const blur = settings?.windowBackgroundBlur ?? false
+  // Why: native blur requires platform-specific Electron APIs. macOS uses
+  // vibrancy (needs transparent: true), Windows uses backgroundMaterial.
+  // Linux has no native equivalent. Blur only applies at window creation;
+  // changing the setting requires a restart.
+  const platformBlurOptions = blur
+    ? process.platform === 'darwin'
+      ? { vibrancy: 'under-window' as const, transparent: true }
+      : process.platform === 'win32'
+        ? { backgroundMaterial: 'acrylic' as const }
+        : {}
+    : {}
+
   const mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 600,
-    minHeight: 400,
+    width: savedBounds?.width ?? defaultBounds.width,
+    height: savedBounds?.height ?? defaultBounds.height,
+    ...(savedBounds ? { x: savedBounds.x, y: savedBounds.y } : {}),
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
     show: false,
+    // Why: on macOS the menu lives in the system menu bar, so the in-window
+    // menu bar is irrelevant. On Windows/Linux we auto-hide so the menu bar
+    // doesn't consume a dedicated row of vertical space on every launch —
+    // users can still reveal the (properly restructured) File/Edit/View/
+    // Window/Help menus by pressing Alt, matching native Windows/Linux
+    // conventions (File Explorer, Firefox, etc.).
     autoHideMenuBar: true,
-    // Why: Windows currently shows both Chromium's native caption bar and the
-    // renderer titlebar. Going frameless on Windows lets Orca own one unified
-    // titlebar surface while keeping macOS traffic lights on the native path.
-    frame: process.platform === 'win32' ? false : undefined,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#ffffff',
-    titleBarStyle:
-      process.platform === 'darwin'
-        ? 'hiddenInset'
-        : process.platform === 'win32'
-          ? 'hidden'
-          : undefined,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     // Why: initial position for 1x zoom; syncTrafficLightPosition() adjusts
     // dynamically when the user changes UI zoom.
     ...(process.platform === 'darwin'
@@ -90,6 +128,7 @@ export function createMainWindow(
         }
       : {}),
     icon: is.dev ? devIcon : icon,
+    ...platformBlurOptions,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -123,39 +162,96 @@ export function createMainWindow(
     }
   })
 
+  // Why: on macOS + Electron 41, creating a webview guest process can re-emit
+  // ready-to-show on the same BrowserWindow. Without a one-shot guard the
+  // handler re-runs maximize() from the persisted savedMaximized flag, snapping
+  // the window back to full-screen after the user already resized it (#591).
+  let handledInitialReadyToShow = false
   mainWindow.on('ready-to-show', () => {
-    mainWindow.maximize()
+    if (handledInitialReadyToShow) {
+      return
+    }
+    handledInitialReadyToShow = true
+
+    // Why: in E2E headless mode, the window stays hidden to avoid stealing
+    // focus and screen real estate during test runs. Playwright interacts
+    // with the renderer via CDP, which works without a visible window.
+    const e2eConfig = getMainE2EConfig()
+    if (e2eConfig.headless) {
+      return
+    }
+    if (savedMaximized) {
+      mainWindow.maximize()
+    }
     mainWindow.show()
+  })
+
+  // Why: persist window bounds so the app restores to the user's last
+  // position/size instead of maximizing on every launch. Debounce to avoid
+  // hammering the persistence layer during continuous resize drags.
+  let boundsTimer: ReturnType<typeof setTimeout> | null = null
+  // Why: once close has been initiated (user Cmd+Q, auto-updater relaunch,
+  // app.quit during quitAndInstall), Electron can still emit resize/move/
+  // unmaximize events while the OS tears the window down — persisting those
+  // intermediate, often near-minimum bounds would clobber the user's real
+  // last-used size and cause the next launch (especially post-update
+  // relaunch) to come up at minWidth × minHeight. Freeze persistence as soon
+  // as 'close' is observed.
+  let windowClosing = false
+  const saveBounds = (): void => {
+    if (boundsTimer) {
+      clearTimeout(boundsTimer)
+    }
+    boundsTimer = setTimeout(() => {
+      boundsTimer = null
+      if (windowClosing || mainWindow.isDestroyed() || mainWindow.isFullScreen()) {
+        return
+      }
+      const isMaximized = mainWindow.isMaximized()
+      store?.updateUI({ windowMaximized: isMaximized })
+      if (!isMaximized) {
+        store?.updateUI({ windowBounds: mainWindow.getBounds() })
+      }
+    }, 500)
+  }
+  mainWindow.on('resize', saveBounds)
+  mainWindow.on('move', saveBounds)
+
+  // Why: the auto-updater install path calls
+  // `win.removeAllListeners('close')` before quitting, so the per-window
+  // 'close' handler below never runs for update-triggered relaunches.
+  // Listen to app-level 'before-quit' as a second latch so resize/move
+  // events emitted during window teardown don't persist shrink-to-min
+  // bounds that would be restored on next launch.
+  const freezeBoundsOnQuit = (): void => {
+    windowClosing = true
+    if (boundsTimer) {
+      clearTimeout(boundsTimer)
+      boundsTimer = null
+    }
+  }
+  app.on('before-quit', freezeBoundsOnQuit)
+
+  mainWindow.on('maximize', () => {
+    if (windowClosing) {
+      return
+    }
+    store?.updateUI({ windowMaximized: true })
+  })
+  mainWindow.on('unmaximize', () => {
+    if (windowClosing) {
+      return
+    }
+    store?.updateUI({ windowMaximized: false, windowBounds: mainWindow.getBounds() })
   })
 
   mainWindow.on('enter-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen-changed', true)
-    mainWindow.webContents.send('window:state-changed', {
-      isFullScreen: true,
-      isMaximized: mainWindow.isMaximized()
-    })
   })
 
   mainWindow.on('leave-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen-changed', false)
-    mainWindow.webContents.send('window:state-changed', {
-      isFullScreen: false,
-      isMaximized: mainWindow.isMaximized()
-    })
   })
-
-  const emitWindowState = (): void => {
-    if (mainWindow.isDestroyed()) {
-      return
-    }
-    mainWindow.webContents.send('window:state-changed', {
-      isFullScreen: mainWindow.isFullScreen(),
-      isMaximized: mainWindow.isMaximized()
-    })
-  }
-
-  mainWindow.on('maximize', emitWindowState)
-  mainWindow.on('unmaximize', emitWindowState)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     const externalUrl = normalizeExternalBrowserUrl(details.url)
@@ -235,6 +331,44 @@ export function createMainWindow(
     event.preventDefault()
   })
 
+  // Why: mirrors the renderer's markdown-editor focus state so the main-process
+  // before-input-event handler can skip Cmd/Ctrl+B interception while TipTap
+  // owns focus. See docs/markdown-cmd-b-bold-design.md. We only carve out
+  // Cmd+B — terminal and browser-guest focus still get sidebar-toggle, which
+  // preserves the ^B-to-PTY leak protection rationale in
+  // shared/window-shortcut-policy.ts:74-77.
+  let markdownEditorFocused = false
+
+  const markdownFocusChannel = 'ui:setMarkdownEditorFocused'
+  // Why: coerce to strict boolean and verify the sender. A renderer bug or
+  // compromised IPC payload must not set the flag to a truthy non-bool (e.g.
+  // an object) and silently disable the sidebar toggle — default-deny on any
+  // non-bool. Additionally, only this main window's top-level webContents may
+  // mutate the flag, so a guest/webview or unrelated sender can't disable the
+  // Cmd+B sidebar carve-out.
+  const onMarkdownEditorFocused = (event: Electron.IpcMainEvent, focused: unknown): void => {
+    if (event.sender !== mainWindow.webContents) {
+      return
+    }
+    markdownEditorFocused = focused === true
+  }
+  ipcMain.on(markdownFocusChannel, onMarkdownEditorFocused)
+
+  // Why: renderer can't mirror focus state across a crash/reload/close.
+  // Default-deny the carve-out so Cmd+B falls back to sidebar-toggle, which is
+  // the safe behavior when focus context is unknown. Preserves the
+  // ^B-to-PTY leak invariant from shared/window-shortcut-policy.ts:74-77.
+  const resetMarkdownEditorFocus = (): void => {
+    markdownEditorFocused = false
+  }
+  mainWindow.webContents.on('render-process-gone', resetMarkdownEditorFocus)
+  mainWindow.webContents.on('destroyed', resetMarkdownEditorFocus)
+  mainWindow.webContents.on('did-start-navigation', (_e, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) {
+      resetMarkdownEditorFocus()
+    }
+  })
+
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') {
       return
@@ -247,6 +381,24 @@ export function createMainWindow(
       } else {
         mainWindow.webContents.openDevTools({ mode: 'undocked' })
       }
+      return
+    }
+
+    // Why: TipTap owns bare Cmd/Ctrl+B for bold while the markdown editor is
+    // focused — skip interception so its keymap runs. Scoped to the bare chord
+    // (no Shift/Alt): any extra modifier signals different intent and must
+    // still resolve through the policy allowlist. Other focus contexts
+    // (terminal, browser guest) still get sidebar-toggle because ^B would
+    // otherwise reach xterm.js / guest webContents.
+    // See docs/markdown-cmd-b-bold-design.md.
+    const modForBold = process.platform === 'darwin' ? input.meta : input.control
+    if (
+      markdownEditorFocused &&
+      input.code === 'KeyB' &&
+      !input.alt &&
+      !input.shift &&
+      modForBold
+    ) {
       return
     }
 
@@ -290,9 +442,27 @@ export function createMainWindow(
       return
     }
 
+    if (action.type === 'openNewWorkspace') {
+      // Why: routed through the main process so focus contexts that bypass
+      // the renderer's window-level keydown (contentEditable markdown editor,
+      // browser-guest webContents) still reach the new-workspace composer.
+      // Forward the target tab so Cmd/Ctrl+Shift+N lands on the
+      // "Create from…" tab instead of the default quick-create form.
+      mainWindow.webContents.send('ui:openNewWorkspace', action.tab)
+      return
+    }
+
     if (action.type === 'jumpToWorktreeIndex') {
       // Forward Cmd/Ctrl+1-9 for quick worktree switching
       mainWindow.webContents.send('ui:jumpToWorktreeIndex', action.index)
+      return
+    }
+
+    if (action.type === 'worktreeHistoryNavigate') {
+      // Why: routed through main so the chord reaches the renderer even when
+      // a terminal (xterm.js) or a browser guest has focus — both surfaces
+      // otherwise absorb Arrow keys before the renderer's window listener.
+      mainWindow.webContents.send('ui:worktreeHistoryNavigate', action.direction)
     }
   })
 
@@ -317,6 +487,16 @@ export function createMainWindow(
   mainWindow.on('close', (e) => {
     if (windowCloseConfirmed) {
       windowCloseConfirmed = false
+      // Why: past this point Electron/OS may emit resize/move/unmaximize as
+      // the window is destroyed. Freeze bounds persistence so those
+      // teardown events can't clobber the user's saved window size — which
+      // would otherwise make the post-update relaunch come up at minWidth ×
+      // minHeight (issue surfaced in v1.3.26-rc2).
+      windowClosing = true
+      if (boundsTimer) {
+        clearTimeout(boundsTimer)
+        boundsTimer = null
+      }
       return
     }
     e.preventDefault()
@@ -325,6 +505,10 @@ export function createMainWindow(
     })
   })
   mainWindow.webContents.on('will-prevent-unload', () => {
+    // Why: a prevented beforeunload cancels the in-flight quit. Release the
+    // bounds-persistence freeze so a user who keeps using the window after
+    // aborting Cmd+Q still gets their size saved.
+    windowClosing = false
     opts?.onQuitAborted?.()
   })
 
@@ -335,51 +519,21 @@ export function createMainWindow(
     }
   }
   const trafficLightChannel = 'ui:sync-traffic-lights'
-  const minimizeWindowChannel = 'window:minimize'
-  const toggleMaximizeWindowChannel = 'window:toggle-maximize'
-  const closeWindowChannel = 'window:close'
-  const getWindowStateChannel = 'window:get-state'
   const onSyncTrafficLights = (_event: Electron.IpcMainEvent, zoomFactor: number): void => {
     syncTrafficLightPosition(mainWindow, zoomFactor)
   }
-  const onMinimizeWindow = (): void => {
-    if (!mainWindow.isDestroyed()) {
-      mainWindow.minimize()
-    }
-  }
-  const onToggleMaximizeWindow = (): void => {
-    if (mainWindow.isDestroyed()) {
-      return
-    }
-    if (mainWindow.isMaximized()) {
-      mainWindow.unmaximize()
-      return
-    }
-    mainWindow.maximize()
-  }
-  const onCloseWindow = (): void => {
-    if (!mainWindow.isDestroyed()) {
-      mainWindow.close()
-    }
-  }
   ipcMain.on(trafficLightChannel, onSyncTrafficLights)
-  ipcMain.on(minimizeWindowChannel, onMinimizeWindow)
-  ipcMain.on(toggleMaximizeWindowChannel, onToggleMaximizeWindow)
-  ipcMain.on(closeWindowChannel, onCloseWindow)
-  ipcMain.removeHandler(getWindowStateChannel)
-  ipcMain.handle(getWindowStateChannel, () => ({
-    isFullScreen: mainWindow.isFullScreen(),
-    isMaximized: mainWindow.isMaximized()
-  }))
 
   ipcMain.on(confirmCloseChannel, onConfirmClose)
   mainWindow.on('closed', () => {
+    // Why: default-deny the Cmd+B carve-out after the window is gone so a
+    // stale-true flag can't leak past subsequent state transitions. Paired
+    // with the webContents lifecycle resets above.
+    markdownEditorFocused = false
     ipcMain.removeListener(trafficLightChannel, onSyncTrafficLights)
-    ipcMain.removeListener(minimizeWindowChannel, onMinimizeWindow)
-    ipcMain.removeListener(toggleMaximizeWindowChannel, onToggleMaximizeWindow)
-    ipcMain.removeListener(closeWindowChannel, onCloseWindow)
     ipcMain.removeListener(confirmCloseChannel, onConfirmClose)
-    ipcMain.removeHandler(getWindowStateChannel)
+    ipcMain.removeListener(markdownFocusChannel, onMarkdownEditorFocused)
+    app.removeListener('before-quit', freezeBoundsOnQuit)
   })
 
   if (is.dev && process.env.ELECTRON_RENDERER_URL) {

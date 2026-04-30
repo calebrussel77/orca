@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import {
   FOCUS_TERMINAL_PANE_EVENT,
+  SYNC_FIT_PANES_EVENT,
   TOGGLE_TERMINAL_PANE_EXPAND_EVENT,
   type FocusTerminalPaneDetail
 } from '@/constants/terminal'
@@ -12,33 +13,44 @@ import type { PtyTransport } from './pty-transport'
 type UseTerminalPaneGlobalEffectsArgs = {
   tabId: string
   isActive: boolean
+  isVisible: boolean
   managerRef: React.RefObject<PaneManager | null>
   containerRef: React.RefObject<HTMLDivElement | null>
   paneTransportsRef: React.RefObject<Map<number, PtyTransport>>
   pendingWritesRef: React.RefObject<Map<number, string>>
   isActiveRef: React.RefObject<boolean>
+  isVisibleRef: React.RefObject<boolean>
   toggleExpandPane: (paneId: number) => void
 }
 
 export function useTerminalPaneGlobalEffects({
   tabId,
   isActive,
+  isVisible,
   managerRef,
   containerRef,
   paneTransportsRef,
   pendingWritesRef,
   isActiveRef,
+  isVisibleRef,
   toggleExpandPane
 }: UseTerminalPaneGlobalEffectsArgs): void {
-  const wasActiveRef = useRef(false)
+  // Why: starts as `true` so the first render with isVisible=false triggers
+  // suspendRendering(). Without this, background worktrees that mount hidden
+  // (isVisible=false from the start) never suspend their WebGL contexts —
+  // openTerminal() unconditionally creates a WebGL addon, but this effect
+  // only suspends on true→false transitions. The leaked contexts exhaust
+  // Chromium's ~8-context budget, causing "webglcontextlost" on visible
+  // terminals and making them unresponsive.
+  const wasVisibleRef = useRef(true)
 
   // Why: tracks any in-progress chunked pending-write flush so the cleanup
   // function can cancel it if the pane deactivates mid-flush.
   const pendingFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Why: the deferred rAF (guardedResumeAndFit) must be cancellable when
-  // the pane deactivates before the rAF fires — otherwise it would call
-  // resumeRendering() on an already-suspended manager.
+  // Why: the deferred rAF (guardedFit) must be cancellable when the pane
+  // deactivates before the rAF fires — otherwise it would call
+  // fitAndFocusPanes() on a suspended manager.
   const pendingRafRef = useRef<number | null>(null)
 
   // Why: two independent code paths schedule fitPanes() after a worktree
@@ -57,13 +69,15 @@ export function useTerminalPaneGlobalEffects({
     if (!manager) {
       return
     }
-    if (isActive) {
-      // Why: resumeRendering() creates WebGL contexts for each pane, which
-      // blocks the renderer for 100–500 ms per pane on Windows (ANGLE →
-      // D3D11).  Deferring it into the rAF that runs after the pending-write
-      // drain lets the browser paint one frame with the DOM renderer so the
-      // terminal content appears immediately.  WebGL takes over seamlessly
-      // in the next frame without a visible flash.
+    if (isVisible) {
+      // Why: resume WebGL immediately so the terminal shows its last-known
+      // state on the first painted frame. Without this, the browser paints
+      // 1+ frames of stale xterm DOM-fallback content at wrong dimensions
+      // (the "stretched" flash). On macOS, WebGL context creation is ~5 ms
+      // — fast enough to feel instant. On Windows (ANGLE → D3D11) it can
+      // take 100–500 ms, but the alternative (deferring to a rAF) leaves
+      // the terminal visibly distorted, which is a worse UX tradeoff.
+      manager.resumeRendering()
 
       fitEpochRef.current++
       const epoch = fitEpochRef.current
@@ -89,16 +103,12 @@ export function useTerminalPaneGlobalEffects({
         pendingWritesRef.current.set(paneId, '')
       }
 
-      const guardedResumeAndFit = (): void => {
+      const guardedFit = (): void => {
         pendingRafRef.current = null
-        // Why: read managerRef.current at rAF time instead of capturing
-        // it at effect entry — the PaneManager instance can change if the
-        // component unmounts and remounts during rapid tab switches.
         const mgr = managerRef.current
         if (!mgr) {
           return
         }
-        mgr.resumeRendering()
         // Why: three-layer guard prevents redundant and stale fits.
         // 1. Staleness — reject callbacks from a superseded activation
         //    (e.g. rapid A→B→C worktree switch).
@@ -113,11 +123,15 @@ export function useTerminalPaneGlobalEffects({
           return
         }
         fitRanForEpochRef.current = epoch
-        fitAndFocusPanes(mgr)
+        if (isActive) {
+          fitAndFocusPanes(mgr)
+          return
+        }
+        fitPanes(mgr)
       }
 
       if (entries.length === 0) {
-        pendingRafRef.current = requestAnimationFrame(guardedResumeAndFit)
+        pendingRafRef.current = requestAnimationFrame(guardedFit)
       } else {
         let entryIdx = 0
         let offset = 0
@@ -125,7 +139,7 @@ export function useTerminalPaneGlobalEffects({
         const drainNextChunk = (): void => {
           if (entryIdx >= entries.length) {
             pendingFlushRef.current = null
-            pendingRafRef.current = requestAnimationFrame(guardedResumeAndFit)
+            pendingRafRef.current = requestAnimationFrame(guardedFit)
             return
           }
 
@@ -153,24 +167,25 @@ export function useTerminalPaneGlobalEffects({
 
         drainNextChunk()
       }
-    } else if (wasActiveRef.current) {
+    } else if (wasVisibleRef.current) {
       // Cancel any in-progress chunked flush before suspending.
       if (pendingFlushRef.current !== null) {
         clearTimeout(pendingFlushRef.current)
         pendingFlushRef.current = null
       }
-      // Cancel any pending rAF so guardedResumeAndFit doesn't call
-      // resumeRendering() on an already-suspended manager.
+      // Cancel any pending rAF so guardedFit doesn't run on a
+      // suspended manager.
       if (pendingRafRef.current !== null) {
         cancelAnimationFrame(pendingRafRef.current)
         pendingRafRef.current = null
       }
       manager.suspendRendering()
     }
-    wasActiveRef.current = isActive
+    wasVisibleRef.current = isVisible
     isActiveRef.current = isActive
+    isVisibleRef.current = isVisible
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive])
+  }, [isActive, isVisible])
 
   useEffect(() => {
     const onToggleExpand = (event: Event): void => {
@@ -217,8 +232,31 @@ export function useTerminalPaneGlobalEffects({
     return () => window.removeEventListener(FOCUS_TERMINAL_PANE_EVENT, onFocusPane)
   }, [tabId, managerRef])
 
+  // Why: sidebar open/close toggles dispatch SYNC_FIT_PANES_EVENT from a
+  // useLayoutEffect (pre-paint, same frame as the width change) so the
+  // terminal fits synchronously with the new container size, eliminating the
+  // ~16ms "old cols, new container width" flash that a deferred
+  // ResizeObserver rAF would otherwise produce. xterm's terminal.resize()
+  // natively preserves viewportY across reflows (verified in
+  // scroll-reflow.test.ts "reference: undisturbed"), so a bare fitAllPanes()
+  // is all we need — no capture/restore dance. The subsequent per-pane
+  // ResizeObserver rAF and the 150ms debounced global fit become no-ops
+  // because proposeDimensions() will match current cols/rows (early-return
+  // branch in safeFit). Listener is global (not gated on isVisible/isActive)
+  // so background tabs also fit, keeping their scroll position intact for
+  // when the user switches back.
   useEffect(() => {
-    if (!isActive) {
+    const onSyncFit = (): void => {
+      managerRef.current?.fitAllPanes()
+    }
+    window.addEventListener(SYNC_FIT_PANES_EVENT, onSyncFit)
+    return () => {
+      window.removeEventListener(SYNC_FIT_PANES_EVENT, onSyncFit)
+    }
+  }, [managerRef])
+
+  useEffect(() => {
+    if (!isVisible) {
       return
     }
     const container = containerRef.current
@@ -271,11 +309,17 @@ export function useTerminalPaneGlobalEffects({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive])
+  }, [isVisible])
 
+  // Why: only the active tab's terminal should process file drops. Registering
+  // a listener per mounted tab causes a MaxListenersExceededWarning when 11+
+  // tabs are open. Gating on isActive ensures at most one listener exists.
   useEffect(() => {
+    if (!isActive) {
+      return
+    }
     return window.api.ui.onFileDrop((data) => {
-      if (!isActiveRef.current || data.target !== 'terminal') {
+      if (data.target !== 'terminal') {
         return
       }
       const manager = managerRef.current
@@ -300,5 +344,5 @@ export function useTerminalPaneGlobalEffects({
         transport.sendInput(`${shellEscapePath(path)} `)
       }
     })
-  }, [isActiveRef, managerRef, paneTransportsRef])
+  }, [isActive, managerRef, paneTransportsRef])
 }

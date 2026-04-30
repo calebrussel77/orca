@@ -15,6 +15,9 @@ const mockApi = {
   },
   pty: {
     kill: vi.fn().mockResolvedValue(undefined)
+  },
+  hooks: {
+    check: vi.fn().mockResolvedValue({ hasHooks: false, hooks: null, mayNeedUpdate: false })
   }
 }
 
@@ -30,6 +33,9 @@ function createTestStore() {
         // Why: this test isolates the worktree slice, so it only provides the
         // state surface that `createWorktreeSlice` reads and writes.
         ...createWorktreeSlice(...a),
+        trustedOrcaHooks: {},
+        repos: [],
+        openModal: vi.fn(),
         shutdownWorktreeTerminals: vi.fn().mockResolvedValue(undefined),
         tabsByWorktree: {},
         tabBarOrderByWorktree: {},
@@ -38,6 +44,7 @@ function createTestStore() {
         unifiedTabsByWorktree: {},
         groupsByWorktree: {},
         activeGroupIdByWorktree: {},
+        layoutByWorktree: {},
         openFiles: [],
         editorDrafts: {},
         markdownViewMode: {},
@@ -72,12 +79,13 @@ function makeWorktree(overrides: Partial<Worktree> & { id: string; repoId: strin
     comment: '',
     linkedIssue: null,
     linkedPR: null,
+    linkedLinearIssue: null,
     isArchived: false,
     isUnread: false,
+    isPinned: false,
     sortOrder: 0,
     lastActivityAt: 0,
-    ...overrides,
-    sidebarOrder: overrides.sidebarOrder ?? -1
+    ...overrides
   }
 }
 
@@ -305,6 +313,10 @@ describe('removeWorktree state cleanup', () => {
       activeGroupIdByWorktree: {
         'repo1::/path/wt1': 'group-1',
         'repo1::/path/wt2': 'group-2'
+      },
+      layoutByWorktree: {
+        'repo1::/path/wt1': { type: 'leaf', groupId: 'group-1' },
+        'repo1::/path/wt2': { type: 'leaf', groupId: 'group-2' }
       }
     } as unknown as Partial<AppState>)
 
@@ -321,6 +333,9 @@ describe('removeWorktree state cleanup', () => {
     })
     expect(store.getState().activeGroupIdByWorktree).toEqual({
       'repo1::/path/wt2': 'group-2'
+    })
+    expect(store.getState().layoutByWorktree).toEqual({
+      'repo1::/path/wt2': { type: 'leaf', groupId: 'group-2' }
     })
   })
 
@@ -393,5 +408,72 @@ describe('removeWorktree state cleanup', () => {
 
     // The same reference should be returned (no unnecessary shallow copy)
     expect(store.getState().editorDrafts).toBe(drafts)
+  })
+})
+
+// Why: ghostty "show until interact" model — BEL must raise the sidebar dot
+// even on the active worktree, and only clearWorktreeUnread (called from the
+// terminal pane on keystroke / pointerdown) dismisses it. Pins both halves
+// of that contract.
+describe('worktree unread (show-until-interact)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('markWorktreeUnread sets isUnread even when the worktree is active', async () => {
+    const store = createTestStore()
+    const wt = makeWorktree({ id: 'repo1::/path/wt1', repoId: 'repo1', path: '/path/wt1' })
+    store.setState({
+      worktreesByRepo: { repo1: [wt] },
+      activeWorktreeId: wt.id
+    } as Partial<AppState>)
+
+    store.getState().markWorktreeUnread(wt.id)
+
+    const after = store.getState().worktreesByRepo.repo1[0]
+    expect(after.isUnread).toBe(true)
+    expect(mockApi.worktrees.updateMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreeId: wt.id,
+        updates: expect.objectContaining({ isUnread: true })
+      })
+    )
+  })
+
+  it('clearWorktreeUnread clears isUnread and persists the change', async () => {
+    const store = createTestStore()
+    const wt = makeWorktree({
+      id: 'repo1::/path/wt1',
+      repoId: 'repo1',
+      path: '/path/wt1',
+      isUnread: true
+    })
+    store.setState({
+      worktreesByRepo: { repo1: [wt] },
+      activeWorktreeId: wt.id
+    } as Partial<AppState>)
+
+    store.getState().clearWorktreeUnread(wt.id)
+
+    const after = store.getState().worktreesByRepo.repo1[0]
+    expect(after.isUnread).toBe(false)
+    expect(mockApi.worktrees.updateMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreeId: wt.id,
+        updates: { isUnread: false }
+      })
+    )
+  })
+
+  it('clearWorktreeUnread is a no-op when already cleared', () => {
+    const store = createTestStore()
+    const wt = makeWorktree({ id: 'repo1::/path/wt1', repoId: 'repo1', path: '/path/wt1' })
+    const initial = { repo1: [wt] }
+    store.setState({ worktreesByRepo: initial } as Partial<AppState>)
+
+    store.getState().clearWorktreeUnread(wt.id)
+
+    expect(store.getState().worktreesByRepo).toBe(initial)
+    expect(mockApi.worktrees.updateMeta).not.toHaveBeenCalled()
   })
 })

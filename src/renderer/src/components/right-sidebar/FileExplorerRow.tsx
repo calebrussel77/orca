@@ -3,14 +3,17 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  Eye,
+  File,
   FilePlus,
   Files,
+  Folder,
+  FolderOpen,
   FolderPlus,
   Loader2,
   Pencil,
   Trash2
 } from 'lucide-react'
-import { VscodeEntryIcon } from '@/components/VscodeEntryIcon'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -20,6 +23,8 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { cn } from '@/lib/utils'
+import { useAppStore } from '@/store'
+import { detectLanguage } from '@/lib/language-detect'
 import type { GitFileStatus } from '../../../../shared/types'
 import { STATUS_LABELS } from './status-display'
 import type { TreeNode } from './file-explorer-types'
@@ -126,22 +131,18 @@ export function InlineInputRow({
 
   return (
     <div
-      className="flex items-center w-full px-2 py-1.5 gap-1.5"
+      className="flex items-center w-full h-[26px] px-2 gap-1"
       style={{ paddingLeft: `${depth * 16 + 8}px` }}
     >
-      <span className="size-3.5 shrink-0" />
-      <VscodeEntryIcon
-        pathValue={
-          inlineInput.type === 'rename'
-            ? (inlineInput.existingPath ?? inlineInput.parentPath)
-            : `${inlineInput.parentPath}/${inlineInput.type === 'folder' ? 'new-folder' : 'new-file'}`
-        }
-        kind={inlineInput.type === 'folder' ? 'directory' : 'file'}
-        className="size-3.5 shrink-0"
-      />
+      <span className="size-3 shrink-0" />
+      {inlineInput.type === 'folder' ? (
+        <Folder className="size-3 shrink-0 text-muted-foreground" />
+      ) : (
+        <File className="size-3 shrink-0 text-muted-foreground" />
+      )}
       <input
         ref={inputRef}
-        className="flex-1 min-w-0 border border-ring rounded-sm bg-transparent px-1 text-sm text-foreground outline-none"
+        className="flex-1 min-w-0 bg-transparent text-xs text-foreground outline-none border border-ring rounded-sm px-1"
         defaultValue={inlineInput.type === 'rename' ? inlineInput.existingName : ''}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
@@ -238,6 +239,8 @@ export function FileExplorerRow({
   onNativeDragTargetChange,
   onNativeDragExpandDir
 }: FileExplorerRowProps): React.JSX.Element {
+  const openMarkdownPreview = useAppStore((s) => s.openMarkdownPreview)
+  const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
   const rowDropDir = node.isDirectory ? node.path : targetDir
   const { handleDragOver, handleDragEnter, handleDragLeave, handleDrop } = useFileExplorerRowDrag({
     rowDropDir,
@@ -256,7 +259,7 @@ export function FileExplorerRow({
       <ContextMenuTrigger asChild>
         <button
           className={cn(
-            'flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-foreground',
+            'flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-xs transition-colors hover:bg-accent hover:text-foreground',
             isSelected && 'bg-accent text-accent-foreground',
             isFlashing && 'bg-amber-400/20 ring-1 ring-inset ring-amber-400/70'
           )}
@@ -283,35 +286,41 @@ export function FileExplorerRow({
             <>
               <ChevronRight
                 className={cn(
-                  'size-3.5 shrink-0 text-muted-foreground transition-transform',
+                  'size-3 shrink-0 text-muted-foreground transition-transform',
                   isExpanded && 'rotate-90'
                 )}
               />
               {isLoading ? (
-                <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+                <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />
+              ) : isExpanded ? (
+                <FolderOpen className="size-3 shrink-0 text-muted-foreground" />
               ) : (
-                <VscodeEntryIcon
-                  pathValue={node.path}
-                  kind="directory"
-                  className="size-3.5 shrink-0"
-                />
+                <Folder className="size-3 shrink-0 text-muted-foreground" />
               )}
             </>
           ) : (
             <>
-              <span className="size-3.5 shrink-0" />
-              <VscodeEntryIcon pathValue={node.path} kind="file" className="size-3.5 shrink-0" />
+              <span className="size-3 shrink-0" />
+              <File className="size-3 shrink-0 text-muted-foreground" />
             </>
           )}
           <span
             className={cn('truncate', isSelected && !nodeStatus && 'text-accent-foreground')}
             style={nodeStatus ? { color: statusColor ?? undefined } : undefined}
+            onDoubleClick={(e) => {
+              // Why: the row itself swallows double-click for "pin preview" /
+              // directory toggle. Scope rename to the filename text only so
+              // those behaviors stay intact on the icon and empty row area,
+              // matching VS Code's rename hotspot.
+              e.stopPropagation()
+              onStartRename(node)
+            }}
           >
             {node.name}
           </span>
           {nodeStatus && (
             <span
-              className="mr-2 ml-auto shrink-0 text-[0.75em] font-semibold tracking-wide"
+              className="ml-auto shrink-0 text-[10px] font-semibold tracking-wide mr-2"
               style={{ color: statusColor ?? undefined }}
             >
               {STATUS_LABELS[nodeStatus]}
@@ -346,6 +355,21 @@ export function FileExplorerRow({
           <ContextMenuItem onSelect={() => onDuplicate(node)}>
             <Files />
             Duplicate
+          </ContextMenuItem>
+        )}
+        {!node.isDirectory && activeWorktreeId && detectLanguage(node.path) === 'markdown' && (
+          <ContextMenuItem
+            onSelect={() =>
+              openMarkdownPreview({
+                filePath: node.path,
+                relativePath: node.relativePath,
+                worktreeId: activeWorktreeId,
+                language: 'markdown'
+              })
+            }
+          >
+            <Eye />
+            Open Markdown Preview
           </ContextMenuItem>
         )}
         <ContextMenuItem onSelect={() => window.api.shell.openPath(node.path)}>

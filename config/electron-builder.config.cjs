@@ -1,3 +1,6 @@
+const { chmodSync, existsSync, readdirSync } = require('node:fs')
+const { join } = require('node:path')
+
 const isMacRelease = process.env.ORCA_MAC_RELEASE === '1'
 const { resolveGitHubReleaseRepo } = require('./github-release.config.cjs')
 const githubReleaseRepo = resolveGitHubReleaseRepo()
@@ -22,13 +25,50 @@ module.exports = {
   // from out/shared/ (e.g. runtime-bootstrap). Both directories must be
   // unpacked so that Node's require() can resolve the cross-directory imports
   // when the CLI runs outside the asar archive.
-  asarUnpack: ['out/cli/**', 'out/shared/**', 'resources/**'],
+  // Why: daemon-entry.js is forked as a separate Node.js process and must be
+  // accessible on disk (not inside the asar archive) for child_process.fork().
+  // Why: the CLI is compiled by tsc (not bundled), so its runtime imports
+  // resolve at runtime via Node's normal module lookup. The shim launches
+  // the CLI with ELECTRON_RUN_AS_NODE, which bypasses Electron's asar
+  // integration — dependencies inside the asar archive are invisible to
+  // require(). Unpack CLI runtime deps so they resolve from
+  // app.asar.unpacked/node_modules/.
+  asarUnpack: [
+    'out/cli/**',
+    'out/shared/**',
+    'out/main/daemon-entry.js',
+    'out/main/chunks/**',
+    'resources/**',
+    'node_modules/zod/**'
+  ],
+  afterPack: async (context) => {
+    const resourcesDir =
+      context.electronPlatformName === 'darwin'
+        ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
+        : join(context.appOutDir, 'resources')
+    if (!existsSync(resourcesDir)) {
+      return
+    }
+    for (const filename of readdirSync(resourcesDir)) {
+      if (!filename.startsWith('agent-browser-')) {
+        continue
+      }
+      // Why: the upstream package has inconsistent executable bits across
+      // platform binaries (notably darwin-x64). child_process.execFile needs
+      // the copied binary to be executable in packaged apps.
+      chmodSync(join(resourcesDir, filename), 0o755)
+    }
+  },
   win: {
     executableName: 'Orca',
     extraResources: [
       {
         from: 'resources/win32/bin/orca.cmd',
         to: 'bin/orca.cmd'
+      },
+      {
+        from: 'node_modules/agent-browser/bin/agent-browser-win32-x64.exe',
+        to: 'agent-browser-win32-x64.exe'
       }
     ]
   },
@@ -43,8 +83,21 @@ module.exports = {
     entitlements: 'resources/build/entitlements.mac.plist',
     entitlementsInherit: 'resources/build/entitlements.mac.plist',
     extendInfo: {
+      NSAppleEventsUsageDescription:
+        'Orca allows terminal-launched developer tools to automate local apps when you request it.',
+      NSBluetoothAlwaysUsageDescription:
+        'Orca allows terminal-launched developer tools to access Bluetooth devices when you request it.',
+      NSBluetoothPeripheralUsageDescription:
+        'Orca allows terminal-launched developer tools to access Bluetooth devices when you request it.',
       NSCameraUsageDescription: "Application requests access to the device's camera.",
+      NSLocationUsageDescription:
+        'Orca allows terminal-launched developer tools to access location when you request it.',
+      NSLocalNetworkUsageDescription:
+        'Orca allows terminal-launched developer tools to discover and connect to local development servers when you request it.',
       NSMicrophoneUsageDescription: "Application requests access to the device's microphone.",
+      NSAudioCaptureUsageDescription:
+        'Orca allows terminal-launched developer tools to capture desktop audio when you request it.',
+      NSBonjourServices: ['_http._tcp', '_https._tcp'],
       NSDocumentsFolderUsageDescription:
         "Application requests access to the user's Documents folder.",
       NSDownloadsFolderUsageDescription:
@@ -60,6 +113,10 @@ module.exports = {
       {
         from: 'resources/darwin/bin/orca',
         to: 'bin/orca'
+      },
+      {
+        from: 'node_modules/agent-browser/bin/agent-browser-darwin-${arch}',
+        to: 'agent-browser-darwin-${arch}'
       }
     ],
     target: [
@@ -84,6 +141,10 @@ module.exports = {
       {
         from: 'resources/linux/bin/orca',
         to: 'bin/orca'
+      },
+      {
+        from: 'node_modules/agent-browser/bin/agent-browser-linux-${arch}',
+        to: 'agent-browser-linux-${arch}'
       }
     ],
     target: ['AppImage', 'deb'],

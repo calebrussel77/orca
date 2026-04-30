@@ -1,12 +1,12 @@
+/* eslint-disable max-lines -- Why: this component co-locates the rich markdown editor surface, toolbar, search, and slash menu so tightly coupled editor state stays in one place. */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import type { Editor } from '@tiptap/react'
-import { toast } from 'sonner'
 import { RichMarkdownSlashMenu } from './RichMarkdownSlashMenu'
 import { useAppStore } from '@/store'
 import { RichMarkdownToolbar } from './RichMarkdownToolbar'
-import { extractIpcErrorMessage, getImageCopyDestination } from './rich-markdown-image-utils'
 import { encodeRawMarkdownHtmlForRichEditor } from './raw-markdown-html'
+import { useLocalImagePick } from './useLocalImagePick'
 import { createRichMarkdownExtensions } from './rich-markdown-extensions'
 import { slashCommands, syncSlashMenu } from './rich-markdown-commands'
 import type { SlashCommand, SlashMenuState } from './rich-markdown-commands'
@@ -19,20 +19,33 @@ import {
 } from './RichMarkdownLinkBubble'
 import { useLinkBubble } from './useLinkBubble'
 import { useEditorScrollRestore } from './useEditorScrollRestore'
+import { useModifierHeldClass } from './useModifierHeldClass'
 import { registerPendingEditorFlush } from './editor-pending-flush'
 import { createRichMarkdownKeyHandler } from './rich-markdown-key-handler'
-import { DOMSerializer } from '@tiptap/pm/model'
-import { TextSelection } from '@tiptap/pm/state'
 import { normalizeSoftBreaks } from './rich-markdown-normalize'
-import { cutVisualLine, getVisualLineRange } from './rich-markdown-visual-line'
+import { autoFocusRichEditor } from './rich-markdown-auto-focus'
+import { handleRichMarkdownCut } from './rich-markdown-cut-handler'
+import { openHttpLink } from '@/lib/http-link-routing'
+import { toast } from 'sonner'
+import {
+  absolutePathToFileUri as toFileUrlForOsEscape,
+  resolveMarkdownLinkTarget
+} from './markdown-internal-links'
+import { scrollToAnchorInEditor } from './markdown-anchor-scroll'
 
 type RichMarkdownEditorProps = {
   fileId: string
   content: string
   filePath: string
+  worktreeId: string
+  scrollCacheKey: string
   onContentChange: (content: string) => void
   onDirtyStateHint: (dirty: boolean) => void
   onSave: (content: string) => void
+  // Why: front-matter is stripped from the rich editor's content but we still
+  // want it visible to the user. It renders between the toolbar and the editor
+  // surface so the formatting toolbar stays at the top of the pane.
+  headerSlot?: React.ReactNode
 }
 
 const richMarkdownExtensions = createRichMarkdownExtensions({
@@ -43,13 +56,26 @@ export default function RichMarkdownEditor({
   fileId,
   content,
   filePath,
+  worktreeId,
+  scrollCacheKey,
   onContentChange,
   onDirtyStateHint,
-  onSave
+  onSave,
+  headerSlot
 }: RichMarkdownEditorProps): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const settings = useAppStore((s) => s.settings)
   const editorFontZoomLevel = useAppStore((s) => s.editorFontZoomLevel)
+  const activateMarkdownLink = useAppStore((s) => s.activateMarkdownLink)
+  const worktreeRoot = useAppStore((s) => {
+    for (const list of Object.values(s.worktreesByRepo)) {
+      const wt = list.find((w) => w.id === worktreeId)
+      if (wt) {
+        return wt.path
+      }
+    }
+    return null
+  })
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null)
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0)
@@ -67,22 +93,26 @@ export default function RichMarkdownEditor({
   // stuck at the first-render null value unless we read the live instance here.
   const editorRef = useRef<Editor | null>(null)
   const serializeTimerRef = useRef<number | null>(null)
+  // Why: normalizeSoftBreaks dispatches a ProseMirror transaction inside onCreate
+  // which triggers onUpdate. Without this guard the editor immediately marks the
+  // file dirty before the user has typed anything.
+  const isInitializingRef = useRef(true)
+  // Why: internal maintenance paths can dispatch transactions after mount
+  // (external reloads, soft-break normalization, image-path refresh). Those
+  // are not user edits, so onUpdate must ignore them or split panes can flip a
+  // shared file dirty without any real content change.
+  const isApplyingProgrammaticUpdateRef = useRef(false)
   const [linkBubble, setLinkBubble] = useState<LinkBubbleState | null>(null)
   const [isEditingLink, setIsEditingLink] = useState(false)
   const isEditingLinkRef = useRef(false)
 
-  useEffect(() => {
-    onContentChangeRef.current = onContentChange
-  }, [onContentChange])
-  useEffect(() => {
-    onDirtyStateHintRef.current = onDirtyStateHint
-  }, [onDirtyStateHint])
-  useEffect(() => {
-    onSaveRef.current = onSave
-  }, [onSave])
-  useEffect(() => {
-    isEditingLinkRef.current = isEditingLink
-  }, [isEditingLink])
+  // Why: assigning callback refs during render keeps them current before any
+  // ProseMirror handler reads them, avoiding the one-render stale window that
+  // useEffect would introduce. Refs are mutable and never trigger re-renders.
+  onContentChangeRef.current = onContentChange
+  onDirtyStateHintRef.current = onDirtyStateHint
+  onSaveRef.current = onSave
+  isEditingLinkRef.current = isEditingLink
 
   const flushPendingSerialization = useCallback(() => {
     if (serializeTimerRef.current === null) {
@@ -118,110 +148,8 @@ export default function RichMarkdownEditor({
       attributes: {
         class: 'rich-markdown-editor'
       },
-      // Why: Electron's app menu `{ role: 'cut' }` binds Cmd/Ctrl+X at the
-      // main-process level, so the keystroke never reaches handleKeyDown.
-      // Instead, the menu dispatches a native cut command which fires this
-      // DOM event. For empty selections we cut the current block (like VS
-      // Code and Notion); for non-empty selections we defer to ProseMirror's
-      // built-in clipboard serializer.
       handleDOMEvents: {
-        cut: (view, event) => {
-          const { selection } = view.state
-          if (!selection.empty) {
-            return false
-          }
-
-          const { $from } = selection
-
-          // Why: a GapCursor before a top-level leaf node (e.g. horizontal rule
-          // as the first child of the doc) resolves to depth 0. Attempting to cut
-          // at depth 0 would call $from.before(0) on the doc node, which throws
-          // RangeError("There is no position before the top-level node").  Bail
-          // out and let ProseMirror's default handler deal with it.
-          if ($from.depth < 1) {
-            return false
-          }
-
-          // Walk up from the textblock to find the best node to cut. For list
-          // items and task items, cut the whole item rather than just its inner
-          // paragraph. Stop at table cells to avoid breaking table structure.
-          let cutDepth = $from.depth
-          for (let d = $from.depth - 1; d >= 1; d--) {
-            const name = $from.node(d).type.name
-            if (name === 'listItem' || name === 'taskItem') {
-              cutDepth = d
-              break
-            }
-            if (name === 'tableCell' || name === 'tableHeader') {
-              break
-            }
-          }
-
-          const cutNode = $from.node(cutDepth)
-          const text = cutNode.textContent
-
-          // Why: for paragraphs that word-wrap across multiple visual lines, cut
-          // only the visual line the cursor is on rather than the entire paragraph.
-          // This matches the user expectation of per-line cutting (like VS Code)
-          // without destroying the rest of the paragraph's content.
-          if (cutNode.type.name === 'paragraph' && text) {
-            const paraStart = $from.start(cutDepth)
-            const paraEnd = $from.end(cutDepth)
-            const lineRange = getVisualLineRange(view, selection.from, paraStart, paraEnd)
-            if (lineRange) {
-              return cutVisualLine(view, event, lineRange)
-            }
-            // Falls through to block-level cut for single-line paragraphs.
-          }
-
-          if (!text) {
-            // Still delete the empty block, matching VS Code behavior
-            event.preventDefault()
-            const from = $from.before(cutDepth)
-            const to = $from.after(cutDepth)
-            let tr = view.state.tr.delete(from, to)
-            // Why: after deleting the last block the old `from` offset may exceed
-            // the new document length, so we clamp and use TextSelection.near() to
-            // land on the closest valid cursor position.
-            const clampedPos = Math.max(0, Math.min(from, tr.doc.content.size))
-            const resolvedPos = tr.doc.resolve(clampedPos)
-            tr = tr.setSelection(TextSelection.near(resolvedPos))
-            view.dispatch(tr)
-            return true
-          }
-
-          const clipboardEvent = event as ClipboardEvent
-          // Why: if clipboardData is null (e.g. synthetic events), we must not
-          // preventDefault and then delete -- that would lose content without
-          // placing it on the clipboard. Fall back to browser default instead.
-          if (!clipboardEvent.clipboardData) {
-            return false
-          }
-          event.preventDefault()
-
-          // Why: writing both text/html and text/plain preserves inline formatting
-          // (bold, italic, links) on round-trip cut-then-paste, while still giving
-          // a plain-text fallback for external targets.
-          const serializer = DOMSerializer.fromSchema(view.state.schema)
-          const fragment = serializer.serializeFragment(cutNode.content)
-          const div = document.createElement('div')
-          div.appendChild(fragment)
-          clipboardEvent.clipboardData.setData('text/html', div.innerHTML)
-          clipboardEvent.clipboardData.setData('text/plain', text)
-
-          const from = $from.before(cutDepth)
-          const to = $from.after(cutDepth)
-          let tr = view.state.tr.delete(from, to)
-          // Why: after deleting the last block the old `from` offset may exceed
-          // the new document length, so we clamp and use TextSelection.near() to
-          // land on the closest valid cursor position.
-          const clampedPos = Math.max(0, Math.min(from, tr.doc.content.size))
-          const resolvedPos = tr.doc.resolve(clampedPos)
-          tr = tr.setSelection(TextSelection.near(resolvedPos))
-          view.dispatch(tr)
-
-          return true
-        }
+        cut: handleRichMarkdownCut
       },
       handleKeyDown: createRichMarkdownKeyHandler({
         isMac,
@@ -242,46 +170,101 @@ export default function RichMarkdownEditor({
         setSelectedCommandIndex,
         setSlashMenu
       }),
-      // Why: Cmd/Ctrl+click on a link opens it in the system browser, matching
-      // VS Code and other editor conventions. Without the modifier, clicks just
-      // position the cursor normally for editing.
-      handleClick: (_view, _pos, event) => {
+      // Why: Cmd/Ctrl-click activates links via the shared classifier +
+      // dispatcher, so in-worktree .md links open in an Orca tab instead of the
+      // OS default handler. Cmd/Ctrl+Shift-click is the OS escape hatch, kept
+      // symmetric with MarkdownPreview. Without a modifier the click falls
+      // through to TipTap's default cursor-positioning behavior.
+      // Why: ProseMirror fires handleClick before updating the selection, so
+      // ed.isActive('link') reads the *old* cursor position. We resolve the
+      // link mark directly at the clicked pos instead.
+      handleClick: (view, pos, event) => {
         const ed = editorRef.current
-        if (!ed) {
+        const modKey = isMac ? event.metaKey : event.ctrlKey
+        if (!ed || !modKey) {
           return false
         }
-        const modKey = isMac ? event.metaKey : event.ctrlKey
-        if (modKey && ed.isActive('link')) {
-          const href = (ed.getAttributes('link').href as string) || ''
-          if (href) {
-            void window.api.shell.openUrl(href)
+        const linkMark = view.state.doc
+          .resolve(pos)
+          .marks()
+          .find((m) => m.type.name === 'link')
+        const href = linkMark ? (linkMark.attrs.href as string) || '' : ''
+        if (!href) {
+          return false
+        }
+        if (href.startsWith('#')) {
+          scrollToAnchorInEditor(rootRef.current, href.slice(1))
+          return true
+        }
+        if (event.shiftKey) {
+          const classified = resolveMarkdownLinkTarget(href, filePath, worktreeRoot)
+          if (!classified) {
             return true
           }
+          if (classified.kind === 'external') {
+            openHttpLink(classified.url, { forceSystemBrowser: true })
+          } else if (classified.kind === 'markdown') {
+            void window.api.shell.pathExists(classified.absolutePath).then((exists) => {
+              if (!exists) {
+                toast.error(`File not found: ${classified.relativePath}`)
+                return
+              }
+              void window.api.shell.openFileUri(toFileUrlForOsEscape(classified.absolutePath))
+            })
+          } else if (classified.kind === 'file') {
+            void window.api.shell.openFileUri(classified.uri)
+          }
+          return true
         }
-        return false
+        void activateMarkdownLink(href, { sourceFilePath: filePath, worktreeId, worktreeRoot })
+        return true
       }
+    },
+    onFocus: () => {
+      // Why: mirror TipTap focus into the main process so the before-input-event
+      // Cmd+B carve-out in createMainWindow.ts lets the bold keymap run instead
+      // of intercepting the chord for sidebar toggle.
+      // See docs/markdown-cmd-b-bold-design.md.
+      window.api.ui.setMarkdownEditorFocused(true)
+    },
+    onBlur: () => {
+      window.api.ui.setMarkdownEditorFocused(false)
     },
     onCreate: ({ editor: nextEditor }) => {
       // Why: markdown soft line breaks produce paragraphs with embedded `\n` chars.
       // Normalizing them into separate paragraph nodes on load ensures Cmd+X (and
       // other block-level operations) treat each line as its own block.
       normalizeSoftBreaks(nextEditor)
-      lastCommittedMarkdownRef.current = nextEditor.getMarkdown()
+      // Why: raw disk content is the source of truth for dirty/external-change
+      // detection. getMarkdown() may round-trip soft breaks or trailing newlines
+      // differently, which would otherwise force a spurious mount-time re-sync.
+      lastCommittedMarkdownRef.current = content
+      // Why: clear the flag *after* normalizeSoftBreaks so any onUpdate
+      // triggered by the normalization transaction is still suppressed.
+      isInitializingRef.current = false
+      // Why: MonacoEditor already auto-focuses on mount so users can start
+      // typing immediately. The rich markdown editor must do the same,
+      // otherwise opening a new markdown file (Cmd+Shift+N) or switching to
+      // an existing markdown tab leaves the cursor outside the editing
+      // surface and the user has to click before typing.
+      autoFocusRichEditor(nextEditor, rootRef.current)
     },
     onUpdate: ({ editor: nextEditor }) => {
       syncSlashMenu(nextEditor, rootRef.current, setSlashMenu)
 
-      // Why: full markdown serialization is debounced for typing performance,
-      // but close-confirmation and beforeunload checks still need to know
-      // immediately that the document changed. Optimistically mark the tab
-      // dirty here, then let the debounced content sync compute the exact
-      // saved-vs-draft comparison a moment later.
+      // Why: bail out during normalizeSoftBreaks's onCreate transaction so the
+      // structural housekeeping doesn't mark the file dirty before the user
+      // has typed anything.
+      if (isInitializingRef.current || isApplyingProgrammaticUpdateRef.current) {
+        return
+      }
+
+      // Why: optimistically mark dirty for close-confirmation before the
+      // debounced content sync computes the exact saved-vs-draft comparison.
       onDirtyStateHintRef.current(true)
 
-      // Why: getMarkdown() serializes the entire ProseMirror document tree on
-      // every keystroke, which is the dominant typing-speed bottleneck for large
-      // files. Debouncing it to 300ms keeps the draft store and autosave pipeline
-      // fed without blocking the input path.
+      // Why: getMarkdown() is the typing-speed bottleneck for large files;
+      // debouncing to 300ms keeps drafts current without blocking input.
       if (serializeTimerRef.current !== null) {
         window.clearTimeout(serializeTimerRef.current)
       }
@@ -319,18 +302,28 @@ export default function RichMarkdownEditor({
     editorRef.current = editor ?? null
   }, [editor])
 
-  // Why: when the component unmounts (tab switch, mode change), flush any
-  // pending serialization so the autosave controller's draft store has the
-  // latest content and the scroll-position cache captures the right state.
-  // This must run before useEditor's cleanup destroys the editor instance,
-  // so we use useLayoutEffect (synchronous cleanup) instead of useEffect.
-  // React runs layout-effect cleanups before effect cleanups, guaranteeing
-  // the editor is still alive when we serialize.
+  // Why: TipTap's onBlur may not fire on unmount paths (tab close, HMR,
+  // component teardown while focused), leaving the main-process flag stale at
+  // `true` and silently disabling Cmd+B sidebar-toggle until the next editor
+  // focus/blur cycle. Force a `false` on unmount as a belt-and-braces reset.
+  // See docs/markdown-cmd-b-bold-design.md "Stale-flag recovery".
+  useEffect(() => {
+    return () => {
+      window.api.ui.setMarkdownEditorFocused(false)
+    }
+  }, [])
+
+  // Why: use useLayoutEffect (synchronous cleanup) so the pending serialization
+  // flush runs before useEditor's cleanup destroys the editor instance on tab
+  // switch or mode change. React runs layout-effect cleanups before effect
+  // cleanups, guaranteeing the editor is still alive when we serialize.
   React.useLayoutEffect(() => {
     return flushPendingSerialization
   }, [flushPendingSerialization])
 
-  useEditorScrollRestore(scrollContainerRef, `${filePath}:rich`, editor)
+  useEditorScrollRestore(scrollContainerRef, scrollCacheKey, editor)
+
+  useModifierHeldClass(rootRef, isMac)
 
   // Why: the custom Image extension reads filePath from editor.storage to resolve
   // relative image src values to file:// URLs for display. After updating the
@@ -338,44 +331,18 @@ export default function RichMarkdownEditor({
   // nodes with the new resolved src (renderHTML reads storage at render time).
   useEffect(() => {
     if (editor) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ;(editor.storage as any).image.filePath = filePath
-      editor.view.dispatch(editor.state.tr)
+      isApplyingProgrammaticUpdateRef.current = true
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(editor.storage as any).image.filePath = filePath
+        editor.view.dispatch(editor.state.tr)
+      } finally {
+        isApplyingProgrammaticUpdateRef.current = false
+      }
     }
   }, [editor, filePath])
 
-  const handleLocalImagePick = useCallback(async () => {
-    if (!editor) {
-      return
-    }
-    // Why: the native file picker steals focus from the editor, which can cause
-    // ProseMirror to lose track of its selection. We snapshot the cursor position
-    // before the async dialog so we can insert the image exactly where the user
-    // intended, not at whatever position focus() falls back to afterward.
-    const insertPos = editor.state.selection.from
-    try {
-      const srcPath = await window.api.shell.pickImage()
-      if (!srcPath) {
-        return
-      }
-      // Why: copy the image next to the markdown file and insert a relative path
-      // so the markdown stays portable and doesn't bloat with base64 data.
-      const { imageName, destPath } = await getImageCopyDestination(filePath, srcPath)
-      if (srcPath !== destPath) {
-        await window.api.shell.copyFile({ srcPath, destPath })
-      }
-      // Why: insertContentAt places the image at the exact saved position
-      // regardless of where focus lands after the native file dialog closes,
-      // whereas setTextSelection can be overridden by ProseMirror's focus logic.
-      editor
-        .chain()
-        .focus()
-        .insertContentAt(insertPos, { type: 'image', attrs: { src: imageName } })
-        .run()
-    } catch (err) {
-      toast.error(extractIpcErrorMessage(err, 'Failed to insert image.'))
-    }
-  }, [editor, filePath])
+  const handleLocalImagePick = useLocalImagePick(editor, filePath)
 
   useEffect(() => {
     handleLocalImagePickRef.current = handleLocalImagePick
@@ -387,7 +354,11 @@ export default function RichMarkdownEditor({
     handleLinkEditCancel,
     handleLinkOpen,
     toggleLinkFromToolbar
-  } = useLinkBubble(editor, rootRef, linkBubble, setLinkBubble, setIsEditingLink)
+  } = useLinkBubble(editor, rootRef, linkBubble, setLinkBubble, setIsEditingLink, {
+    sourceFilePath: filePath,
+    worktreeId,
+    worktreeRoot
+  })
 
   const {
     activeMatchIndex,
@@ -402,7 +373,8 @@ export default function RichMarkdownEditor({
   } = useRichMarkdownSearch({
     editor,
     isMac,
-    rootRef
+    rootRef,
+    scrollContainerRef
   })
   useEffect(() => {
     openSearchRef.current = openSearch
@@ -444,6 +416,17 @@ export default function RichMarkdownEditor({
       return
     }
 
+    // Why: the debounced onUpdate serializes the editor and feeds it back
+    // through onContentChange → editorDrafts → the content prop.  If the
+    // user typed between the debounce firing and this effect running, the
+    // editor already contains newer content than the prop.  Comparing
+    // against lastCommittedMarkdownRef (which is set in the same tick as
+    // onContentChange) lets us recognise our own serialization and skip the
+    // destructive setContent that would reset the cursor mid-typing.
+    if (content === lastCommittedMarkdownRef.current) {
+      return
+    }
+
     const currentMarkdown = editor.getMarkdown()
     if (currentMarkdown === content) {
       return
@@ -452,15 +435,61 @@ export default function RichMarkdownEditor({
     // Why: markdown files on disk remain the source of truth for rich mode in
     // Orca. External file changes, tab replacement, and save-after-reload must
     // overwrite the editor state so the rich view never drifts from repo text.
-    editor.commands.setContent(encodeRawMarkdownHtmlForRichEditor(content), {
-      contentType: 'markdown'
-    })
-    // Why: same soft-break normalization as onCreate — external content updates
-    // may re-introduce paragraphs with embedded `\n` characters.
-    normalizeSoftBreaks(editor)
-    lastCommittedMarkdownRef.current = content
+    isApplyingProgrammaticUpdateRef.current = true
+    try {
+      // Why: swallow exceptions from setContent / normalizeSoftBreaks here
+      // rather than letting them escape to the React root. Under split-pane
+      // external reload (two RichMarkdownEditor instances receiving the same
+      // Claude Code write), a throw from the TipTap/ProseMirror transaction
+      // would otherwise unmount the entire renderer and black the whole
+      // window out (issue #826). The committed-markdown ref is deliberately
+      // left pointing at the pre-failure value so the next prop change still
+      // triggers a re-sync attempt instead of being short-circuited by the
+      // `content === lastCommittedMarkdownRef.current` guard above.
+      try {
+        // Why: TipTap's setContent collapses the selection to the end of the
+        // new document by default. When the editor is focused (user is
+        // actively typing), that reads as a spontaneous cursor jump to EOF.
+        // Snapshot the current selection bounds and restore them clamped to
+        // the new doc length after the content swap so the caret stays put
+        // for any genuinely external edit that lands during a typing session.
+        // The old doc's offsets are a best-effort heuristic — for a real
+        // external rewrite they won't map to the semantically equivalent
+        // position, but this is still strictly better than jumping to EOF.
+        const hadFocus = editor.isFocused
+        const { from: prevFrom, to: prevTo } = editor.state.selection
+        editor.commands.setContent(encodeRawMarkdownHtmlForRichEditor(content), {
+          contentType: 'markdown',
+          emitUpdate: false
+        })
+        // Why: same soft-break normalization as onCreate — external content updates
+        // may re-introduce paragraphs with embedded `\n` characters.
+        normalizeSoftBreaks(editor)
+        lastCommittedMarkdownRef.current = content
+        if (hadFocus) {
+          // Why: setContent can blur the editor via ProseMirror's focus
+          // handling, so restoring selection alone would leave subsequent
+          // keystrokes going to the browser. Chain focus() after the
+          // selection restore to keep the typing session intact.
+          const docSize = editor.state.doc.content.size
+          editor
+            .chain()
+            .setTextSelection({ from: Math.min(prevFrom, docSize), to: Math.min(prevTo, docSize) })
+            .focus()
+            .run()
+        }
+      } catch (err) {
+        console.error('[RichMarkdownEditor] failed to apply external content update', err)
+      }
+    } finally {
+      isApplyingProgrammaticUpdateRef.current = false
+    }
     syncSlashMenu(editor, rootRef.current, setSlashMenu)
-  }, [content, editor])
+    // Why: fileId is part of the dep array so switching between files (where
+    // content can coincidentally match what was last committed for the prior
+    // file) still triggers the content-sync path and prevents cross-file
+    // drift from the renderer's draft cache.
+  }, [content, editor, fileId])
 
   return (
     <div
@@ -478,18 +507,24 @@ export default function RichMarkdownEditor({
         onToggleLink={toggleLinkFromToolbar}
         onImagePick={handleLocalImagePick}
       />
-      <RichMarkdownSearchBar
-        activeMatchIndex={activeMatchIndex}
-        isOpen={isSearchOpen}
-        matchCount={matchCount}
-        onClose={closeSearch}
-        onMoveToMatch={moveToMatch}
-        onQueryChange={setSearchQuery}
-        query={searchQuery}
-        searchInputRef={searchInputRef}
-      />
-      <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-auto">
-        <EditorContent editor={editor} />
+      {headerSlot}
+      {/* Why: wrap scroll area + search bar in a relative container so the
+          search bar overlays the content (Monaco-style) instead of occupying
+          layout space and shifting the document down when opened. */}
+      <div className="relative min-h-0 flex-1">
+        <div ref={scrollContainerRef} className="h-full overflow-auto scrollbar-editor">
+          <EditorContent editor={editor} />
+        </div>
+        <RichMarkdownSearchBar
+          activeMatchIndex={activeMatchIndex}
+          isOpen={isSearchOpen}
+          matchCount={matchCount}
+          onClose={closeSearch}
+          onMoveToMatch={moveToMatch}
+          onQueryChange={setSearchQuery}
+          query={searchQuery}
+          searchInputRef={searchInputRef}
+        />
       </div>
       {linkBubble ? (
         <RichMarkdownLinkBubble

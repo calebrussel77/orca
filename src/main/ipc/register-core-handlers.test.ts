@@ -6,8 +6,11 @@ const {
   registerClaudeUsageHandlersMock,
   registerCodexUsageHandlersMock,
   registerGitHubHandlersMock,
+  registerFeedbackHandlersMock,
   registerStatsHandlersMock,
+  registerMemoryHandlersMock,
   registerNotificationHandlersMock,
+  registerDeveloperPermissionHandlersMock,
   registerSettingsHandlersMock,
   registerShellHandlersMock,
   registerSessionHandlersMock,
@@ -15,20 +18,29 @@ const {
   registerFilesystemHandlersMock,
   registerRuntimeHandlersMock,
   registerCodexAccountHandlersMock,
+  registerAgentHookHandlersMock,
+  registerClaudeAccountHandlersMock,
   registerClipboardHandlersMock,
   registerUpdaterHandlersMock,
   registerRateLimitHandlersMock,
   registerBrowserHandlersMock,
+  setAgentBrowserBridgeRefMock,
   setTrustedBrowserRendererWebContentsIdMock,
-  registerFilesystemWatcherHandlersMock
+  registerFilesystemWatcherHandlersMock,
+  registerAppHandlersMock,
+  registerLinearHandlersMock,
+  registerExportHandlersMock
 } = vi.hoisted(() => ({
   registerCliHandlersMock: vi.fn(),
   registerPreflightHandlersMock: vi.fn(),
   registerClaudeUsageHandlersMock: vi.fn(),
   registerCodexUsageHandlersMock: vi.fn(),
   registerGitHubHandlersMock: vi.fn(),
+  registerFeedbackHandlersMock: vi.fn(),
   registerStatsHandlersMock: vi.fn(),
+  registerMemoryHandlersMock: vi.fn(),
   registerNotificationHandlersMock: vi.fn(),
+  registerDeveloperPermissionHandlersMock: vi.fn(),
   registerSettingsHandlersMock: vi.fn(),
   registerShellHandlersMock: vi.fn(),
   registerSessionHandlersMock: vi.fn(),
@@ -36,12 +48,18 @@ const {
   registerFilesystemHandlersMock: vi.fn(),
   registerRuntimeHandlersMock: vi.fn(),
   registerCodexAccountHandlersMock: vi.fn(),
+  registerAgentHookHandlersMock: vi.fn(),
+  registerClaudeAccountHandlersMock: vi.fn(),
   registerClipboardHandlersMock: vi.fn(),
   registerUpdaterHandlersMock: vi.fn(),
   registerRateLimitHandlersMock: vi.fn(),
   registerBrowserHandlersMock: vi.fn(),
+  setAgentBrowserBridgeRefMock: vi.fn(),
   setTrustedBrowserRendererWebContentsIdMock: vi.fn(),
-  registerFilesystemWatcherHandlersMock: vi.fn()
+  registerFilesystemWatcherHandlersMock: vi.fn(),
+  registerAppHandlersMock: vi.fn(),
+  registerLinearHandlersMock: vi.fn(),
+  registerExportHandlersMock: vi.fn()
 }))
 
 vi.mock('./cli', () => ({
@@ -64,12 +82,28 @@ vi.mock('./github', () => ({
   registerGitHubHandlers: registerGitHubHandlersMock
 }))
 
+vi.mock('./feedback', () => ({
+  registerFeedbackHandlers: registerFeedbackHandlersMock
+}))
+
+vi.mock('./export', () => ({
+  registerExportHandlers: registerExportHandlersMock
+}))
+
 vi.mock('./stats', () => ({
   registerStatsHandlers: registerStatsHandlersMock
 }))
 
+vi.mock('./memory', () => ({
+  registerMemoryHandlers: registerMemoryHandlersMock
+}))
+
 vi.mock('./notifications', () => ({
   registerNotificationHandlers: registerNotificationHandlersMock
+}))
+
+vi.mock('./developer-permissions', () => ({
+  registerDeveloperPermissionHandlers: registerDeveloperPermissionHandlersMock
 }))
 
 vi.mock('./settings', () => ({
@@ -108,6 +142,14 @@ vi.mock('./codex-accounts', () => ({
   registerCodexAccountHandlers: registerCodexAccountHandlersMock
 }))
 
+vi.mock('./agent-hooks', () => ({
+  registerAgentHookHandlers: registerAgentHookHandlersMock
+}))
+
+vi.mock('./claude-accounts', () => ({
+  registerClaudeAccountHandlers: registerClaudeAccountHandlersMock
+}))
+
 vi.mock('../window/attach-main-window-services', () => ({
   registerClipboardHandlers: registerClipboardHandlersMock,
   registerUpdaterHandlers: registerUpdaterHandlersMock
@@ -115,7 +157,16 @@ vi.mock('../window/attach-main-window-services', () => ({
 
 vi.mock('./browser', () => ({
   registerBrowserHandlers: registerBrowserHandlersMock,
-  setTrustedBrowserRendererWebContentsId: setTrustedBrowserRendererWebContentsIdMock
+  setTrustedBrowserRendererWebContentsId: setTrustedBrowserRendererWebContentsIdMock,
+  setAgentBrowserBridgeRef: setAgentBrowserBridgeRefMock
+}))
+
+vi.mock('./app', () => ({
+  registerAppHandlers: registerAppHandlersMock
+}))
+
+vi.mock('./linear', () => ({
+  registerLinearHandlers: registerLinearHandlersMock
 }))
 
 import { registerCoreHandlers } from './register-core-handlers'
@@ -127,8 +178,11 @@ describe('registerCoreHandlers', () => {
     registerClaudeUsageHandlersMock.mockReset()
     registerCodexUsageHandlersMock.mockReset()
     registerGitHubHandlersMock.mockReset()
+    registerFeedbackHandlersMock.mockReset()
     registerStatsHandlersMock.mockReset()
+    registerMemoryHandlersMock.mockReset()
     registerNotificationHandlersMock.mockReset()
+    registerDeveloperPermissionHandlersMock.mockReset()
     registerSettingsHandlersMock.mockReset()
     registerShellHandlersMock.mockReset()
     registerSessionHandlersMock.mockReset()
@@ -136,21 +190,28 @@ describe('registerCoreHandlers', () => {
     registerFilesystemHandlersMock.mockReset()
     registerRuntimeHandlersMock.mockReset()
     registerCodexAccountHandlersMock.mockReset()
+    registerAgentHookHandlersMock.mockReset()
+    registerClaudeAccountHandlersMock.mockReset()
     registerClipboardHandlersMock.mockReset()
     registerUpdaterHandlersMock.mockReset()
     registerRateLimitHandlersMock.mockReset()
     registerBrowserHandlersMock.mockReset()
+    setAgentBrowserBridgeRefMock.mockReset()
     setTrustedBrowserRendererWebContentsIdMock.mockReset()
     registerFilesystemWatcherHandlersMock.mockReset()
+    registerAppHandlersMock.mockReset()
+    registerLinearHandlersMock.mockReset()
+    registerExportHandlersMock.mockReset()
   })
 
   it('passes the store through to handler registrars that need it', () => {
     const store = { marker: 'store' }
-    const runtime = { marker: 'runtime' }
+    const runtime = { marker: 'runtime', getAgentBrowserBridge: () => null }
     const stats = { marker: 'stats' }
     const claudeUsage = { marker: 'claudeUsage' }
     const codexUsage = { marker: 'codexUsage' }
     const codexAccounts = { marker: 'codexAccounts' }
+    const claudeAccounts = { marker: 'claudeAccounts' }
     const rateLimits = { marker: 'rateLimits' }
 
     registerCoreHandlers(
@@ -160,16 +221,23 @@ describe('registerCoreHandlers', () => {
       claudeUsage as never,
       codexUsage as never,
       codexAccounts as never,
+      claudeAccounts as never,
       rateLimits as never
     )
 
     expect(registerClaudeUsageHandlersMock).toHaveBeenCalledWith(claudeUsage)
     expect(registerCodexUsageHandlersMock).toHaveBeenCalledWith(codexUsage)
     expect(registerCodexAccountHandlersMock).toHaveBeenCalledWith(codexAccounts)
+    expect(registerAgentHookHandlersMock).toHaveBeenCalled()
+    expect(registerClaudeAccountHandlersMock).toHaveBeenCalledWith(claudeAccounts)
     expect(registerRateLimitHandlersMock).toHaveBeenCalledWith(rateLimits)
     expect(registerGitHubHandlersMock).toHaveBeenCalledWith(store, stats)
+    expect(registerLinearHandlersMock).toHaveBeenCalled()
+    expect(registerFeedbackHandlersMock).toHaveBeenCalled()
     expect(registerStatsHandlersMock).toHaveBeenCalledWith(stats)
+    expect(registerMemoryHandlersMock).toHaveBeenCalledWith(store)
     expect(registerNotificationHandlersMock).toHaveBeenCalledWith(store)
+    expect(registerDeveloperPermissionHandlersMock).toHaveBeenCalled()
     expect(registerSettingsHandlersMock).toHaveBeenCalledWith(store)
     expect(registerSessionHandlersMock).toHaveBeenCalledWith(store)
     expect(registerUIHandlersMock).toHaveBeenCalledWith(store)
@@ -189,11 +257,12 @@ describe('registerCoreHandlers', () => {
     // The first test already called registerCoreHandlers, so the module-level
     // guard is now set. beforeEach reset all mocks, so call counts are 0.
     const store2 = { marker: 'store2' }
-    const runtime2 = { marker: 'runtime2' }
+    const runtime2 = { marker: 'runtime2', getAgentBrowserBridge: () => null }
     const stats2 = { marker: 'stats2' }
     const claudeUsage2 = { marker: 'claudeUsage2' }
     const codexUsage2 = { marker: 'codexUsage2' }
     const codexAccounts2 = { marker: 'codexAccounts2' }
+    const claudeAccounts2 = { marker: 'claudeAccounts2' }
     const rateLimits2 = { marker: 'rateLimits2' }
 
     registerCoreHandlers(
@@ -203,6 +272,7 @@ describe('registerCoreHandlers', () => {
       claudeUsage2 as never,
       codexUsage2 as never,
       codexAccounts2 as never,
+      claudeAccounts2 as never,
       rateLimits2 as never,
       42
     )
@@ -213,5 +283,8 @@ describe('registerCoreHandlers', () => {
     expect(registerCliHandlersMock).not.toHaveBeenCalled()
     expect(registerPreflightHandlersMock).not.toHaveBeenCalled()
     expect(registerBrowserHandlersMock).not.toHaveBeenCalled()
+    // Why: ipcMain.handle throws on duplicate channel registration, so the
+    // memory handler must not be wired up a second time on reactivation.
+    expect(registerMemoryHandlersMock).not.toHaveBeenCalled()
   })
 })

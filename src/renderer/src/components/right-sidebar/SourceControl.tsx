@@ -7,16 +7,25 @@ import {
   RefreshCw,
   Settings2,
   Undo2,
+  FileEdit,
+  FileMinus,
+  FilePlus,
+  FileQuestion,
+  ArrowRightLeft,
+  Check,
+  Copy,
   FolderOpen,
   GitMerge,
   GitPullRequestArrow,
+  MessageSquare,
+  Trash,
   TriangleAlert,
   CircleCheck,
   Search,
   X
 } from 'lucide-react'
-import { VscodeEntryIcon } from '@/components/VscodeEntryIcon'
 import { useAppStore } from '@/store'
+import { useActiveWorktree, useRepoById } from '@/store/selectors'
 import { detectLanguage } from '@/lib/language-detect'
 import { basename, dirname, joinPath } from '@/lib/path'
 import { cn } from '@/lib/utils'
@@ -39,6 +48,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { BaseRefPicker } from '@/components/settings/BaseRefPicker'
+import { formatDiffComment, formatDiffComments } from '@/lib/diff-comments-format'
 import {
   notifyEditorExternalFileChange,
   requestEditorSaveQuiesce
@@ -46,6 +56,7 @@ import {
 import { getConnectionId } from '@/lib/connection-context'
 import { PullRequestIcon } from './checks-helpers'
 import type {
+  DiffComment,
   GitBranchChangeEntry,
   GitBranchCompareSummary,
   GitConflictKind,
@@ -56,6 +67,18 @@ import type {
 import { STATUS_COLORS, STATUS_LABELS } from './status-display'
 
 type SourceControlScope = 'all' | 'uncommitted'
+
+const STATUS_ICONS: Record<
+  string,
+  React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+> = {
+  modified: FileEdit,
+  added: FilePlus,
+  deleted: FileMinus,
+  renamed: ArrowRightLeft,
+  untracked: FileQuestion,
+  copied: FilePlus
+}
 
 // Why: unstaged ("Changes") is listed first so that conflict files — which
 // are assigned area:'unstaged' by the parser — appear above "Staged Changes".
@@ -82,10 +105,10 @@ const CONFLICT_KIND_LABELS: Record<GitConflictKind, string> = {
 
 function SourceControlInner(): React.JSX.Element {
   const sourceControlRef = useRef<HTMLDivElement>(null)
+  const activeWorktree = useActiveWorktree()
   const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
   const rightSidebarTab = useAppStore((s) => s.rightSidebarTab)
-  const repos = useAppStore((s) => s.repos)
-  const worktreesByRepo = useAppStore((s) => s.worktreesByRepo)
+  const activeRepo = useRepoById(activeWorktree?.repoId ?? null)
   const gitStatusByWorktree = useAppStore((s) => s.gitStatusByWorktree)
   const gitConflictOperationByWorktree = useAppStore((s) => s.gitConflictOperationByWorktree)
   const gitBranchChangesByWorktree = useAppStore((s) => s.gitBranchChangesByWorktree)
@@ -103,31 +126,61 @@ function SourceControlInner(): React.JSX.Element {
   const openBranchDiff = useAppStore((s) => s.openBranchDiff)
   const openAllDiffs = useAppStore((s) => s.openAllDiffs)
   const openBranchAllDiffs = useAppStore((s) => s.openBranchAllDiffs)
+  const deleteDiffComment = useAppStore((s) => s.deleteDiffComment)
+  // Why: pass activeWorktreeId directly (even when null/undefined) so the
+  // slice's getDiffComments returns its stable EMPTY_COMMENTS sentinel. An
+  // inline `[]` fallback would allocate a new array each store update, break
+  // Zustand's Object.is equality, and cause this component plus the
+  // diffCommentCountByPath memo to churn on every unrelated store change.
+  const diffCommentsForActive = useAppStore((s) => s.getDiffComments(activeWorktreeId))
+  const diffCommentCount = diffCommentsForActive.length
+  // Why: per-file counts are fed into each UncommittedEntryRow so a comment
+  // badge can appear next to the status letter. Compute once per render so
+  // rows don't each re-filter the full list.
+  const diffCommentCountByPath = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const c of diffCommentsForActive) {
+      map.set(c.filePath, (map.get(c.filePath) ?? 0) + 1)
+    }
+    return map
+  }, [diffCommentsForActive])
+  const [diffCommentsExpanded, setDiffCommentsExpanded] = useState(false)
+  const [diffCommentsCopied, setDiffCommentsCopied] = useState(false)
+
+  const handleCopyDiffComments = useCallback(async (): Promise<void> => {
+    if (diffCommentsForActive.length === 0) {
+      return
+    }
+    const text = formatDiffComments(diffCommentsForActive)
+    try {
+      await window.api.ui.writeClipboardText(text)
+      setDiffCommentsCopied(true)
+    } catch {
+      // Why: swallow — clipboard write can fail when the window isn't focused.
+      // No dedicated error surface is warranted for a best-effort copy action.
+    }
+  }, [diffCommentsForActive])
+
+  // Why: auto-dismiss the "copied" indicator so the button returns to its
+  // default icon after a brief confirmation window.
+  useEffect(() => {
+    if (!diffCommentsCopied) {
+      return
+    }
+    const handle = window.setTimeout(() => setDiffCommentsCopied(false), 1500)
+    return () => window.clearTimeout(handle)
+  }, [diffCommentsCopied])
 
   const [scope, setScope] = useState<SourceControlScope>('all')
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   const [baseRefDialogOpen, setBaseRefDialogOpen] = useState(false)
-  const [defaultBaseRef, setDefaultBaseRef] = useState('origin/main')
+  // Why: start null rather than 'origin/main' so branch compare doesn't fire
+  // with a fabricated ref before the IPC resolves. effectiveBaseRef stays
+  // falsy until we have a real answer from the main process.
+  const [defaultBaseRef, setDefaultBaseRef] = useState<string | null>(null)
   const [filterQuery, setFilterQuery] = useState('')
   const filterInputRef = useRef<HTMLInputElement>(null)
 
-  const activeWorktree = useMemo(() => {
-    if (!activeWorktreeId) {
-      return null
-    }
-    for (const worktrees of Object.values(worktreesByRepo)) {
-      const worktree = worktrees.find((entry) => entry.id === activeWorktreeId)
-      if (worktree) {
-        return worktree
-      }
-    }
-    return null
-  }, [activeWorktreeId, worktreesByRepo])
-
-  const activeRepo = useMemo(
-    () => repos.find((repo) => repo.id === activeWorktree?.repoId) ?? null,
-    [activeWorktree?.repoId, repos]
-  )
   const isFolder = activeRepo ? isFolderRepo(activeRepo) : false
   const worktreePath = activeWorktree?.path ?? null
   const entries = useMemo(
@@ -144,24 +197,43 @@ function SourceControlInner(): React.JSX.Element {
   const conflictOperation = activeWorktreeId
     ? (gitConflictOperationByWorktree[activeWorktreeId] ?? 'unknown')
     : 'unknown'
-  const isBranchVisible = rightSidebarTab === 'source-control'
+  const rightSidebarOpen = useAppStore((s) => s.rightSidebarOpen)
+  // Why: gate polling on both the active tab AND the sidebar being open.
+  // The sidebar now stays mounted when closed (for performance), so without
+  // this guard the branchCompare interval and PR fetch would keep running
+  // with no visible consumer, wasting git process spawns and API calls.
+  const isBranchVisible = rightSidebarTab === 'source-control' && rightSidebarOpen
 
   useEffect(() => {
     if (!activeRepo || isFolder) {
       return
     }
 
+    // Why: reset to null so that effectiveBaseRef becomes falsy until the IPC
+    // resolves.  This prevents the branch compare from firing with a stale
+    // defaultBaseRef left over from a *different* repo (e.g. 'origin/master'
+    // when the new repo uses 'origin/main'), which would cause a transient
+    // "invalid-base" error every time the user switches between repos.
+    setDefaultBaseRef(null)
+
     let stale = false
     void window.api.repos
       .getBaseRefDefault({ repoId: activeRepo.id })
       .then((result) => {
         if (!stale) {
-          setDefaultBaseRef(result)
+          // Why: IPC now returns a `{ defaultBaseRef, remoteCount }` envelope;
+          // this component only needs `defaultBaseRef`. `remoteCount` is used
+          // by BaseRefPicker for the multi-remote hint.
+          setDefaultBaseRef(result.defaultBaseRef)
         }
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('[SourceControl] getBaseRefDefault failed', err)
+        // Why: leave defaultBaseRef null on failure instead of fabricating
+        // 'origin/main'. effectiveBaseRef stays falsy, so branch compare and
+        // PR fetch skip running against a ref that may not exist.
         if (!stale) {
-          setDefaultBaseRef('origin/main')
+          setDefaultBaseRef(null)
         }
       })
 
@@ -246,7 +318,13 @@ function SourceControlInner(): React.JSX.Element {
     setScope('all')
     setCollapsedSections(new Set())
     setBaseRefDialogOpen(false)
-    setDefaultBaseRef('origin/main')
+    // Why: do NOT reset defaultBaseRef here. It is repo-scoped, not
+    // worktree-scoped, and is resolved by the effect above on activeRepo
+    // change. Resetting it to a hard-coded 'origin/main' on every worktree
+    // switch within the same repo clobbered the correct value (e.g.
+    // 'origin/master' for repos whose default branch isn't main), causing
+    // a persistent "Branch compare unavailable" until the user switched
+    // repos and back to re-trigger the resolver.
     setFilterQuery('')
     setIsExecutingBulk(false)
   }, [activeWorktreeId])
@@ -373,17 +451,25 @@ function SourceControlInner(): React.JSX.Element {
     const requestKey = `${activeWorktreeId}:${effectiveBaseRef}:${Date.now()}`
     const existingSummary =
       useAppStore.getState().gitBranchCompareSummaryByWorktree[activeWorktreeId]
-    const isBackgroundRefresh = existingSummary && existingSummary.status === 'ready'
-    if (isBackgroundRefresh) {
-      // Update the request key without resetting to loading state
+
+    // Why: only show the loading spinner for the very first branch compare
+    // request, or when the base ref has changed (user picked a new one, or
+    // getBaseRefDefault corrected a stale cross-repo value).  Polling retries
+    // — whether the previous result was 'ready' *or* an error — keep the
+    // current UI visible until the new IPC result arrives.  Resetting to
+    // 'loading' on every 5-second poll when the compare is in an error state
+    // caused a visible loading→error→loading→error flicker.
+    const baseRefChanged = existingSummary && existingSummary.baseRef !== effectiveBaseRef
+    const shouldResetToLoading = !existingSummary || baseRefChanged
+    if (shouldResetToLoading) {
+      beginGitBranchCompareRequest(activeWorktreeId, requestKey, effectiveBaseRef)
+    } else {
       useAppStore.setState((s) => ({
         gitBranchCompareRequestKeyByWorktree: {
           ...s.gitBranchCompareRequestKeyByWorktree,
           [activeWorktreeId]: requestKey
         }
       }))
-    } else {
-      beginGitBranchCompareRequest(activeWorktreeId, requestKey, effectiveBaseRef)
     }
 
     try {
@@ -528,14 +614,14 @@ function SourceControlInner(): React.JSX.Element {
 
   if (!activeWorktree || !activeRepo || !worktreePath) {
     return (
-      <div className="flex items-center justify-center h-full text-muted-foreground px-4 text-center">
+      <div className="flex items-center justify-center h-full text-xs text-muted-foreground px-4 text-center">
         Select a worktree to view changes
       </div>
     )
   }
   if (isFolder) {
     return (
-      <div className="flex items-center justify-center h-full text-muted-foreground px-4 text-center">
+      <div className="flex items-center justify-center h-full text-xs text-muted-foreground px-4 text-center">
         Source Control is only available for Git repositories
       </div>
     )
@@ -559,7 +645,7 @@ function SourceControlInner(): React.JSX.Element {
               key={value}
               type="button"
               className={cn(
-                'px-3 pb-2 font-medium transition-colors border-b-2 -mb-px',
+                'px-3 pb-2 text-xs font-medium transition-colors border-b-2 -mb-px',
                 scope === value
                   ? 'border-foreground text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground'
@@ -570,7 +656,7 @@ function SourceControlInner(): React.JSX.Element {
             </button>
           ))}
           {prInfo && (
-            <div className="ml-auto mb-1.5 flex items-center gap-1.5 min-w-0 text-[0.8em] leading-none">
+            <div className="ml-auto mb-1.5 flex items-center gap-1.5 min-w-0 text-[11.5px] leading-none">
               <PullRequestIcon
                 className={cn(
                   'size-3 shrink-0',
@@ -603,6 +689,67 @@ function SourceControlInner(): React.JSX.Element {
           </div>
         )}
 
+        {/* Why: Diff-comments live on the worktree and apply across every diff
+            view the user opens. The header row expands inline to show per-file
+            comment previews plus a Copy-all action so the user can hand the
+            set off to whichever tool they want without leaving the sidebar. */}
+        {activeWorktreeId && worktreePath && (
+          <div className="border-b border-border">
+            <div className="flex items-center gap-1 pl-3 pr-2 py-1.5">
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setDiffCommentsExpanded((prev) => !prev)}
+                aria-expanded={diffCommentsExpanded}
+                title={diffCommentsExpanded ? 'Collapse notes' : 'Expand notes'}
+              >
+                <ChevronDown
+                  className={cn(
+                    'size-3 shrink-0 transition-transform',
+                    !diffCommentsExpanded && '-rotate-90'
+                  )}
+                />
+                <MessageSquare className="size-3.5 shrink-0" />
+                <span>Notes</span>
+                {diffCommentCount > 0 && (
+                  <span className="text-[11px] leading-none text-muted-foreground tabular-nums">
+                    {diffCommentCount}
+                  </span>
+                )}
+              </button>
+              {diffCommentCount > 0 && (
+                <TooltipProvider delayDuration={400}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        onClick={() => void handleCopyDiffComments()}
+                        aria-label="Copy all notes to clipboard"
+                      >
+                        {diffCommentsCopied ? (
+                          <Check className="size-3.5" />
+                        ) : (
+                          <Copy className="size-3.5" />
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" sideOffset={6}>
+                      Copy all notes
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            </div>
+            {diffCommentsExpanded && (
+              <DiffCommentsInlineList
+                comments={diffCommentsForActive}
+                onDelete={(id) => void deleteDiffComment(activeWorktreeId, id)}
+              />
+            )}
+          </div>
+        )}
+
         {/* Filter input for searching changed files across all sections */}
         <div className="flex items-center gap-1.5 border-b border-border px-3 py-1.5">
           <Search className="size-3.5 shrink-0 text-muted-foreground" />
@@ -612,7 +759,7 @@ function SourceControlInner(): React.JSX.Element {
             value={filterQuery}
             onChange={(e) => setFilterQuery(e.target.value)}
             placeholder="Filter files…"
-            className="flex-1 min-w-0 bg-transparent text-foreground placeholder:text-muted-foreground/60 outline-none"
+            className="flex-1 min-w-0 bg-transparent text-xs text-foreground placeholder:text-muted-foreground/60 outline-none"
           />
           {filterQuery && (
             <button
@@ -708,7 +855,7 @@ function SourceControlInner(): React.JSX.Element {
                             type="button"
                             variant="ghost"
                             size="sm"
-                            className="h-6 px-1.5 text-[0.75em] text-muted-foreground hover:text-foreground"
+                            className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
                             onClick={(e) => {
                               e.stopPropagation()
                               if (activeWorktreeId && worktreePath) {
@@ -723,7 +870,7 @@ function SourceControlInner(): React.JSX.Element {
                             type="button"
                             variant="ghost"
                             size="sm"
-                            className="h-auto px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+                            className="h-auto px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
                             onClick={(e) => {
                               e.stopPropagation()
                               if (activeWorktreeId && worktreePath) {
@@ -754,6 +901,7 @@ function SourceControlInner(): React.JSX.Element {
                             onStage={handleStage}
                             onUnstage={handleUnstage}
                             onDiscard={handleDiscard}
+                            commentCount={diffCommentCountByPath.get(entry.path) ?? 0}
                           />
                         )
                       })}
@@ -786,7 +934,7 @@ function SourceControlInner(): React.JSX.Element {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-auto px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+                    className="h-auto px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
                     onClick={(e) => {
                       e.stopPropagation()
                       if (activeWorktreeId && worktreePath && branchSummary) {
@@ -807,6 +955,7 @@ function SourceControlInner(): React.JSX.Element {
                     worktreePath={worktreePath}
                     onRevealInExplorer={revealInExplorer}
                     onOpen={() => openCommittedDiff(entry)}
+                    commentCount={diffCommentCountByPath.get(entry.path) ?? 0}
                   />
                 ))}
             </div>
@@ -830,7 +979,7 @@ function SourceControlInner(): React.JSX.Element {
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle className="text-sm">Change Base Ref</DialogTitle>
-            <DialogDescription>
+            <DialogDescription className="text-xs">
               Pick the branch compare target for this repository.
             </DialogDescription>
           </DialogHeader>
@@ -868,7 +1017,7 @@ function CompareSummary({
 }): React.JSX.Element {
   if (!summary || summary.status === 'loading') {
     return (
-      <div className="flex items-center gap-2 text-muted-foreground">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <RefreshCw className="size-3.5 animate-spin" />
         <span>Comparing against {summary?.baseRef ?? '…'}</span>
       </div>
@@ -877,7 +1026,7 @@ function CompareSummary({
 
   if (summary.status !== 'ready') {
     return (
-      <div className="flex items-center gap-2 text-muted-foreground">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="truncate">{summary.errorMessage ?? 'Branch compare unavailable'}</span>
         <button
           className="shrink-0 hover:text-foreground"
@@ -894,7 +1043,7 @@ function CompareSummary({
   }
 
   return (
-    <div className="flex items-center gap-2 text-muted-foreground">
+    <div className="flex items-center gap-2 text-xs text-muted-foreground">
       {summary.commitsAhead !== undefined && (
         <span title={`Comparing against ${summary.baseRef}`}>
           {summary.commitsAhead} commits ahead
@@ -943,7 +1092,7 @@ function CompareUnavailable({
     summary.status === 'error'
 
   return (
-    <div className="m-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+    <div className="m-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3 text-xs">
       <div className="font-medium text-foreground">
         {summary.status === 'error' ? 'Branch compare failed' : 'Branch compare unavailable'}
       </div>
@@ -956,14 +1105,14 @@ function CompareUnavailable({
             type="button"
             variant="outline"
             size="sm"
-            className="h-7"
+            className="h-7 text-xs"
             onClick={onChangeBaseRef}
           >
             <Settings2 className="size-3.5" />
             Change Base Ref
           </Button>
         )}
-        <Button type="button" variant="ghost" size="sm" className="h-7" onClick={onRetry}>
+        <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={onRetry}>
           <RefreshCw className="size-3.5" />
           Retry
         </Button>
@@ -991,21 +1140,123 @@ function SectionHeader({
     <div className="group/section flex items-center pl-1 pr-3 pt-3 pb-1">
       <button
         type="button"
-        className="flex flex-1 items-center gap-1 rounded-md px-0.5 py-0.5 text-left text-[0.8em] font-semibold uppercase tracking-wider text-foreground/70 hover:bg-accent hover:text-accent-foreground"
+        className="flex flex-1 items-center gap-1 rounded-md px-0.5 py-0.5 text-left text-xs font-semibold uppercase tracking-wider text-foreground/70 hover:bg-accent hover:text-accent-foreground"
         onClick={onToggle}
       >
         <ChevronDown
           className={cn('size-3.5 shrink-0 transition-transform', isCollapsed && '-rotate-90')}
         />
         <span>{label}</span>
-        <span className="text-[0.85em] font-medium tabular-nums">{count}</span>
+        <span className="text-[11px] font-medium tabular-nums">{count}</span>
         {conflictCount > 0 && (
-          <span className="text-[0.85em] font-medium text-destructive/80">
+          <span className="text-[11px] font-medium text-destructive/80">
             · {conflictCount} conflict{conflictCount === 1 ? '' : 's'}
           </span>
         )}
       </button>
       <div className="shrink-0 flex items-center">{actions}</div>
+    </div>
+  )
+}
+
+function DiffCommentsInlineList({
+  comments,
+  onDelete
+}: {
+  comments: DiffComment[]
+  onDelete: (commentId: string) => void
+}): React.JSX.Element {
+  // Why: group by filePath so the inline list mirrors the structure in the
+  // Notes tab — a compact section per file with line-number prefixes.
+  const groups = useMemo(() => {
+    const map = new Map<string, DiffComment[]>()
+    for (const c of comments) {
+      const list = map.get(c.filePath) ?? []
+      list.push(c)
+      map.set(c.filePath, list)
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.lineNumber - b.lineNumber)
+    }
+    return Array.from(map.entries())
+  }, [comments])
+
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  // Why: auto-dismiss the per-row "copied" indicator so the button returns to
+  // its default icon after a brief confirmation window. Matches the top-level
+  // Copy button's behavior.
+  useEffect(() => {
+    if (!copiedId) {
+      return
+    }
+    const handle = window.setTimeout(() => setCopiedId(null), 1500)
+    return () => window.clearTimeout(handle)
+  }, [copiedId])
+
+  const handleCopyOne = useCallback(async (c: DiffComment): Promise<void> => {
+    try {
+      await window.api.ui.writeClipboardText(formatDiffComment(c))
+      setCopiedId(c.id)
+    } catch {
+      // Why: swallow — clipboard write can fail when the window isn't focused.
+    }
+  }, [])
+
+  if (comments.length === 0) {
+    return (
+      <div className="px-6 py-2 text-[11px] text-muted-foreground">
+        Hover over a line in the diff view and click the + to add a note.
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-muted/20">
+      {groups.map(([filePath, list]) => (
+        <div key={filePath} className="px-3 py-1.5">
+          <div className="truncate text-[10px] font-medium text-muted-foreground">{filePath}</div>
+          <ul className="mt-1 space-y-1">
+            {list.map((c) => (
+              <li
+                key={c.id}
+                className="group flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-accent/40"
+              >
+                <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] leading-none tabular-nums text-muted-foreground">
+                  L{c.lineNumber}
+                </span>
+                <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[11px] leading-snug text-foreground">
+                  {c.body}
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                  onClick={(ev) => {
+                    ev.stopPropagation()
+                    void handleCopyOne(c)
+                  }}
+                  title="Copy note"
+                  aria-label={`Copy note on line ${c.lineNumber}`}
+                >
+                  {copiedId === c.id ? <Check className="size-3" /> : <Copy className="size-3" />}
+                </button>
+                <button
+                  type="button"
+                  className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                  onClick={(ev) => {
+                    ev.stopPropagation()
+                    onDelete(c.id)
+                  }}
+                  title="Delete note"
+                  aria-label={`Delete note on line ${c.lineNumber}`}
+                >
+                  <Trash className="size-3" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   )
 }
@@ -1034,16 +1285,22 @@ function ConflictSummaryCard({
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
         <div className="min-w-0 flex-1">
           <div
-            className="font-medium text-foreground"
+            className="text-xs font-medium text-foreground"
             aria-live="polite"
           >{`${operationLabel}: ${unresolvedCount} unresolved`}</div>
-          <div className="mt-1 text-[0.85em] text-muted-foreground">
+          <div className="mt-1 text-[11px] text-muted-foreground">
             Resolved files move back to normal changes after they leave the live conflict state.
           </div>
         </div>
       </div>
       <div className="mt-2">
-        <Button type="button" variant="outline" size="sm" className="h-7 w-full" onClick={onReview}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs w-full"
+          onClick={onReview}
+        >
           <GitMerge className="size-3.5" />
           Review conflicts
         </Button>
@@ -1077,7 +1334,7 @@ function OperationBanner({
     <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2">
       <div className="flex items-center gap-2">
         <Icon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-        <span className="font-medium text-foreground">{label}</span>
+        <span className="text-xs font-medium text-foreground">{label}</span>
       </div>
     </div>
   )
@@ -1095,7 +1352,8 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   onOpen,
   onStage,
   onUnstage,
-  onDiscard
+  onDiscard,
+  commentCount
 }: {
   entryKey: string
   entry: GitStatusEntry
@@ -1109,7 +1367,9 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
   onStage: (filePath: string) => Promise<void>
   onUnstage: (filePath: string) => Promise<void>
   onDiscard: (filePath: string) => Promise<void>
+  commentCount: number
 }): React.JSX.Element {
+  const StatusIcon = STATUS_ICONS[entry.status] ?? FileQuestion
   const fileName = basename(entry.path)
   const parentDir = dirname(entry.path)
   const dirPath = parentDir === '.' ? '' : parentDir
@@ -1149,7 +1409,7 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
     >
       <div
         className={cn(
-          'group relative flex cursor-pointer items-center gap-1.5 pl-5 pr-3 py-1.5 text-sm transition-colors hover:bg-accent/40',
+          'group relative flex cursor-pointer items-center gap-1 pl-5 pr-3 py-1 transition-colors hover:bg-accent/40',
           selected && 'bg-accent/60'
         )}
         draggable
@@ -1170,23 +1430,33 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
           }
         }}
       >
-        <VscodeEntryIcon pathValue={entry.path} kind="file" className="size-3.5 shrink-0" />
-        <div className="min-w-0 flex-1">
+        <StatusIcon className="size-3.5 shrink-0" style={{ color: STATUS_COLORS[entry.status] }} />
+        <div className="min-w-0 flex-1 text-xs">
           <span className="min-w-0 block truncate">
             <span className="text-foreground">{fileName}</span>
-            {dirPath && (
-              <span className="ml-1.5 text-[0.9em] text-muted-foreground">{dirPath}</span>
-            )}
+            {dirPath && <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>}
           </span>
           {conflictLabel && (
-            <div className="truncate text-[0.9em] text-muted-foreground">{conflictLabel}</div>
+            <div className="truncate text-[11px] text-muted-foreground">{conflictLabel}</div>
           )}
         </div>
+        {commentCount > 0 && (
+          // Why: show a small note marker on any row that has diff notes
+          // so the user can tell at a glance which files have review notes
+          // attached, without opening the Notes tab.
+          <span
+            className="flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground"
+            title={`${commentCount} note${commentCount === 1 ? '' : 's'}`}
+          >
+            <MessageSquare className="size-3" />
+            <span className="tabular-nums">{commentCount}</span>
+          </span>
+        )}
         {entry.conflictStatus ? (
           <ConflictBadge entry={entry} />
         ) : (
           <span
-            className="w-4 shrink-0 text-center text-[0.8em] font-bold"
+            className="w-4 shrink-0 text-center text-[10px] font-bold"
             style={{ color: STATUS_COLORS[entry.status] }}
           >
             {STATUS_LABELS[entry.status]}
@@ -1238,13 +1508,13 @@ function ConflictBadge({ entry }: { entry: GitStatusEntry }): React.JSX.Element 
       role="status"
       aria-label={`${label} conflict${entry.conflictKind ? `, ${CONFLICT_KIND_LABELS[entry.conflictKind]}` : ''}`}
       className={cn(
-        'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[0.8em] font-semibold',
+        'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold',
         isUnresolvedConflict
           ? 'bg-destructive/12 text-destructive'
           : 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-400'
       )}
     >
-      <Icon className="size-3.5" />
+      <Icon className="size-3" />
       <span>{label}</span>
     </span>
   )
@@ -1270,14 +1540,17 @@ function BranchEntryRow({
   currentWorktreeId,
   worktreePath,
   onRevealInExplorer,
-  onOpen
+  onOpen,
+  commentCount
 }: {
   entry: GitBranchChangeEntry
   currentWorktreeId: string
   worktreePath: string
   onRevealInExplorer: (worktreeId: string, absolutePath: string) => void
   onOpen: () => void
+  commentCount: number
 }): React.JSX.Element {
+  const StatusIcon = STATUS_ICONS[entry.status] ?? FileQuestion
   const fileName = basename(entry.path)
   const parentDir = dirname(entry.path)
   const dirPath = parentDir === '.' ? '' : parentDir
@@ -1289,7 +1562,7 @@ function BranchEntryRow({
       onRevealInExplorer={onRevealInExplorer}
     >
       <div
-        className="group flex cursor-pointer items-center gap-1.5 pl-5 pr-3 py-1.5 text-sm transition-colors hover:bg-accent/40"
+        className="group flex cursor-pointer items-center gap-1 pl-5 pr-3 py-1 transition-colors hover:bg-accent/40"
         draggable
         onDragStart={(e) => {
           const absolutePath = joinPath(worktreePath, entry.path)
@@ -1298,13 +1571,22 @@ function BranchEntryRow({
         }}
         onClick={onOpen}
       >
-        <VscodeEntryIcon pathValue={entry.path} kind="file" className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">
+        <StatusIcon className="size-3.5 shrink-0" style={{ color: STATUS_COLORS[entry.status] }} />
+        <span className="min-w-0 flex-1 truncate text-xs">
           <span className="text-foreground">{fileName}</span>
-          {dirPath && <span className="ml-1.5 text-[0.9em] text-muted-foreground">{dirPath}</span>}
+          {dirPath && <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>}
         </span>
+        {commentCount > 0 && (
+          <span
+            className="flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground"
+            title={`${commentCount} note${commentCount === 1 ? '' : 's'}`}
+          >
+            <MessageSquare className="size-3" />
+            <span className="tabular-nums">{commentCount}</span>
+          </span>
+        )}
         <span
-          className="w-4 shrink-0 text-center text-[0.8em] font-bold"
+          className="w-4 shrink-0 text-center text-[10px] font-bold"
           style={{ color: STATUS_COLORS[entry.status] }}
         >
           {STATUS_LABELS[entry.status]}
@@ -1357,7 +1639,7 @@ function EmptyState({
   return (
     <div className="px-4 py-6">
       <div className="text-sm font-medium text-foreground">{heading}</div>
-      <div className="mt-1 text-[0.85em] text-muted-foreground">{supportingText}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{supportingText}</div>
     </div>
   )
 }

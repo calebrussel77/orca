@@ -17,7 +17,7 @@ type ShortcutGroup = {
 type ShortcutDefinition = {
   action: string
   searchKeywords: string[]
-  keys: (labels: { mod: string; shift: string; enter: string; isWindows: boolean }) => string[]
+  keys: (labels: { mod: string; shift: string; enter: string }) => string[]
 }
 
 type ShortcutGroupDefinition = {
@@ -105,14 +105,29 @@ const SHORTCUT_GROUP_DEFINITIONS: ShortcutGroupDefinition[] = [
     title: 'Terminal Tabs',
     items: [
       {
-        action: 'New tab',
-        searchKeywords: ['shortcut', 'tab'],
+        action: 'New Terminal',
+        searchKeywords: ['shortcut', 'tab', 'terminal'],
         keys: ({ mod }) => [mod, 'T']
+      },
+      {
+        action: 'New Browser Tab',
+        searchKeywords: ['shortcut', 'tab', 'browser'],
+        keys: ({ mod, shift }) => [mod, shift, 'B']
+      },
+      {
+        action: 'New Markdown',
+        searchKeywords: ['shortcut', 'tab', 'markdown', 'file'],
+        keys: ({ mod, shift }) => [mod, shift, 'M']
       },
       {
         action: 'Close active tab / pane',
         searchKeywords: ['shortcut', 'close', 'tab', 'pane'],
         keys: ({ mod }) => [mod, 'W']
+      },
+      {
+        action: 'Reopen closed tab',
+        searchKeywords: ['shortcut', 'tab', 'reopen', 'restore', 'closed'],
+        keys: ({ mod, shift }) => [mod, shift, 'T']
       },
       {
         action: 'Next tab',
@@ -123,6 +138,16 @@ const SHORTCUT_GROUP_DEFINITIONS: ShortcutGroupDefinition[] = [
         action: 'Previous tab',
         searchKeywords: ['shortcut', 'tab', 'previous'],
         keys: ({ mod, shift }) => [mod, shift, '[']
+      },
+      {
+        action: 'Next terminal tab',
+        searchKeywords: ['shortcut', 'tab', 'terminal', 'next'],
+        keys: () => ['Ctrl', 'PageDown']
+      },
+      {
+        action: 'Previous terminal tab',
+        searchKeywords: ['shortcut', 'tab', 'terminal', 'previous'],
+        keys: () => ['Ctrl', 'PageUp']
       }
     ]
   },
@@ -130,22 +155,14 @@ const SHORTCUT_GROUP_DEFINITIONS: ShortcutGroupDefinition[] = [
     title: 'Terminal Panes',
     items: [
       {
-        action: 'Copy selection',
-        searchKeywords: ['shortcut', 'pane', 'copy', 'clipboard'],
-        // Why: Windows terminals conventionally use Ctrl+C to copy the active
-        // selection, while Linux keeps Ctrl+Shift+C to avoid stealing SIGINT.
-        keys: ({ mod, shift, isWindows }) =>
-          mod === '⌘' ? [mod, shift, 'C'] : isWindows ? ['Ctrl', 'C'] : ['Ctrl', 'Shift', 'C']
-      },
-      {
-        action: 'Split pane right',
+        action: 'Split terminal right',
         searchKeywords: ['shortcut', 'pane', 'split'],
         // Why: on Windows/Linux, Ctrl+D must pass through as EOF (#586),
         // so split-right requires Shift on non-Mac platforms.
         keys: ({ mod, shift }) => (mod === '⌘' ? [mod, 'D'] : [mod, shift, 'D'])
       },
       {
-        action: 'Split pane down',
+        action: 'Split terminal down',
         searchKeywords: ['shortcut', 'pane', 'split'],
         // Why: on Windows/Linux, Ctrl+Shift+D is taken by split-right (#586),
         // so split-down uses Alt+Shift+D following Windows Terminal convention.
@@ -177,6 +194,16 @@ const SHORTCUT_GROUP_DEFINITIONS: ShortcutGroupDefinition[] = [
         keys: ({ mod, shift, enter }) => [mod, shift, enter]
       }
     ]
+  },
+  {
+    title: 'Editors',
+    items: [
+      {
+        action: 'Show Markdown Preview',
+        searchKeywords: ['shortcut', 'editor', 'markdown', 'preview'],
+        keys: ({ mod, shift }) => [mod, shift, 'V']
+      }
+    ]
   }
 ]
 
@@ -194,7 +221,6 @@ export const SHORTCUTS_PANE_SEARCH_ENTRIES: SettingsSearchEntry[] =
 export function ShortcutsPane(): React.JSX.Element {
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
   const isMac = navigator.userAgent.includes('Mac')
-  const isWindows = navigator.userAgent.includes('Windows')
   const mod = isMac ? '⌘' : 'Ctrl'
   const shift = isMac ? '⇧' : 'Shift'
   const enter = isMac ? '↵' : 'Enter'
@@ -205,10 +231,10 @@ export function ShortcutsPane(): React.JSX.Element {
         title: group.title,
         items: group.items.map((item) => ({
           action: item.action,
-          keys: item.keys({ mod, shift, enter, isWindows })
+          keys: item.keys({ mod, shift, enter })
         }))
       })),
-    [mod, shift, enter, isWindows]
+    [mod, shift, enter]
   )
 
   // Why: keywords here must match the ones used by SHORTCUTS_PANE_SEARCH_ENTRIES
@@ -234,8 +260,8 @@ export function ShortcutsPane(): React.JSX.Element {
     <div className="space-y-8">
       <section className="space-y-4">
         <div className="space-y-1">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Keyboard Shortcuts</h3>
-          <p className="text-sm text-muted-foreground">
+          <h2 className="text-sm font-semibold">Keyboard Shortcuts</h2>
+          <p className="text-xs text-muted-foreground">
             View common hotkeys used across the application. Shortcuts customization is not
             currently supported.
           </p>
@@ -246,7 +272,7 @@ export function ShortcutsPane(): React.JSX.Element {
             .filter((group) => matchesSettingsSearch(searchQuery, groupEntries[group.title] ?? []))
             .map((group) => (
               <div key={group.title} className="space-y-3">
-                <h3 className="border-b border-border/50 pb-2 text-base font-medium text-muted-foreground">
+                <h3 className="border-b border-border/50 pb-2 text-sm font-medium text-muted-foreground">
                   {group.title}
                 </h3>
                 <div className="grid gap-2">

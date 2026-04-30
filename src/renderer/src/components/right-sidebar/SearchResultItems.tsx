@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react'
 import { ChevronRight, Copy } from 'lucide-react'
-import { VscodeEntryIcon } from '@/components/VscodeEntryIcon'
 import { basename, dirname } from '@/lib/path'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -74,31 +73,24 @@ export function FileResultRow({
                 <Button
                   type="button"
                   variant="ghost"
-                  className="h-auto w-full justify-start gap-1.5 rounded-none px-2 py-1 text-left text-sm group"
+                  className="h-auto w-full justify-start gap-1 rounded-none px-2 py-0.5 text-left group"
                   onClick={onToggleCollapse}
                 >
                   <ChevronRight
                     className={cn(
-                      'size-3.5 flex-shrink-0 text-muted-foreground transition-transform',
+                      'size-3 flex-shrink-0 text-muted-foreground transition-transform',
                       !collapsed && 'rotate-90'
                     )}
                   />
-                  <VscodeEntryIcon
-                    pathValue={fileResult.relativePath}
-                    kind="file"
-                    className="size-3.5 shrink-0"
-                  />
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 text-xs">
                     <span className="min-w-0 block truncate">
                       <span className="text-foreground">{fileName}</span>
                       {dirPath && (
-                        <span className="ml-1.5 text-[0.85em] text-muted-foreground">
-                          {dirPath}
-                        </span>
+                        <span className="ml-1.5 text-[11px] text-muted-foreground">{dirPath}</span>
                       )}
                     </span>
                   </div>
-                  <span className="rounded-full bg-muted/80 px-1.5 text-[0.75em] text-muted-foreground flex-shrink-0">
+                  <span className="text-[10px] text-muted-foreground flex-shrink-0 bg-muted/80 rounded-full px-1.5">
                     {fileResult.matches.length}
                   </span>
                 </Button>
@@ -138,12 +130,22 @@ export function MatchResultRow({
   // Highlight the matched text within the line
   const parts = useMemo(() => {
     const content = match.lineContent
-    const col = match.column - 1 // convert to 0-indexed
-    const len = match.matchLength
+    const col = (match.displayColumn ?? match.column) - 1 // convert to 0-indexed
+    const len = match.displayMatchLength ?? match.matchLength
 
     if (col >= 0 && col + len <= content.length) {
+      // Why: left-truncate the pre-match text so the highlight stays visible at
+      // narrow sidebar widths. Without this, a long `before` pushes the match
+      // off the right edge even with overflow ellipsis. Mirrors VS Code's
+      // search view (see searchTreeModel/match.ts#preview → lcut).
+      const BEFORE_MAX = 26
+      const rawBefore = content.slice(0, col).trimStart()
+      const before =
+        rawBefore.length > BEFORE_MAX
+          ? `…${rawBefore.slice(rawBefore.length - BEFORE_MAX)}`
+          : rawBefore
       return {
-        before: content.slice(0, col),
+        before,
         match: content.slice(col, col + len),
         after: content.slice(col + len)
       }
@@ -151,7 +153,13 @@ export function MatchResultRow({
 
     // Fallback
     return { before: content, match: '', after: '' }
-  }, [match.lineContent, match.column, match.matchLength])
+  }, [
+    match.lineContent,
+    match.column,
+    match.matchLength,
+    match.displayColumn,
+    match.displayMatchLength
+  ])
 
   return (
     <ContextMenu>
@@ -159,7 +167,7 @@ export function MatchResultRow({
         <Button
           type="button"
           variant="ghost"
-          className="min-h-[22px] h-auto w-full justify-start gap-1.5 rounded-none py-0.5 pr-2 pl-8 text-left text-sm"
+          className="min-h-[18px] h-auto w-full justify-start gap-1 rounded-none py-px pr-2 pl-7 text-left"
           onMouseDown={(event) => {
             // Why: clicking a result should move focus into the opened editor.
             // If the sidebar button takes focus first, the browser can restore
@@ -170,15 +178,17 @@ export function MatchResultRow({
           }}
           onClick={onClick}
         >
-          <span className="mt-px flex-shrink-0 tabular-nums text-[0.8em] text-muted-foreground">
+          <span className="text-[10px] text-muted-foreground flex-shrink-0 tabular-nums mt-px">
             {match.line}
           </span>
-          <span className="truncate">
-            <span className="text-muted-foreground">{parts.before.trimStart()}</span>
+          <span className="text-xs flex min-w-0 items-baseline whitespace-pre">
+            <span className="text-muted-foreground flex-shrink-0">{parts.before}</span>
             {parts.match && (
-              <span className="bg-amber-500/30 text-foreground rounded-sm">{parts.match}</span>
+              <span className="bg-amber-500/30 text-foreground rounded-sm flex-shrink-0">
+                {parts.match}
+              </span>
             )}
-            <span className="text-muted-foreground">{parts.after}</span>
+            <span className="text-muted-foreground min-w-0 truncate">{parts.after}</span>
           </span>
         </Button>
       </ContextMenuTrigger>

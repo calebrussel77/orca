@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import type { PRInfo, Repo, Worktree } from '../../../../shared/types'
+import { runWorktreeDeleteWithToast } from '../sidebar/delete-worktree-flow'
 
 const MERGE_METHODS = ['squash', 'merge', 'rebase'] as const
 
@@ -26,6 +27,7 @@ export default function PRActions({
   onRefreshPR: () => Promise<void>
 }): React.JSX.Element | null {
   const openModal = useAppStore((s) => s.openModal)
+  const skipDeleteConfirm = useAppStore((s) => s.settings?.skipDeleteWorktreeConfirm ?? false)
   const [merging, setMerging] = useState(false)
   const [mergeError, setMergeError] = useState<string | null>(null)
   const [mergeMenuOpen, setMergeMenuOpen] = useState(false)
@@ -70,8 +72,17 @@ export default function PRActions({
   }, [mergeMenuOpen])
 
   const handleDeleteWorktree = useCallback(() => {
+    // Why: honor the user's "don't ask again" preference from the main
+    // worktree-delete dialog here too; otherwise the merged-PR shortcut would
+    // still prompt after the user opted out everywhere else. Main worktrees
+    // can't reach this action — PRs are opened from non-main worktrees — so
+    // we don't need the main-worktree guard the context menu uses.
+    if (skipDeleteConfirm) {
+      runWorktreeDeleteWithToast(worktree.id, worktree.displayName)
+      return
+    }
     openModal('delete-worktree', { worktreeId: worktree.id })
-  }, [worktree.id, openModal])
+  }, [worktree.id, worktree.displayName, openModal, skipDeleteConfirm])
 
   // Why: merging a PR with unresolved conflicts would fail on GitHub anyway;
   // disabling the button prevents a confusing error and signals the user must
@@ -98,7 +109,7 @@ export default function PRActions({
                     type="button"
                     size="xs"
                     className={cn(
-                      'flex-1 rounded-r-none px-3',
+                      'flex-1 rounded-r-none px-3 text-[11px]',
                       'bg-green-600 text-white hover:bg-green-700',
                       'disabled:opacity-50 disabled:cursor-not-allowed'
                     )}
@@ -133,7 +144,7 @@ export default function PRActions({
                           type="button"
                           variant="ghost"
                           size="xs"
-                          className="h-auto w-full justify-start rounded-none px-3 py-1 text-left"
+                          className="h-auto w-full justify-start rounded-none px-3 py-1 text-left text-[11px]"
                           onClick={() => void handleMerge(method)}
                         >
                           {MERGE_LABELS[method]}
@@ -151,7 +162,7 @@ export default function PRActions({
             )}
           </Tooltip>
         </TooltipProvider>
-        {mergeError && <div className="text-[0.75em] text-rose-500 break-words">{mergeError}</div>}
+        {mergeError && <div className="text-[10px] text-rose-500 break-words">{mergeError}</div>}
       </div>
     )
   }
@@ -162,7 +173,7 @@ export default function PRActions({
         type="button"
         variant="secondary"
         size="xs"
-        className="w-full"
+        className="w-full text-[11px]"
         onClick={handleDeleteWorktree}
       >
         <Trash2 className="size-3.5" />

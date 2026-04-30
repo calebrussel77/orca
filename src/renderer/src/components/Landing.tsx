@@ -87,7 +87,12 @@ function GitHubStarButton({ hasRepos }: { hasRepos: boolean }): React.JSX.Elemen
     const ok = await window.api.gh.starOrca()
     if (!ok) {
       setState('not-starred')
+      return
     }
+    // Why: starring from any entry point mutes the threshold-based nag.
+    // Without this the background notification could still fire on the next
+    // threshold crossing, which would feel like a bug to the user.
+    await window.api.starNag.complete()
   }
 
   // Hide if gh CLI is unavailable, or if the user has already starred and added a repo
@@ -231,7 +236,7 @@ export default function Landing(): React.JSX.Element {
           <p className="text-sm text-muted-foreground text-center">
             {canCreateWorktree
               ? 'Select a worktree from the sidebar to begin.'
-              : 'Add a repository to get started.'}
+              : 'Add a project to get started.'}
           </p>
 
           <div className="flex items-center justify-center gap-2.5 flex-wrap">
@@ -240,14 +245,14 @@ export default function Landing(): React.JSX.Element {
               onClick={() => openModal('add-repo')}
             >
               <FolderPlus className="size-3.5" />
-              Add Repo
+              Add Project
             </button>
 
             <button
               className="inline-flex items-center gap-1.5 bg-secondary/70 border border-border/80 text-foreground font-medium text-sm px-4 py-2 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed enabled:cursor-pointer enabled:hover:bg-accent"
               disabled={!canCreateWorktree}
-              title={!canCreateWorktree ? 'Add a Git repo first' : undefined}
-              onClick={() => openModal('create-worktree')}
+              title={!canCreateWorktree ? 'Add a Git project first' : undefined}
+              onClick={() => openModal('new-workspace-composer')}
             >
               <GitBranchPlus className="size-3.5" />
               Create Worktree

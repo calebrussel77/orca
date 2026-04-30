@@ -2,10 +2,12 @@
 ~70 lines of scanner/promise wiring to spawn(). Splitting the method would scatter
 tightly coupled PTY lifecycle logic (scan → ready → write → exit cleanup) across
 files without a cleaner ownership seam. */
-import { basename, join, win32 as pathWin32 } from 'path'
+import { basename } from 'path'
+import { resolveWindowsShellLaunchArgs } from './windows-shell-args'
+import { resolveProcessCwd } from './process-cwd'
 import { existsSync } from 'fs'
 import * as pty from 'node-pty'
-import { parseWslPath } from '../wsl'
+import { parseWslPath, isWslAvailable } from '../wsl'
 import {
   injectHistoryEnv,
   updateHistFileForFallback,
@@ -18,6 +20,7 @@ import {
   spawnShellWithFallback
 } from './local-pty-utils'
 import {
+  getAttributionShellLaunchConfig,
   getShellReadyLaunchConfig,
   createShellReadyScanState,
   scanForShellReady,
@@ -43,34 +46,21 @@ type ExitCallback = (payload: { id: string; code: number }) => void
 const dataListeners = new Set<DataCallback>()
 const exitListeners = new Set<ExitCallback>()
 
-function resolveDefaultWindowsShell(explicitShell?: string): string {
-  if (explicitShell?.trim()) {
-    return explicitShell.trim()
+function getDefaultCwd(): string {
+  if (process.platform !== 'win32') {
+    return process.env.HOME || '/'
   }
 
-  const pathEnv = process.env.PATH ?? process.env.Path ?? ''
-  for (const directory of pathEnv.split(';').map((entry) => entry.trim()).filter(Boolean)) {
-    const pwshCandidate = join(directory, 'pwsh.exe')
-    if (existsSync(pwshCandidate)) {
-      // Why: PowerShell 7 loads the user's modern pwsh profile where prompt
-      // customizations like oh-my-posh typically live. Prefer it over the
-      // legacy Windows PowerShell host so Orca terminals match the user's
-      // normal terminal experience on Windows.
-      return pwshCandidate
-    }
+  // Why: USERPROFILE is not guaranteed in all Windows launch contexts.
+  // Falling back to bare HOMEPATH yields a drive-relative path, so combine
+  // HOMEDRIVE + HOMEPATH to keep spawned PTYs anchored to the intended home.
+  if (process.env.USERPROFILE) {
+    return process.env.USERPROFILE
   }
-
-  const comspec = process.env.COMSPEC?.trim()
-  const comspecBasename = comspec ? pathWin32.basename(comspec).toLowerCase() : ''
-  if (comspecBasename === 'powershell.exe' || comspecBasename === 'pwsh.exe') {
-    return comspec!
+  if (process.env.HOMEDRIVE && process.env.HOMEPATH) {
+    return `${process.env.HOMEDRIVE}${process.env.HOMEPATH}`
   }
-
-  // Why: COMSPEC commonly points at cmd.exe on Windows, but Orca's "new
-  // terminal" flows should land in PowerShell by default so sidebar/project
-  // activation and the "+" button open the richer shell experience users
-  // expect, unless a shell was explicitly requested for this PTY.
-  return 'powershell.exe'
+  return 'C:\\'
 }
 
 function disposePtyListeners(id: string): void {
@@ -105,6 +95,11 @@ export type LocalPtyProviderOptions = {
   /** Whether worktree-scoped shell history is enabled. When true (or absent)
    *  and a worktreeId is provided, HISTFILE is scoped per-worktree. */
   isHistoryEnabled?: () => boolean
+  /** Why: COMSPEC is always cmd.exe on a stock Windows machine, so reading it
+   *  directly would ignore the user's shell preference. This callback lets the
+   *  IPC layer inject the persisted setting without coupling the provider to the
+   *  settings store. Returns undefined when no preference is set. */
+  getWindowsShell?: () => string | undefined
   onSpawned?: (id: string) => void
   onExit?: (id: string, code: number) => void
   onData?: (id: string, data: string, timestamp: number) => void
@@ -125,11 +120,7 @@ export class LocalPtyProvider implements IPtyProvider {
   async spawn(args: PtySpawnOptions): Promise<PtySpawnResult> {
     const id = String(++ptyCounter)
 
-    const defaultCwd =
-      process.platform === 'win32'
-        ? process.env.USERPROFILE || process.env.HOMEPATH || 'C:\\'
-        : process.env.HOME || '/'
-
+    const defaultCwd = getDefaultCwd()
     const cwd = args.cwd || defaultCwd
     const wslInfo = process.platform === 'win32' ? parseWslPath(cwd) : null
 
@@ -142,40 +133,28 @@ export class LocalPtyProvider implements IPtyProvider {
       const escapedCwd = wslInfo.linuxPath.replace(/'/g, "'\\''")
       shellPath = 'wsl.exe'
       shellArgs = ['-d', wslInfo.distro, '--', 'bash', '-c', `cd '${escapedCwd}' && exec bash -l`]
-      effectiveCwd = process.env.USERPROFILE || process.env.HOMEPATH || 'C:\\'
+      effectiveCwd = getDefaultCwd()
       validationCwd = cwd
     } else if (process.platform === 'win32') {
-      shellPath = resolveDefaultWindowsShell(args.env?.SHELL)
-      // Why: use path.win32.basename so backslash-separated Windows paths
-      // are parsed correctly even when tests mock process.platform on Linux CI.
-      const shellBasename = pathWin32.basename(shellPath).toLowerCase()
-      // Why: On CJK Windows (Chinese, Japanese, Korean), the console code page
-      // defaults to the system ANSI code page (e.g. 936/GBK for Chinese).
-      // ConPTY encodes its output pipe using this code page, but node-pty
-      // always decodes as UTF-8. Without switching to code page 65001 (UTF-8),
-      // multi-byte CJK characters are garbled because the GBK/Shift-JIS/EUC-KR
-      // byte sequences are misinterpreted as UTF-8.
-      if (shellBasename === 'cmd.exe') {
-        shellArgs = ['/K', 'chcp 65001 > nul']
-      } else if (shellBasename === 'powershell.exe' || shellBasename === 'pwsh.exe') {
-        // Why: `-NoExit -Command` alone skips the user's $PROFILE, breaking
-        // custom prompts (oh-my-posh, starship), aliases, and PSReadLine
-        // configuration. Dot-sourcing $PROFILE first restores the normal
-        // startup experience.
-        shellArgs = [
-          '-NoExit',
-          '-Command',
-          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
-        ]
-      } else {
-        shellArgs = []
-      }
-      effectiveCwd = cwd
-      validationCwd = cwd
+      // Why: shellOverride lets a single tab open in a different shell than the
+      // persisted default (e.g. "New WSL terminal" from the "+" submenu) without
+      // changing the user's setting. It takes priority over the setting.
+      shellPath =
+        args.shellOverride ||
+        this.opts.getWindowsShell?.() ||
+        process.env.COMSPEC ||
+        'powershell.exe'
+      // Why: both this path and the daemon-subprocess path must derive the
+      // same shellArgs for the same (shell, cwd) pair. The helper keeps CJK
+      // UTF-8 setup (chcp 65001), PowerShell $PROFILE dot-sourcing, and the
+      // wsl.exe /mnt/<drive> cwd translation in one place.
+      const resolved = resolveWindowsShellLaunchArgs(shellPath, cwd, defaultCwd)
+      shellArgs = resolved.shellArgs
+      effectiveCwd = resolved.effectiveCwd
+      validationCwd = resolved.validationCwd
     } else {
       shellPath = args.env?.SHELL || process.env.SHELL || '/bin/zsh'
-      shellReadyLaunch = args.command ? getShellReadyLaunchConfig(shellPath) : null
-      shellArgs = shellReadyLaunch?.args ?? ['-l']
+      shellArgs = ['-l']
       effectiveCwd = cwd
       validationCwd = cwd
     }
@@ -186,12 +165,26 @@ export class LocalPtyProvider implements IPtyProvider {
     const spawnEnv: Record<string, string> = {
       ...process.env,
       ...args.env,
-      ...shellReadyLaunch?.env,
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       TERM_PROGRAM: 'Orca',
+      // Why: TUIs feature-gate on TERM_PROGRAM_VERSION (Neovim's termcap
+      // autodetection, bat/delta paging hints). Sourced from ORCA_APP_VERSION
+      // which main/index.ts seeds from app.getVersion() at startup; the
+      // fallback keeps tests and non-Electron runs working.
+      TERM_PROGRAM_VERSION: process.env.ORCA_APP_VERSION ?? '0.0.0-dev',
+      // Why: opt tools (Claude Code, ls --hyperlink, etc.) into emitting OSC 8
+      // hyperlinks. The `supports-hyperlinks` npm package gates on a hard-coded
+      // TERM_PROGRAM allowlist (iTerm.app / WezTerm / vscode) and returns false
+      // for TERM_PROGRAM=Orca, so callers drop OSC 8 output entirely and emit
+      // bare text instead. xterm.js in Orca parses OSC 8 and the pane's
+      // linkHandler routes clicks, so forcing the advertisement is safe and
+      // restores clickable refs like `owner/repo#123` / `PR#123`.
       FORCE_HYPERLINK: '1'
     } as Record<string, string>
+    for (const key of args.envToDelete ?? []) {
+      delete spawnEnv[key]
+    }
 
     spawnEnv.LANG ??= 'en_US.UTF-8'
 
@@ -205,6 +198,18 @@ export class LocalPtyProvider implements IPtyProvider {
     }
 
     const finalEnv = this.opts.buildSpawnEnv ? this.opts.buildSpawnEnv(id, spawnEnv) : spawnEnv
+    if (!wslInfo && process.platform !== 'win32') {
+      const shellLaunch = args.command
+        ? getShellReadyLaunchConfig(shellPath)
+        : finalEnv.ORCA_ATTRIBUTION_SHIM_DIR
+          ? getAttributionShellLaunchConfig(shellPath)
+          : null
+      if (shellLaunch) {
+        Object.assign(finalEnv, shellLaunch.env)
+        shellArgs = shellLaunch.args ?? shellArgs
+        shellReadyLaunch = args.command ? shellLaunch : null
+      }
+    }
 
     // ── Worktree-scoped shell history (§7–§10 of terminal-history-scope-design) ──
     // Why: without this, all worktree terminals share a single global HISTFILE
@@ -327,7 +332,12 @@ export class LocalPtyProvider implements IPtyProvider {
       })
     }
 
-    return { id }
+    // Why: publish the OS pid so ipc/pty can register the PTY with the memory
+    // collector without reaching back into the provider. `proc.pid` may be
+    // briefly 0/undefined if node-pty hasn't observed the forked child yet.
+    const rawPid = proc.pid
+    const pid = typeof rawPid === 'number' && Number.isFinite(rawPid) && rawPid > 0 ? rawPid : null
+    return { id, pid }
   }
 
   // Local PTYs are always attached -- no-op. Remote providers use this to resubscribe.
@@ -347,13 +357,17 @@ export class LocalPtyProvider implements IPtyProvider {
     // Why: disposePtyListeners removes the onExit callback, so the natural
     // exit cleanup path from node-pty won't fire. Cleanup and notification
     // must happen unconditionally after the try/catch.
+    // Note: clearPtyState calls disposePtyListeners internally, so we only
+    // need to call it once via clearPtyState after killing the process.
     disposePtyListeners(id)
     try {
       proc.kill()
     } catch {
       /* Process may already be dead */
     }
-    clearPtyState(id)
+    ptyProcesses.delete(id)
+    ptyShellName.delete(id)
+    ptyLoadGeneration.delete(id)
     this.opts.onExit?.(id, -1)
     for (const cb of exitListeners) {
       cb({ id, code: -1 })
@@ -373,11 +387,19 @@ export class LocalPtyProvider implements IPtyProvider {
   }
 
   async getCwd(id: string): Promise<string> {
-    if (!ptyProcesses.has(id)) {
-      throw new Error(`PTY ${id} not found`)
+    const proc = ptyProcesses.get(id)
+    // Why: return '' (not throw) on unknown id — the renderer treats empty
+    // as "no result, try the next fallback layer". Throwing would surface a
+    // noisy rejection for a non-exceptional case (PTY just exited, pane
+    // still has its old id).
+    if (!proc) {
+      return ''
     }
-    // node-pty doesn't expose cwd; would need /proc on Linux or lsof on macOS
-    return ''
+    // Why: resolveProcessCwd returns '' when it can't resolve — let that
+    // empty surface so the renderer's fallback chain decides what to do.
+    // Handing back a fabricated initialCwd here would lie to the renderer
+    // and short-circuit that chain.
+    return resolveProcessCwd(proc.pid)
   }
   async getInitialCwd(_id: string): Promise<string> {
     return ''
@@ -435,27 +457,20 @@ export class LocalPtyProvider implements IPtyProvider {
 
   async getDefaultShell(): Promise<string> {
     if (process.platform === 'win32') {
-      return resolveDefaultWindowsShell()
+      return this.opts.getWindowsShell?.() || process.env.COMSPEC || 'powershell.exe'
     }
     return process.env.SHELL || '/bin/zsh'
   }
 
   async getProfiles(): Promise<{ name: string; path: string }[]> {
     if (process.platform === 'win32') {
-      const defaultShell = resolveDefaultWindowsShell()
-      const defaultShellBasename = pathWin32.basename(defaultShell).toLowerCase()
-      const profiles =
-        defaultShellBasename === 'pwsh.exe'
-          ? [
-              { name: 'PowerShell 7', path: defaultShell },
-              { name: 'Windows PowerShell', path: 'powershell.exe' },
-              { name: 'Command Prompt', path: 'cmd.exe' }
-            ]
-          : [
-              { name: 'PowerShell', path: 'powershell.exe' },
-              { name: 'Command Prompt', path: 'cmd.exe' }
-            ]
-
+      const profiles: { name: string; path: string }[] = [
+        { name: 'PowerShell', path: 'powershell.exe' },
+        { name: 'Command Prompt', path: 'cmd.exe' }
+      ]
+      if (isWslAvailable()) {
+        profiles.push({ name: 'WSL', path: 'wsl.exe' })
+      }
       return profiles
     }
     const shells = ['/bin/zsh', '/bin/bash', '/bin/sh']
