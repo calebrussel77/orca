@@ -95,4 +95,4 @@ jobs:
         run: |
           gh workflow run release.yml \
             --ref "${{ github.ref_name }}" \
-            -f tag_name="${{ steps.release_tag.outputs.tag_name }}"
+            -f tag="${{ steps.release_tag.outputs.tag_name }}"
