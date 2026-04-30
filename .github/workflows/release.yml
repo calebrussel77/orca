@@ -162,8 +162,37 @@ jobs:
           retry_wait_seconds: 30
           command: pnpm install --frozen-lockfile
 
-      - name: Verify macOS signing environment
+      # Why: this fork's standard public releases target Windows/Linux even
+      # when Apple signing secrets are not configured. Keep macOS artifacts
+      # strict when secrets exist, but do not block publishing the other
+      # platforms just because the fork cannot notarize a macOS build.
+      - name: Detect macOS signing environment
         if: matrix.platform == 'mac'
+        id: mac_signing
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERTS }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=0
+          for key in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!key}" ]]; then
+              missing=1
+              echo "::warning::Missing macOS release signing environment variable: $key"
+            fi
+          done
+
+          if [[ "$missing" == "0" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify macOS signing environment
+        if: matrix.platform == 'mac' && steps.mac_signing.outputs.available == 'true'
         run: node config/scripts/verify-macos-release-env.mjs
         env:
           CSC_LINK: ${{ secrets.MAC_CERTS }}
@@ -171,6 +200,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Skip macOS release artifacts
+        if: matrix.platform == 'mac' && steps.mac_signing.outputs.available != 'true'
+        run: echo "Skipping macOS artifacts because signing and notarization secrets are not configured."
 
       - name: Build app
         run: pnpm build:release
@@ -189,7 +222,7 @@ jobs:
       # the whole release. Retry on failure so transient network errors
       # don't require a manual re-run.
       - name: Publish release artifacts (macOS)
-        if: matrix.platform == 'mac'
+        if: matrix.platform == 'mac' && steps.mac_signing.outputs.available == 'true'
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 45
