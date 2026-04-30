@@ -140,6 +140,25 @@ export default function BrowserAddressBar({
     setOpen(true)
   }, [inputRef])
 
+  const handleMouseDown = useCallback((event: React.MouseEvent<HTMLInputElement>) => {
+    if (event.button !== 0 || closingRef.current) {
+      return
+    }
+
+    const input = event.currentTarget
+    if (document.activeElement === input) {
+      return
+    }
+
+    // Why: native mouse focus can place the caret after onFocus selects the URL,
+    // so prevent the first click from collapsing the full-address selection.
+    event.preventDefault()
+    input.focus()
+    input.select()
+    openedAtRef.current = Date.now()
+    setOpen(true)
+  }, [])
+
   const handleBlur = useCallback(() => {
     // Why: delay close so that clicking a suggestion item registers before
     // the popover unmounts. Without this, onSelect never fires because the
@@ -264,6 +283,7 @@ export default function BrowserAddressBar({
             ref={inputRef}
             value={value}
             onChange={(event) => onChange(event.target.value)}
+            onMouseDown={handleMouseDown}
             onFocus={handleFocus}
             onBlur={handleBlur}
             onKeyDown={handleKeyDown}
