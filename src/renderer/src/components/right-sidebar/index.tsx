@@ -22,6 +22,7 @@ import SourceControl from './SourceControl'
 import SearchPanel from './Search'
 import ChecksPanel from './ChecksPanel'
 import PortsPanel from './PortsPanel'
+import { WindowControls } from '../WindowControls'
 
 const MIN_WIDTH = 220
 // Why: long file names (e.g. construction drawing sheets, multi-part document
@@ -305,7 +306,10 @@ function RightSidebarInner(): React.JSX.Element {
               <div className="flex items-center justify-between border-b border-border h-[42px] min-h-[42px] pl-2 pr-1">
                 <TooltipProvider delayDuration={400}>
                   <div className="flex items-center">{activityBarIcons}</div>
-                  {closeButton}
+                  <div className="flex h-full items-center">
+                    {closeButton}
+                    <WindowControls />
+                  </div>
                 </TooltipProvider>
               </div>
             </ContextMenuTrigger>
@@ -320,7 +324,12 @@ function RightSidebarInner(): React.JSX.Element {
             <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
               {visibleItems.find((item) => item.id === effectiveTab)?.title ?? ''}
             </span>
-            <TooltipProvider delayDuration={400}>{closeButton}</TooltipProvider>
+            <TooltipProvider delayDuration={400}>
+              <div className="flex h-full items-center">
+                {closeButton}
+                <WindowControls />
+              </div>
+            </TooltipProvider>
           </div>
         )}
 

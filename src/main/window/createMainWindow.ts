@@ -115,8 +115,17 @@ export function createMainWindow(
     // Window/Help menus by pressing Alt, matching native Windows/Linux
     // conventions (File Explorer, Firefox, etc.).
     autoHideMenuBar: true,
+    // Why: Windows otherwise shows both the native caption bar and Orca's
+    // renderer titlebar. Frameless Windows windows let the black app chrome own
+    // the titlebar while custom controls provide minimize/maximize/close.
+    frame: process.platform === 'win32' ? false : undefined,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#ffffff',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
+    titleBarStyle:
+      process.platform === 'darwin'
+        ? 'hiddenInset'
+        : process.platform === 'win32'
+          ? 'hidden'
+          : undefined,
     // Why: initial position for 1x zoom; syncTrafficLightPosition() adjusts
     // dynamically when the user changes UI zoom.
     ...(process.platform === 'darwin'
@@ -237,21 +246,35 @@ export function createMainWindow(
       return
     }
     store?.updateUI({ windowMaximized: true })
+    emitWindowState()
   })
   mainWindow.on('unmaximize', () => {
     if (windowClosing) {
       return
     }
     store?.updateUI({ windowMaximized: false, windowBounds: mainWindow.getBounds() })
+    emitWindowState()
   })
 
   mainWindow.on('enter-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen-changed', true)
+    emitWindowState()
   })
 
   mainWindow.on('leave-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen-changed', false)
+    emitWindowState()
   })
+
+  function emitWindowState(): void {
+    if (mainWindow.isDestroyed()) {
+      return
+    }
+    mainWindow.webContents.send('window:state-changed', {
+      isFullScreen: mainWindow.isFullScreen(),
+      isMaximized: mainWindow.isMaximized()
+    })
+  }
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     const externalUrl = normalizeExternalBrowserUrl(details.url)
@@ -519,10 +542,42 @@ export function createMainWindow(
     }
   }
   const trafficLightChannel = 'ui:sync-traffic-lights'
+  const minimizeWindowChannel = 'window:minimize'
+  const toggleMaximizeWindowChannel = 'window:toggle-maximize'
+  const closeWindowChannel = 'window:close'
+  const getWindowStateChannel = 'window:get-state'
   const onSyncTrafficLights = (_event: Electron.IpcMainEvent, zoomFactor: number): void => {
     syncTrafficLightPosition(mainWindow, zoomFactor)
   }
+  const onMinimizeWindow = (): void => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.minimize()
+    }
+  }
+  const onToggleMaximizeWindow = (): void => {
+    if (mainWindow.isDestroyed()) {
+      return
+    }
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize()
+      return
+    }
+    mainWindow.maximize()
+  }
+  const onCloseWindow = (): void => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.close()
+    }
+  }
   ipcMain.on(trafficLightChannel, onSyncTrafficLights)
+  ipcMain.on(minimizeWindowChannel, onMinimizeWindow)
+  ipcMain.on(toggleMaximizeWindowChannel, onToggleMaximizeWindow)
+  ipcMain.on(closeWindowChannel, onCloseWindow)
+  ipcMain.removeHandler(getWindowStateChannel)
+  ipcMain.handle(getWindowStateChannel, () => ({
+    isFullScreen: mainWindow.isFullScreen(),
+    isMaximized: mainWindow.isMaximized()
+  }))
 
   ipcMain.on(confirmCloseChannel, onConfirmClose)
   mainWindow.on('closed', () => {
@@ -531,8 +586,12 @@ export function createMainWindow(
     // with the webContents lifecycle resets above.
     markdownEditorFocused = false
     ipcMain.removeListener(trafficLightChannel, onSyncTrafficLights)
+    ipcMain.removeListener(minimizeWindowChannel, onMinimizeWindow)
+    ipcMain.removeListener(toggleMaximizeWindowChannel, onToggleMaximizeWindow)
+    ipcMain.removeListener(closeWindowChannel, onCloseWindow)
     ipcMain.removeListener(confirmCloseChannel, onConfirmClose)
     ipcMain.removeListener(markdownFocusChannel, onMarkdownEditorFocused)
+    ipcMain.removeHandler(getWindowStateChannel)
     app.removeListener('before-quit', freezeBoundsOnQuit)
   })
 

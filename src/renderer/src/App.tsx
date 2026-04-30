@@ -23,6 +23,7 @@ import RightSidebar from './components/right-sidebar'
 import { StatusBar } from './components/status-bar/StatusBar'
 import { UpdateCard } from './components/UpdateCard'
 import { StarNagCard } from './components/StarNagCard'
+import { WindowControls } from './components/WindowControls'
 import { ZoomOverlay } from './components/ZoomOverlay'
 import { SshPassphraseDialog } from './components/settings/SshPassphraseDialog'
 import { useGitStatusPolling } from './components/right-sidebar/useGitStatusPolling'
@@ -1006,6 +1007,7 @@ function App(): React.JSX.Element {
               </Tooltip>
             )}
             {rightSidebarToggle}
+            <WindowControls />
           </div>
         ) : null}
         <div className="flex flex-row flex-1 min-h-0 overflow-hidden">
@@ -1067,6 +1069,7 @@ function App(): React.JSX.Element {
                 style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               >
                 {rightSidebarToggle}
+                <WindowControls />
               </div>
             )}
             <div className="flex flex-1 min-w-0 min-h-0 flex-col">

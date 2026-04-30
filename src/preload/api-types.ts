@@ -817,6 +817,13 @@ export type PreloadApi = {
     setZoomLevel: (level: number) => void
     syncTrafficLights: (zoomFactor: number) => void
     setMarkdownEditorFocused: (focused: boolean) => void
+    minimizeWindow: () => void
+    toggleMaximizeWindow: () => void
+    closeWindow: () => void
+    getWindowState: () => Promise<{ isFullScreen: boolean; isMaximized: boolean }>
+    onWindowStateChanged: (
+      callback: (state: { isFullScreen: boolean; isMaximized: boolean }) => void
+    ) => () => void
     onFullscreenChanged: (callback: (isFullScreen: boolean) => void) => () => void
     onWindowCloseRequested: (callback: (data: { isQuitting: boolean }) => void) => () => void
     confirmWindowClose: () => void

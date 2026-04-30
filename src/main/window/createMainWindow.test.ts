@@ -11,7 +11,7 @@ const { browserWindowMock, openExternalMock, attachGuestPoliciesMock, isMock } =
 vi.mock('electron', () => ({
   app: { on: vi.fn(), removeListener: vi.fn() },
   BrowserWindow: browserWindowMock,
-  ipcMain: { on: vi.fn(), removeListener: vi.fn() },
+  ipcMain: { handle: vi.fn(), on: vi.fn(), removeHandler: vi.fn(), removeListener: vi.fn() },
   nativeTheme: { shouldUseDarkColors: false },
   screen: {
     getPrimaryDisplay: () => ({ workAreaSize: { width: 1440, height: 900 } })
@@ -46,7 +46,9 @@ describe('createMainWindow', () => {
     openExternalMock.mockReset()
     attachGuestPoliciesMock.mockReset()
     isMock.dev = false
+    vi.mocked(ipcMain.handle).mockReset()
     vi.mocked(ipcMain.on).mockReset()
+    vi.mocked(ipcMain.removeHandler).mockReset()
     vi.mocked(ipcMain.removeListener).mockReset()
     vi.useRealTimers()
   })
@@ -96,6 +98,11 @@ describe('createMainWindow', () => {
     if (process.platform === 'darwin') {
       expect(browserWindowOptions).toMatchObject({
         titleBarStyle: 'hiddenInset'
+      })
+    } else if (process.platform === 'win32') {
+      expect(browserWindowOptions).toMatchObject({
+        frame: false,
+        titleBarStyle: 'hidden'
       })
     } else {
       expect(browserWindowOptions.titleBarStyle).toBeUndefined()

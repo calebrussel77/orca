@@ -1500,6 +1500,27 @@ const api = {
     setMarkdownEditorFocused: (focused: boolean): void => {
       ipcRenderer.send('ui:setMarkdownEditorFocused', focused)
     },
+    minimizeWindow: (): void => {
+      ipcRenderer.send('window:minimize')
+    },
+    toggleMaximizeWindow: (): void => {
+      ipcRenderer.send('window:toggle-maximize')
+    },
+    closeWindow: (): void => {
+      ipcRenderer.send('window:close')
+    },
+    getWindowState: (): Promise<{ isFullScreen: boolean; isMaximized: boolean }> =>
+      ipcRenderer.invoke('window:get-state'),
+    onWindowStateChanged: (
+      callback: (state: { isFullScreen: boolean; isMaximized: boolean }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        state: { isFullScreen: boolean; isMaximized: boolean }
+      ) => callback(state)
+      ipcRenderer.on('window:state-changed', listener)
+      return () => ipcRenderer.removeListener('window:state-changed', listener)
+    },
     onFullscreenChanged: (callback: (isFullScreen: boolean) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, isFullScreen: boolean) =>
         callback(isFullScreen)
