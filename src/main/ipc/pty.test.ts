@@ -1034,10 +1034,18 @@ describe('registerPtyHandlers', () => {
       )
     })
 
-    it('uses terminalWindowsShell setting over COMSPEC when provided', () => {
+    it('uses terminalWindowsShell setting over COMSPEC and resolves legacy PowerShell to PowerShell 7', () => {
       // Why: COMSPEC always points to cmd.exe on stock Windows, so without the
-      // setting the terminal would ignore the user's shell preference.
+      // setting the terminal would ignore the user's shell preference. A stored
+      // powershell.exe value is a legacy "PowerShell" choice, so it now follows
+      // the app's PowerShell 7 preference when pwsh is available.
       process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      process.env.PATH = 'C:\\Program Files\\PowerShell\\7;C:\\Windows\\System32'
+      existsSyncMock.mockImplementation(
+        (targetPath: string) =>
+          targetPath === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' ||
+          targetPath === 'C:\\Users\\test'
+      )
 
       registerPtyHandlers(
         mainWindow as never,
@@ -1051,7 +1059,7 @@ describe('registerPtyHandlers', () => {
       handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
 
       expect(spawnMock).toHaveBeenCalledWith(
-        'powershell.exe',
+        'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
         [
           '-NoExit',
           '-Command',

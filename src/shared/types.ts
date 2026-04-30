@@ -892,8 +892,9 @@ export type GlobalSettings = {
   terminalRightClickToPaste: boolean
   /** Why: COMSPEC always points to cmd.exe on stock Windows, so without an
    *  explicit setting the terminal would always open CMD instead of the
-   *  user's preferred shell. Defaults to 'powershell.exe' which is the
-   *  modern choice for an IDE context. Only consulted on Windows. */
+   *  user's preferred shell. Defaults to 'pwsh.exe' so PowerShell 7 loads the
+   *  user's modern profile, PSReadLine autocomplete, and prompt config when
+   *  available. Only consulted on Windows. */
   terminalWindowsShell: string
   terminalFocusFollowsMouse: boolean
   /** Why: mirrors X11 / gnome-terminal "copy on select" UX — making a terminal

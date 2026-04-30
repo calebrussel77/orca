@@ -105,6 +105,8 @@ export function TerminalPane({
   )
   const scrollbackToggleValue =
     scrollbackMode === 'custom' ? 'custom' : isPreset ? `${scrollbackMb}` : 'custom'
+  const normalizedWindowsShell =
+    settings.terminalWindowsShell === 'powershell.exe' ? 'pwsh.exe' : settings.terminalWindowsShell
 
   const visibleSections = [
     isWindows && matchesSettingsSearch(searchQuery, TERMINAL_WINDOWS_SHELL_SEARCH_ENTRY) ? (
@@ -117,6 +119,8 @@ export function TerminalPane({
             'windows',
             'shell',
             'powershell',
+            'powershell 7',
+            'pwsh',
             'cmd',
             'command prompt',
             'default'
@@ -126,7 +130,7 @@ export function TerminalPane({
           <Label>Default Shell</Label>
           <div className="flex w-fit gap-1 rounded-md border border-border/50 p-1">
             {[
-              { label: 'PowerShell', value: 'powershell.exe' },
+              { label: 'PowerShell 7', value: 'pwsh.exe' },
               { label: 'Command Prompt', value: 'cmd.exe' },
               ...(wslAvailable ? [{ label: 'WSL', value: 'wsl.exe' }] : [])
             ].map(({ label, value }) => (
@@ -134,7 +138,7 @@ export function TerminalPane({
                 key={value}
                 onClick={() => updateSettings({ terminalWindowsShell: value })}
                 className={`rounded-sm px-3 py-1 text-sm transition-colors ${
-                  (settings.terminalWindowsShell ?? 'powershell.exe') === value
+                  (normalizedWindowsShell ?? 'pwsh.exe') === value
                     ? 'bg-accent font-medium text-accent-foreground'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}

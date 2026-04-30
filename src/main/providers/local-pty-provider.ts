@@ -4,6 +4,7 @@ tightly coupled PTY lifecycle logic (scan → ready → write → exit cleanup) 
 files without a cleaner ownership seam. */
 import { basename } from 'path'
 import { resolveWindowsShellLaunchArgs } from './windows-shell-args'
+import { resolveWindowsShellChoice } from './windows-shell-resolver'
 import { resolveProcessCwd } from './process-cwd'
 import { existsSync } from 'fs'
 import * as pty from 'node-pty'
@@ -139,11 +140,9 @@ export class LocalPtyProvider implements IPtyProvider {
       // Why: shellOverride lets a single tab open in a different shell than the
       // persisted default (e.g. "New WSL terminal" from the "+" submenu) without
       // changing the user's setting. It takes priority over the setting.
-      shellPath =
-        args.shellOverride ||
-        this.opts.getWindowsShell?.() ||
-        process.env.COMSPEC ||
-        'powershell.exe'
+      shellPath = resolveWindowsShellChoice(
+        args.shellOverride || args.env?.SHELL || this.opts.getWindowsShell?.()
+      )
       // Why: both this path and the daemon-subprocess path must derive the
       // same shellArgs for the same (shell, cwd) pair. The helper keeps CJK
       // UTF-8 setup (chcp 65001), PowerShell $PROFILE dot-sourcing, and the
@@ -457,7 +456,7 @@ export class LocalPtyProvider implements IPtyProvider {
 
   async getDefaultShell(): Promise<string> {
     if (process.platform === 'win32') {
-      return this.opts.getWindowsShell?.() || process.env.COMSPEC || 'powershell.exe'
+      return resolveWindowsShellChoice(this.opts.getWindowsShell?.())
     }
     return process.env.SHELL || '/bin/zsh'
   }
@@ -465,7 +464,7 @@ export class LocalPtyProvider implements IPtyProvider {
   async getProfiles(): Promise<{ name: string; path: string }[]> {
     if (process.platform === 'win32') {
       const profiles: { name: string; path: string }[] = [
-        { name: 'PowerShell', path: 'powershell.exe' },
+        { name: 'PowerShell 7', path: resolveWindowsShellChoice('pwsh.exe') },
         { name: 'Command Prompt', path: 'cmd.exe' }
       ]
       if (isWslAvailable()) {

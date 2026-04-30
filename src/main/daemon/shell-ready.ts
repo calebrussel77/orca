@@ -1,6 +1,7 @@
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'fs'
+import { resolveWindowsShellChoice } from '../providers/windows-shell-resolver'
 
 const ORCA_USER_DATA_PATH_ENV = 'ORCA_USER_DATA_PATH'
 const SHELL_READY_MARKER = '\\033]777;orca-shell-ready\\007'
@@ -188,7 +189,7 @@ fi
 
 export function resolvePtyShellPath(env: Record<string, string>): string {
   if (process.platform === 'win32') {
-    return env.COMSPEC || 'powershell.exe'
+    return resolveWindowsShellChoice(undefined, env)
   }
   return env.SHELL || process.env.SHELL || '/bin/zsh'
 }

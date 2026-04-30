@@ -1,7 +1,7 @@
 import React from 'react'
 import { Terminal as TerminalIcon } from 'lucide-react'
 
-export type WindowsShell = 'powershell.exe' | 'cmd.exe' | 'wsl.exe'
+export type WindowsShell = 'pwsh.exe' | 'powershell.exe' | 'cmd.exe' | 'wsl.exe'
 
 // Why: the "+" dropdown and per-tab tab strip both need a visual distinction
 // between PowerShell, CMD, and WSL sessions. Stock lucide glyphs don't

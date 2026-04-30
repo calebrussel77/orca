@@ -140,9 +140,10 @@ function TabBarInner({
   wslAvailable
 }: TabBarProps): React.JSX.Element {
   const gitStatusByWorktree = useAppStore((s) => s.gitStatusByWorktree)
-  const defaultWindowsShell = useAppStore(
-    (s) => s.settings?.terminalWindowsShell ?? 'powershell.exe'
-  )
+  const defaultWindowsShell = useAppStore((s) => {
+    const shell = s.settings?.terminalWindowsShell ?? 'pwsh.exe'
+    return shell === 'powershell.exe' ? 'pwsh.exe' : shell
+  })
   const resolvedGroupId = groupId ?? worktreeId
   const statusByRelativePath = useMemo(
     () => buildStatusMap(gitStatusByWorktree[worktreeId] ?? []),
@@ -471,7 +472,7 @@ function TabBarInner({
             // wrapping.
             (() => {
               const allShells = [
-                { label: 'PowerShell', shell: 'powershell.exe' },
+                { label: 'PowerShell 7', shell: 'pwsh.exe' },
                 { label: 'CMD Prompt', shell: 'cmd.exe' },
                 ...(wslAvailable ? [{ label: 'WSL', shell: 'wsl.exe' }] : [])
               ]

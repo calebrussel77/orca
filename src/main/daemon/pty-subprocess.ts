@@ -8,6 +8,7 @@ import {
 import { isValidPtySize, normalizePtySize } from './daemon-pty-size'
 import { ensureNodePtySpawnHelperExecutable } from '../providers/local-pty-utils'
 import { resolveWindowsShellLaunchArgs } from '../providers/windows-shell-args'
+import { resolveWindowsShellChoice } from '../providers/windows-shell-resolver'
 
 export type PtySubprocessOptions = {
   sessionId: string
@@ -67,7 +68,10 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
   // setting, relayed by main) takes priority over env.COMSPEC — otherwise
   // Windows always resolves to cmd.exe (COMSPEC) or PowerShell by fallback,
   // no matter which shell the user actually picked.
-  const shellPath = opts.shellOverride || resolvePtyShellPath(env)
+  const shellPath =
+    process.platform === 'win32'
+      ? resolveWindowsShellChoice(opts.shellOverride || resolvePtyShellPath(env), env)
+      : opts.shellOverride || resolvePtyShellPath(env)
   let shellArgs: string[]
   let spawnCwd = opts.cwd || getDefaultCwd()
 

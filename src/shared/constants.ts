@@ -151,7 +151,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     // box. Other platforms ignore this field because the UI never exposes it,
     // and Ctrl+right-click still opens the context menu when paste is enabled.
     terminalRightClickToPaste: true,
-    terminalWindowsShell: 'powershell.exe',
+    terminalWindowsShell: 'pwsh.exe',
     terminalMouseHideWhileTyping: false,
     // Default false: opt-in only (matches Ghostty's default). Existing users
     // on upgrade inherit this default via persistence.ts's

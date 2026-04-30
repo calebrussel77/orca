@@ -16,6 +16,7 @@ import {
   type ListSessionsResult
 } from './types'
 import type { IPtyProvider, PtySpawnOptions, PtySpawnResult } from '../providers/types'
+import { resolveWindowsShellChoice } from '../providers/windows-shell-resolver'
 
 export type DaemonPtyAdapterOptions = {
   socketPath: string
@@ -363,7 +364,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
 
   async getDefaultShell(): Promise<string> {
     if (process.platform === 'win32') {
-      return process.env.COMSPEC || 'powershell.exe'
+      return resolveWindowsShellChoice()
     }
     return process.env.SHELL || '/bin/zsh'
   }
@@ -371,7 +372,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
   async getProfiles(): Promise<{ name: string; path: string }[]> {
     if (process.platform === 'win32') {
       return [
-        { name: 'PowerShell', path: 'powershell.exe' },
+        { name: 'PowerShell 7', path: resolveWindowsShellChoice('pwsh.exe') },
         { name: 'Command Prompt', path: 'cmd.exe' }
       ]
     }
