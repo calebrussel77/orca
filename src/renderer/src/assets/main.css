@@ -632,11 +632,14 @@
   align-self: stretch;
   margin-left: 4px;
   flex-shrink: 0;
+  min-width: 138px;
 }
 
 .window-control-button {
   position: relative;
   width: 46px;
+  min-width: 46px;
+  flex: 0 0 46px;
   border: none;
   background: transparent;
   color: var(--muted-foreground);

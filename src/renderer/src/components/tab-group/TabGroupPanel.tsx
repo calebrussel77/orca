@@ -21,6 +21,8 @@ import {
 } from './useTabDragSplit'
 
 const EditorPanel = lazy(() => import('../editor/EditorPanel'))
+const isWindows = navigator.userAgent.includes('Windows')
+const CLOSED_RIGHT_CHROME_RESERVE_WIDTH = isWindows ? 184 : 40
 
 export default function TabGroupPanel({
   groupId,
@@ -327,8 +329,19 @@ export default function TabGroupPanel({
               and let clicks through to the toggle. */}
           {reserveClosedExplorerToggleSpace && !rightSidebarOpen ? (
             <div
-              className="shrink-0 w-10"
-              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              className="shrink-0"
+              style={
+                {
+                  // Why: on Windows this floating top-right chrome contains
+                  // both the right-sidebar toggle and the custom minimize /
+                  // maximize / close controls. Reserving only the toggle width
+                  // lets tab chrome and pane actions slide underneath the
+                  // transparent gaps between those buttons, which looks like
+                  // the controls are tangled together.
+                  width: CLOSED_RIGHT_CHROME_RESERVE_WIDTH,
+                  WebkitAppRegion: 'no-drag'
+                } as React.CSSProperties
+              }
             />
           ) : null}
         </div>
