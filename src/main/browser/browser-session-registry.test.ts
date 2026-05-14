@@ -1,12 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { sessionFromPartitionMock } = vi.hoisted(() => ({
-  sessionFromPartitionMock: vi.fn()
-}))
+const { sessionFromPartitionMock, askForMediaAccessMock, getMediaAccessStatusMock } = vi.hoisted(
+  () => ({
+    sessionFromPartitionMock: vi.fn(),
+    askForMediaAccessMock: vi.fn(),
+    getMediaAccessStatusMock: vi.fn()
+  })
+)
 
 vi.mock('electron', () => ({
   session: {
     fromPartition: sessionFromPartitionMock
+  },
+  systemPreferences: {
+    askForMediaAccess: askForMediaAccessMock,
+    getMediaAccessStatus: getMediaAccessStatusMock
   }
 }))
 
@@ -24,6 +32,10 @@ import { ORCA_BROWSER_PARTITION } from '../../shared/constants'
 describe('BrowserSessionRegistry', () => {
   beforeEach(() => {
     sessionFromPartitionMock.mockReset()
+    askForMediaAccessMock.mockReset()
+    getMediaAccessStatusMock.mockReset()
+    askForMediaAccessMock.mockResolvedValue(true)
+    getMediaAccessStatusMock.mockReturnValue('granted')
     sessionFromPartitionMock.mockReturnValue({
       setPermissionRequestHandler: vi.fn(),
       setPermissionCheckHandler: vi.fn(),
@@ -147,31 +159,23 @@ describe('BrowserSessionRegistry', () => {
     expect(mockSession?.setPermissionCheckHandler).toHaveBeenCalled()
   })
 
-  it('allows sanitized clipboard writes for browser guests while keeping other permissions denied', () => {
-    browserSessionRegistry.createProfile('isolated', 'Clipboard Policy Test')
+  it('routes media permission requests through macOS TCC for isolated partitions', async () => {
+    // Why: verify the parallel fix to the default partition — isolated/imported
+    // profiles must also defer media permission checks to macOS instead of
+    // denying outright, otherwise pages inside them still hit NotAllowedError
+    // after the user grants Camera/Microphone to Orca.
+    browserSessionRegistry.createProfile('isolated', 'Media Test')
     const mockSession = sessionFromPartitionMock.mock.results[0]?.value
-    const permissionHandler = mockSession?.setPermissionRequestHandler.mock.calls[0]?.[0] as
-      | ((
-          wc: { id: number; getURL: () => string },
-          permission: string,
-          callback: (allowed: boolean) => void
-        ) => void)
-      | undefined
-    const permissionCheckHandler = mockSession?.setPermissionCheckHandler.mock.calls[0]?.[0] as
-      | ((wc: unknown, permission: string) => boolean)
-      | undefined
+    const requestHandler = mockSession.setPermissionRequestHandler.mock.calls[0][0]
+    const checkHandler = mockSession.setPermissionCheckHandler.mock.calls[0][0]
 
-    const callback = vi.fn()
-    permissionHandler?.(
-      { id: 55, getURL: () => 'https://skills.sh' },
-      'clipboard-sanitized-write',
-      callback
-    )
-    permissionHandler?.({ id: 55, getURL: () => 'https://skills.sh' }, 'notifications', callback)
+    const cb = vi.fn()
+    const guestWc = { id: 7, getURL: vi.fn(() => 'https://example.com/') }
+    requestHandler(guestWc, 'media', cb, { mediaTypes: ['video'] })
+    await vi.waitFor(() => expect(cb).toHaveBeenCalledWith(true))
 
-    expect(callback.mock.calls).toEqual([[true], [false]])
-    expect(permissionCheckHandler?.(null, 'clipboard-sanitized-write')).toBe(true)
-    expect(permissionCheckHandler?.(null, 'notifications')).toBe(false)
+    expect(checkHandler(null, 'media', '', { mediaType: 'video' })).toBe(true)
+    expect(checkHandler(null, 'notifications', '', {})).toBe(false)
   })
 
   describe('setupClientHintsOverride', () => {

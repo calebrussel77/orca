@@ -20,6 +20,7 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
   '.cjs': 'javascript',
   '.json': 'json',
   '.jsonc': 'json',
+  '.ipynb': 'notebook',
   '.md': 'markdown',
   '.mdx': 'markdown',
   '.mmd': 'mermaid',
@@ -76,10 +77,12 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
   '.clj': 'clojure',
   '.vue': 'vue',
   '.svelte': 'svelte',
-  '.astro': 'html',
+  '.astro': 'astro',
   '.tf': 'hcl',
   '.hcl': 'hcl',
-  '.prisma': 'graphql'
+  '.prisma': 'graphql',
+  '.csv': 'csv',
+  '.tsv': 'tsv'
 }
 
 const FILENAME_TO_LANGUAGE: Record<string, string> = {

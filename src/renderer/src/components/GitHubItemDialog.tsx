@@ -1,6 +1,16 @@
 /* eslint-disable max-lines -- Why: the GH item dialog keeps its header, conversation, files, and checks tabs co-located so the read-only PR/Issue surface stays in one place while this view evolves. */
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from 'react'
 import {
+  AlignJustify,
   ArrowDown,
   ArrowRight,
   ArrowUp,
@@ -11,7 +21,10 @@ import {
   CircleDot,
   ExternalLink,
   FileText,
+  Folder,
+  FolderOpen,
   GitPullRequest,
+  LayoutList,
   LoaderCircle,
   MessageSquare,
   MessageSquarePlus,
@@ -36,6 +49,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import CommentMarkdown from '@/components/sidebar/CommentMarkdown'
 import { detectLanguage } from '@/lib/language-detect'
 import { cn } from '@/lib/utils'
+import { buildDiffTree, type DiffTreeNode } from '@/components/pr-diff-tree'
 import { CHECK_COLOR, CHECK_ICON } from '@/components/right-sidebar/checks-helpers'
 import {
   filterPRCommentsByAudience,
@@ -57,8 +71,10 @@ import {
 } from '@/lib/pr-comment-groups'
 import { useAppStore } from '@/store'
 import { useRepoLabels, useRepoAssignees, useImmediateMutation } from '@/hooks/useIssueMetadata'
-
+import { useRepoLabelsBySlug, useRepoAssigneesBySlug } from '@/hooks/useGitHubSlugMetadata'
+import IssueSourceIndicator, { sameGitHubOwnerRepo } from '@/components/github/IssueSourceIndicator'
 import type {
+  GitHubOwnerRepo,
   GitHubPRFile,
   GitHubPRFileContents,
   GitHubWorkItem,
@@ -67,6 +83,29 @@ import type {
   GitHubReaction,
   PRComment
 } from '../../../shared/types'
+import { PER_REPO_FETCH_LIMIT } from '../../../shared/work-items'
+
+// Why: the GH item dialog can be opened from any work-item list surface and
+// doesn't have the full owner/repo context the list's cache entry carries.
+// Parsing the canonical `https://github.com/{owner}/{repo}/...` URL is the
+// simplest reliable source — the URL is already present on every work item
+// and survives the main-process → IPC boundary. Non-GitHub hosts return null,
+// which matches the indicator's suppression rule.
+function parseOwnerRepoFromItemUrl(url: string): GitHubOwnerRepo | null {
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname !== 'github.com') {
+      return null
+    }
+    const segments = parsed.pathname.split('/').filter(Boolean)
+    if (segments.length < 2) {
+      return null
+    }
+    return { owner: segments[0], repo: segments[1] }
+  } catch {
+    return null
+  }
+}
 
 // Why: the editor's DiffViewer loads Monaco, which is heavy and should not be
 // pulled into the dialog's bundle until the user actually opens the Files tab.
@@ -102,12 +141,35 @@ const REACTION_EMOJI: Record<GitHubReaction['content'], string> = {
   eyes: '👀'
 }
 
+/** Why: Project-origin rows don't always belong to the active local repo.
+ *  When set, GHEditSection routes label/assignee/state mutations through
+ *  slug-addressed IPCs against `owner`/`repo` instead of through `repoPath`,
+ *  preventing edits from silently landing on the workspace's repo when the
+ *  Project view is showing rows from a different repo. See
+ *  docs/design/github-project-view-tasks.md §Dialog editing from Project rows.
+ */
+export type GitHubItemDialogProjectOrigin = {
+  owner: string
+  repo: string
+  number: number
+  type: 'issue' | 'pr'
+  projectId: string
+  projectItemId: string
+  cacheKey: string
+}
+
 type GitHubItemDialogProps = {
   workItem: GitHubWorkItem | null
   repoPath: string | null
   /** Called when the user clicks the primary CTA to start work from this item. */
   onUse: (item: GitHubWorkItem) => void
   onClose: () => void
+  /** Optional Project-origin context. When set, edits in the dialog are
+   *  routed via slug-addressed mutation IPCs against the row's actual repo
+   *  instead of the active workspace's `repoPath`. Both can be set
+   *  simultaneously (Project mode where the row also lives in the active
+   *  workspace) — slug routing wins for writes. */
+  projectOrigin?: GitHubItemDialogProjectOrigin
 }
 
 function formatRelativeTime(input: string): string {
@@ -315,6 +377,254 @@ type FileRowProps = {
   baseSha: string | undefined
 }
 
+type DiffViewMode = 'flat' | 'tree'
+
+// ─── Tree view components ────────────────────────────────────────────
+
+type DiffTreeNodeProps = {
+  node: DiffTreeNode
+  depth: number
+  repoPath: string
+  prNumber: number
+  headSha: string | undefined
+  baseSha: string | undefined
+  onCommentAdded: (comment: PRComment) => void
+}
+
+function PRDiffTreeNode({
+  node,
+  depth,
+  repoPath,
+  prNumber,
+  headSha,
+  baseSha,
+  onCommentAdded
+}: DiffTreeNodeProps): React.JSX.Element {
+  const [open, setOpen] = useState(true)
+
+  if (node.kind === 'file') {
+    return (
+      <PRFileRow
+        file={node.file}
+        repoPath={repoPath}
+        prNumber={prNumber}
+        headSha={headSha}
+        baseSha={baseSha}
+        onCommentAdded={onCommentAdded}
+        // Why: tree-view file rows are indented by a CSS left-padding proportional
+        // to depth so the expand chevron of PRFileRow stays at position 0 while
+        // the folder hierarchy is communicated purely through indentation.
+        indentDepth={depth}
+        label={node.name}
+      />
+    )
+  }
+
+  // Directory node
+  return (
+    <div role="treeitem" aria-expanded={open}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition hover:bg-muted/40"
+        style={{ paddingLeft: `${12 + depth * 16}px` }}
+        aria-label={`${open ? 'Collapse' : 'Expand'} folder ${node.name}`}
+      >
+        {open ? (
+          <>
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+            <FolderOpen className="size-3.5 shrink-0 text-amber-400" />
+          </>
+        ) : (
+          <>
+            <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
+            <Folder className="size-3.5 shrink-0 text-amber-400" />
+          </>
+        )}
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+          {node.name}
+        </span>
+      </button>
+      {open && (
+        <div role="group">
+          {node.children.map((child) => (
+            <PRDiffTreeNode
+              key={child.kind === 'file' ? child.file.path : child.path}
+              node={child}
+              depth={depth + 1}
+              repoPath={repoPath}
+              prNumber={prNumber}
+              headSha={headSha}
+              baseSha={baseSha}
+              onCommentAdded={onCommentAdded}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+type PRDiffTreeViewProps = {
+  files: GitHubPRFile[]
+  repoPath: string
+  prNumber: number
+  headSha: string | undefined
+  baseSha: string | undefined
+  onCommentAdded: (comment: PRComment) => void
+}
+
+function PRDiffTreeView({
+  files,
+  repoPath,
+  prNumber,
+  headSha,
+  baseSha,
+  onCommentAdded
+}: PRDiffTreeViewProps): React.JSX.Element {
+  const tree = useMemo(() => buildDiffTree(files), [files])
+  return (
+    <div role="tree" aria-label="Changed files">
+      {tree.map((node) => (
+        <PRDiffTreeNode
+          key={node.kind === 'file' ? node.file.path : node.path}
+          node={node}
+          depth={0}
+          repoPath={repoPath}
+          prNumber={prNumber}
+          headSha={headSha}
+          baseSha={baseSha}
+          onCommentAdded={onCommentAdded}
+        />
+      ))}
+    </div>
+  )
+}
+
+// Why: SWR cache for the work-item details fetch. Reopening the same drawer
+// pays full IPC + `gh` process startup latency without this; with it, cached
+// data paints immediately while a background refetch keeps the view honest.
+// Cache is keyed by repoPath + issueSourcePreference + type + number so
+// upstream/origin source toggles and issue#N vs pr#N never collide. Bounded
+// to ~50 entries to cap memory; entries older than FRESH_MS trigger a
+// background refetch on open. See docs/gh-work-item-drawer-cache.md.
+const WORK_ITEM_DETAILS_CACHE_MAX = 50
+const WORK_ITEM_DETAILS_FRESH_MS = 30_000
+type WorkItemDetailsCacheEntry = {
+  details: GitHubWorkItemDetails | null
+  fetchedAt: number
+  pending?: Promise<GitHubWorkItemDetails | null>
+  error?: string
+}
+const workItemDetailsCache = new Map<string, WorkItemDetailsCacheEntry>()
+
+// Why: drawers subscribe via useSyncExternalStore so reopening a cached item
+// paints synchronously on first render. Stability of the snapshot relies on
+// every cache write replacing the entry object identity (delete+set), which
+// touchWorkItemDetailsCache already does.
+const workItemDetailsCacheListeners = new Set<() => void>()
+function subscribeWorkItemDetailsCache(listener: () => void): () => void {
+  workItemDetailsCacheListeners.add(listener)
+  return () => {
+    workItemDetailsCacheListeners.delete(listener)
+  }
+}
+function notifyWorkItemDetailsCache(): void {
+  for (const listener of workItemDetailsCacheListeners) {
+    listener()
+  }
+}
+
+function getWorkItemDetailsCacheKey(args: {
+  repoPath: string
+  issueSourcePreference: string | undefined
+  type: 'issue' | 'pr'
+  number: number
+}): string {
+  // Why: include all axes that change which (repo, item) the IPC resolves to.
+  // `\0` separator avoids ambiguity between fields that may contain `:` or `/`.
+  return [args.repoPath, args.issueSourcePreference ?? 'auto', args.type, args.number].join('\0')
+}
+
+function touchWorkItemDetailsCache(key: string, entry: WorkItemDetailsCacheEntry): void {
+  // Why: re-insert to move to MRU position; Map preserves insertion order so
+  // the oldest key is always first when evicting.
+  workItemDetailsCache.delete(key)
+  workItemDetailsCache.set(key, entry)
+  while (workItemDetailsCache.size > WORK_ITEM_DETAILS_CACHE_MAX) {
+    const oldest = workItemDetailsCache.keys().next().value
+    if (oldest === undefined) {
+      break
+    }
+    workItemDetailsCache.delete(oldest)
+  }
+  notifyWorkItemDetailsCache()
+}
+
+// Why: exposed so mutation handlers (in this file and elsewhere) can drop a
+// stale entry after a successful local mutation. Cross-window invalidation
+// arrives via the `gh:workItemMutated` event listener installed below.
+export function invalidateWorkItemDetailsCacheForKey(key: string): void {
+  // Why: bump generation so an in-flight fetch launched before this exact-key
+  // invalidation will not write its stale result back into the cache.
+  workItemDetailsCacheGeneration += 1
+  const existed = workItemDetailsCache.delete(key)
+  if (existed) {
+    notifyWorkItemDetailsCache()
+  }
+}
+
+// Why: monotonically increases on every invalidation so an in-flight refetch
+// that started before a mutation can detect that its result is stale and
+// must not be written back. Without this, a mutation that lands while a
+// refetch is in flight would have its invalidation silently undone when the
+// stale promise resolves and re-populates the entry.
+let workItemDetailsCacheGeneration = 0
+
+// Why: when we don't have the exact cache key (e.g. an event from another
+// window only carries repoPath + number + type), drop every entry that
+// matches the (repoPath, type, number) tuple regardless of source preference.
+function invalidateWorkItemDetailsCacheByMatch(args: {
+  repoPath: string
+  type: 'issue' | 'pr'
+  number: number
+}): void {
+  workItemDetailsCacheGeneration += 1
+  const suffix = `\0${args.type}\0${args.number}`
+  const prefix = `${args.repoPath}\0`
+  let removed = false
+  for (const key of Array.from(workItemDetailsCache.keys())) {
+    if (key.startsWith(prefix) && key.endsWith(suffix)) {
+      workItemDetailsCache.delete(key)
+      removed = true
+    }
+  }
+  if (removed) {
+    notifyWorkItemDetailsCache()
+  }
+}
+
+// Why: install once at module load — every dialog instance shares the cache,
+// so a single subscription is enough. The preload bridge re-emits the
+// main-process broadcast for every window, so each renderer invalidates its
+// own cache when any window's mutation lands. We track the unsubscribe so
+// Vite HMR doesn't accumulate listeners across module reloads in dev.
+let workItemMutatedUnsub: (() => void) | undefined
+if (typeof window !== 'undefined' && window.api?.gh?.onWorkItemMutated) {
+  workItemMutatedUnsub = window.api.gh.onWorkItemMutated((payload) => {
+    invalidateWorkItemDetailsCacheByMatch({
+      repoPath: payload.repoPath,
+      type: payload.type,
+      number: payload.number
+    })
+  })
+}
+if (typeof import.meta !== 'undefined' && import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    workItemMutatedUnsub?.()
+  })
+}
+
 // Why: bounded LRU — opening many PRs with many files during a session
 // would otherwise grow this module-level map without bound until reload.
 const PR_FILE_CONTENT_CACHE_MAX = 64
@@ -396,8 +706,14 @@ function PRFileRow({
   prNumber,
   headSha,
   baseSha,
-  onCommentAdded
-}: FileRowProps & { onCommentAdded: (comment: PRComment) => void }): React.JSX.Element {
+  onCommentAdded,
+  indentDepth = 0,
+  label
+}: FileRowProps & {
+  onCommentAdded: (comment: PRComment) => void
+  indentDepth?: number
+  label?: string
+}): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const [contents, setContents] = useState<GitHubPRFileContents | null>(null)
   const [loading, setLoading] = useState(false)
@@ -469,11 +785,12 @@ function PRFileRow({
   )
 
   return (
-    <div className="border-b border-border/50">
+    <div className="border-b border-border/50" {...(label != null ? { role: 'treeitem' } : {})}>
       <button
         type="button"
         onClick={handleToggle}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-muted/40"
+        className="flex w-full items-center gap-2 py-2 pr-3 text-left transition hover:bg-muted/40"
+        style={{ paddingLeft: `${12 + indentDepth * 16}px` }}
       >
         {expanded ? (
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
@@ -491,13 +808,44 @@ function PRFileRow({
         </span>
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground">
           {file.oldPath && file.oldPath !== file.path ? (
-            <>
-              <span className="text-muted-foreground">{file.oldPath}</span>
-              <span className="mx-1 text-muted-foreground">→</span>
-              {file.path}
-            </>
+            label ? (
+              // Why: in tree view we only have room for basenames, but still need to
+              // communicate the rename so the user doesn't have to expand or switch
+              // to flat view to discover what was renamed. When basenames match (i.e.
+              // only the directory changed), we include the parent directory so the
+              // display isn't a meaningless "foo.ts → foo.ts".
+              (() => {
+                const oldBase = file.oldPath!.split('/').pop() ?? file.oldPath!
+                if (oldBase === label) {
+                  const oldParts = file.oldPath!.split('/')
+                  const newParts = file.path.split('/')
+                  const oldShort = oldParts.slice(-2).join('/')
+                  const newShort = newParts.slice(-2).join('/')
+                  return (
+                    <>
+                      <span className="text-muted-foreground">{oldShort}</span>
+                      <span className="mx-1 text-muted-foreground">→</span>
+                      {newShort}
+                    </>
+                  )
+                }
+                return (
+                  <>
+                    <span className="text-muted-foreground">{oldBase}</span>
+                    <span className="mx-1 text-muted-foreground">→</span>
+                    {label}
+                  </>
+                )
+              })()
+            ) : (
+              <>
+                <span className="text-muted-foreground">{file.oldPath}</span>
+                <span className="mx-1 text-muted-foreground">→</span>
+                {file.path}
+              </>
+            )
           ) : (
-            file.path
+            (label ?? file.path)
           )}
         </span>
         <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
@@ -873,7 +1221,8 @@ function ConversationTab({
           : await window.api.gh.addIssueComment({
               repoPath,
               number: item.number,
-              body: `@${comment.author} ${replyBody}`
+              body: `@${comment.author} ${replyBody}`,
+              type: item.type
             })
 
       if (!result.ok) {
@@ -1136,12 +1485,11 @@ function ConversationTab({
             className="mt-1"
             repoPath={repoPath}
             issueNumber={item.number}
+            itemType={item.type}
             mentionOptions={mentionOptions}
             onCommentAdded={onCommentAdded}
           />
         )}
-
-        {item.type !== 'pr' ? <div className="pt-1">{startWorkspaceButton}</div> : null}
       </div>
 
       {rightPanel}
@@ -1443,32 +1791,100 @@ function MentionTextarea({
   )
 }
 
+// Why: when the dialog opens for a Project row whose repo differs from the
+// active workspace, mutations must target the row's actual repo via
+// slug-addressed IPCs. Otherwise edits silently apply to the workspace's
+// repo. The edit IPCs return a structured `{ ok, error }` shape; we adapt
+// to a thrown rejection so the existing `useImmediateMutation` flow
+// (which expects throws on failure) continues to work unchanged.
+async function runIssueUpdate(args: {
+  repoPath: string | null
+  projectOrigin: GitHubItemDialogProjectOrigin | undefined
+  number: number
+  updates: Parameters<typeof window.api.gh.updateIssue>[0]['updates']
+}): Promise<void> {
+  if (args.projectOrigin) {
+    const res = await window.api.gh.updateIssueBySlug({
+      owner: args.projectOrigin.owner,
+      repo: args.projectOrigin.repo,
+      number: args.number,
+      updates: args.updates
+    })
+    if (!res.ok) {
+      throw new Error(res.error.message)
+    }
+    return
+  }
+  if (!args.repoPath) {
+    throw new Error('No repo context available for this edit.')
+  }
+  await window.api.gh.updateIssue({
+    repoPath: args.repoPath,
+    number: args.number,
+    updates: args.updates
+  })
+}
+
 function GHEditSection({
   item,
   repoPath,
+  projectOrigin,
   localState,
   localLabels,
   onStateChange,
   onLabelsChange,
-  assignees
+  onMutated,
+  assignees,
+  onUse
 }: {
   item: GitHubWorkItem
-  repoPath: string
+  repoPath: string | null
+  projectOrigin: GitHubItemDialogProjectOrigin | undefined
   localState: GitHubWorkItem['state']
   localLabels: string[]
   onStateChange: (state: GitHubWorkItem['state']) => void
   onLabelsChange: (labels: string[]) => void
+  /** Why: called after a successful issue mutation so the parent dialog can
+   *  invalidate its work-item-details cache entry. Without this, reopening the
+   *  drawer in the FRESH_MS window would paint pre-mutation data. */
+  onMutated: () => void
   assignees: string[]
+  onUse: (item: GitHubWorkItem) => void
 }): React.JSX.Element | null {
   const [labelPopoverOpen, setLabelPopoverOpen] = useState(false)
   const [assigneePopoverOpen, setAssigneePopoverOpen] = useState(false)
   const [localAssignees, setLocalAssignees] = useState<string[]>(assignees)
   const hasEditedAssigneesRef = useRef(false)
   const patchWorkItem = useAppStore((s) => s.patchWorkItem)
+  const patchProjectRowContent = useAppStore((s) => s.patchProjectRowContent)
   const { isPending, run } = useImmediateMutation()
 
-  const repoLabels = useRepoLabels(repoPath)
-  const repoAssignees = useRepoAssignees(repoPath)
+  // Why: when the dialog opens from a Project view, mutations route through
+  // *BySlug IPCs and we must keep `projectViewCache` in sync alongside
+  // `workItemsCache` — `patchWorkItem` only walks the latter, so without this
+  // helper the Project table would render stale data until manual refresh.
+  // See docs/design/github-project-view-tasks.md §Dialog editing from Project rows.
+  const patchProjectRowIfNeeded = useCallback(
+    (patch: Parameters<typeof patchProjectRowContent>[2]) => {
+      if (!projectOrigin) {
+        return
+      }
+      patchProjectRowContent(projectOrigin.cacheKey, projectOrigin.projectItemId, patch)
+    },
+    [projectOrigin, patchProjectRowContent]
+  )
+
+  // Why: when projectOrigin is set we MUST read labels/assignees from the
+  // row's repo, not from the workspace path — otherwise the popovers list
+  // values from a different repo than the writes target.
+  const slugOwner = projectOrigin?.owner ?? null
+  const slugRepo = projectOrigin?.repo ?? null
+  const repoLabelsByPath = useRepoLabels(projectOrigin ? null : repoPath)
+  const repoLabelsBySlug = useRepoLabelsBySlug(slugOwner, slugRepo)
+  const repoLabels = projectOrigin ? repoLabelsBySlug : repoLabelsByPath
+  const repoAssigneesByPath = useRepoAssignees(projectOrigin ? null : repoPath)
+  const repoAssigneesBySlug = useRepoAssigneesBySlug(slugOwner, slugRepo, assignees)
+  const repoAssignees = projectOrigin ? repoAssigneesBySlug : repoAssigneesByPath
 
   // Why: sync local assignees when item changes or when the detail fetch
   // resolves with real data — but skip if the user already made an
@@ -1493,26 +1909,42 @@ function GHEditSection({
       const prevState = localState
       run('state', {
         mutate: () =>
-          window.api.gh.updateIssue({
+          runIssueUpdate({
             repoPath,
+            projectOrigin,
             number: item.number,
             updates: { state: newState }
           }),
         onOptimistic: () => {
           onStateChange(newState)
           patchWorkItem(item.id, { state: newState })
+          patchProjectRowIfNeeded({ state: newState })
         },
         onRevert: () => {
           onStateChange(prevState)
           patchWorkItem(item.id, { state: prevState })
+          patchProjectRowIfNeeded({ state: prevState })
         },
         onSuccess: () => {
           patchWorkItem(item.id, { state: newState })
+          patchProjectRowIfNeeded({ state: newState })
+          onMutated()
         },
         onError: (err) => toast.error(err)
       })
     },
-    [item.id, item.number, localState, repoPath, patchWorkItem, run, onStateChange]
+    [
+      item.id,
+      item.number,
+      localState,
+      repoPath,
+      projectOrigin,
+      patchWorkItem,
+      patchProjectRowIfNeeded,
+      run,
+      onStateChange,
+      onMutated
+    ]
   )
 
   const handleLabelToggle = useCallback(
@@ -1524,44 +1956,65 @@ function GHEditSection({
       if (isAdding) {
         run('labels', {
           mutate: () =>
-            window.api.gh.updateIssue({
+            runIssueUpdate({
               repoPath,
+              projectOrigin,
               number: item.number,
               updates: { addLabels: [label] }
             }),
           onOptimistic: () => {
             onLabelsChange(newLabels)
             patchWorkItem(item.id, { labels: newLabels })
+            patchProjectRowIfNeeded({ labels: newLabels })
           },
-          onSuccess: () => {},
+          onSuccess: () => {
+            onMutated()
+          },
           onRevert: () => {
             onLabelsChange(prevLabels)
             patchWorkItem(item.id, { labels: prevLabels })
+            patchProjectRowIfNeeded({ labels: prevLabels })
           },
           onError: (err) => toast.error(err)
         })
       } else {
         run('labels', {
           mutate: () =>
-            window.api.gh.updateIssue({
+            runIssueUpdate({
               repoPath,
+              projectOrigin,
               number: item.number,
               updates: { removeLabels: [label] }
             }),
           onOptimistic: () => {
             onLabelsChange(newLabels)
             patchWorkItem(item.id, { labels: newLabels })
+            patchProjectRowIfNeeded({ labels: newLabels })
           },
           onRevert: () => {
             onLabelsChange(prevLabels)
             patchWorkItem(item.id, { labels: prevLabels })
+            patchProjectRowIfNeeded({ labels: prevLabels })
           },
-          onSuccess: () => {},
+          onSuccess: () => {
+            onMutated()
+          },
           onError: (err) => toast.error(err)
         })
       }
     },
-    [item.id, item.number, localLabels, repoPath, patchWorkItem, run, onLabelsChange]
+    [
+      item.id,
+      item.number,
+      localLabels,
+      repoPath,
+      projectOrigin,
+      patchWorkItem,
+      patchProjectRowIfNeeded,
+      run,
+      onLabelsChange,
+      onMutated
+    ]
   )
 
   const handleAssigneeToggle = useCallback(
@@ -1576,40 +2029,50 @@ function GHEditSection({
       if (isAssigned) {
         run('assignees', {
           mutate: () =>
-            window.api.gh.updateIssue({
+            runIssueUpdate({
               repoPath,
+              projectOrigin,
               number: item.number,
               updates: { removeAssignees: [login] }
             }),
           onOptimistic: () => {
             setLocalAssignees(newAssignees)
+            patchProjectRowIfNeeded({ assignees: newAssignees })
           },
           onRevert: () => {
             setLocalAssignees(prevAssignees)
+            patchProjectRowIfNeeded({ assignees: prevAssignees })
           },
-          onSuccess: () => {},
+          onSuccess: () => {
+            onMutated()
+          },
           onError: (err) => toast.error(err)
         })
       } else {
         run('assignees', {
           mutate: () =>
-            window.api.gh.updateIssue({
+            runIssueUpdate({
               repoPath,
+              projectOrigin,
               number: item.number,
               updates: { addAssignees: [login] }
             }),
           onOptimistic: () => {
             setLocalAssignees(newAssignees)
+            patchProjectRowIfNeeded({ assignees: newAssignees })
           },
-          onSuccess: () => {},
+          onSuccess: () => {
+            onMutated()
+          },
           onRevert: () => {
             setLocalAssignees(prevAssignees)
+            patchProjectRowIfNeeded({ assignees: prevAssignees })
           },
           onError: (err) => toast.error(err)
         })
       }
     },
-    [item.number, repoPath, localAssignees, run]
+    [item.number, repoPath, projectOrigin, localAssignees, patchProjectRowIfNeeded, run, onMutated]
   )
 
   if (item.type === 'pr') {
@@ -1788,6 +2251,16 @@ function GHEditSection({
           )}
         </PopoverContent>
       </Popover>
+
+      <Button
+        size="sm"
+        onClick={() => onUse(item)}
+        className="ml-auto gap-2"
+        aria-label="Start workspace from issue"
+      >
+        Start workspace from issue
+        <ArrowRight className="size-4" />
+      </Button>
     </div>
   )
 }
@@ -1796,12 +2269,14 @@ function GHCommentComposer({
   className,
   repoPath,
   issueNumber,
+  itemType,
   mentionOptions,
   onCommentAdded
 }: {
   className?: string
   repoPath: string
   issueNumber: number
+  itemType: 'issue' | 'pr'
   mentionOptions: MentionOption[]
   onCommentAdded: (comment: PRComment) => void
 }): React.JSX.Element {
@@ -1815,7 +2290,7 @@ function GHCommentComposer({
       return
     }
     el.style.height = 'auto'
-    el.style.height = `${Math.max(36, Math.min(el.scrollHeight, 96))}px`
+    el.style.height = `${Math.max(80, Math.min(el.scrollHeight, 240))}px`
   }, [])
 
   const handleSubmit = useCallback(async () => {
@@ -1828,7 +2303,8 @@ function GHCommentComposer({
       const result = await window.api.gh.addIssueComment({
         repoPath,
         number: issueNumber,
-        body: trimmed
+        body: trimmed,
+        type: itemType
       })
       if (result.ok) {
         setBody('')
@@ -1844,7 +2320,7 @@ function GHCommentComposer({
     } finally {
       setSubmitting(false)
     }
-  }, [autoGrow, body, repoPath, issueNumber, onCommentAdded])
+  }, [autoGrow, body, repoPath, issueNumber, itemType, onCommentAdded])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1857,12 +2333,7 @@ function GHCommentComposer({
   )
 
   return (
-    <div
-      className={cn(
-        'flex items-center gap-2 rounded-lg border border-border/50 bg-background/30 p-2',
-        className
-      )}
-    >
+    <div className={cn('flex flex-col items-start gap-2', className)}>
       <MentionTextarea
         textareaRef={textareaRef}
         value={body}
@@ -1872,16 +2343,15 @@ function GHCommentComposer({
         }}
         onKeyDown={handleKeyDown}
         placeholder="Add a comment…"
-        rows={1}
+        rows={4}
         mentionOptions={mentionOptions}
-        wrapperClassName="flex min-h-9 items-center"
-        className="scrollbar-sleek block h-9 max-h-[96px] min-h-9 w-full resize-none overflow-y-auto rounded-md border border-input bg-transparent px-3 py-2 text-[13px] leading-5 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        wrapperClassName="flex min-h-20 w-full items-stretch"
+        className="scrollbar-sleek block h-20 max-h-[240px] min-h-20 w-full resize-none overflow-y-auto rounded-md border border-input bg-card px-3 py-2 text-[13px] leading-5 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       />
       <Button
-        size="icon"
         onClick={handleSubmit}
         disabled={!body.trim() || submitting}
-        className="size-9 shrink-0"
+        className="gap-2"
         aria-label="Send comment"
       >
         {submitting ? (
@@ -1889,7 +2359,70 @@ function GHCommentComposer({
         ) : (
           <Send className="size-3.5" />
         )}
+        Comment
       </Button>
+    </div>
+  )
+}
+
+// Why: the dialog doesn't carry the resolved PR-source slug the Tasks view's
+// list cache carries, so we reach into workItemsCache to recover it. We scope
+// the lookup to the dialog's own `repoPath` via the public
+// `getWorkItemsAnySourcesForRepo` selector keyed by (repoPath, limit) —
+// scanning the whole cache risks picking a sibling repo's PR-source when two
+// selected repos share the same issue-source (e.g. two forks of the same
+// upstream), producing an incorrect "Issues from" chip or incorrectly
+// suppressing it. The selector keys primarily on the first-page entry
+// (PER_REPO_FETCH_LIMIT, empty query) because sources are repo-level and
+// don't vary by search query. If that slot is empty — e.g. the Tasks view is
+// filtering by a typed query and only populated the query-keyed entry — the
+// selector falls back to scanning cache entries prefixed by this same
+// `repoPath::` and reuses sources from the first match. Falling back to hiding
+// the indicator when we still can't find a match matches the parent design
+// doc §1 rule: hide when either side is unknown rather than guessing.
+function WorkItemIssueSourceIndicator({
+  url,
+  repoPath
+}: {
+  url: string
+  repoPath: string | null
+}): React.JSX.Element | null {
+  // Why: subscribe to a single store-side selector that returns the resolved
+  // sources for this repo — either the primary `(repoPath, PER_REPO_FETCH_LIMIT, '')`
+  // entry or the first sibling cache entry that has sources (the Tasks view may
+  // write cache entries keyed by a user-typed search query, so the primary slot
+  // can be empty even when sources are known). Sources are repo-level
+  // (query-independent), so any sibling entry is safe. When the primary slot
+  // is populated its reference is stable across unrelated cache writes; when
+  // the fallback path is used a sibling cache rewrite may produce a new
+  // `sources` object and trigger a harmless extra render. That's cheap — the
+  // indicator is small and the cache rewrite rate is bounded by user-initiated
+  // refresh/search actions.
+  const sources = useAppStore((s) =>
+    s.getWorkItemsAnySourcesForRepo(repoPath ?? '', PER_REPO_FETCH_LIMIT)
+  )
+  const issues = useMemo<GitHubOwnerRepo | null>(() => {
+    const fromUrl = parseOwnerRepoFromItemUrl(url)
+    if (!fromUrl) {
+      return null
+    }
+    // Prefer the cache's resolved issue-source when it matches the URL-derived
+    // slug — the cache entry is authoritative (canonicalized by the main
+    // process) while the URL parse is a best-effort fallback.
+    const cachedIssues = sources?.issues
+    if (cachedIssues && sameGitHubOwnerRepo(cachedIssues, fromUrl)) {
+      return cachedIssues
+    }
+    return fromUrl
+  }, [url, sources])
+  const prs = sources?.prs ?? null
+
+  if (!issues || !prs || sameGitHubOwnerRepo(issues, prs)) {
+    return null
+  }
+  return (
+    <div className="mt-1">
+      <IssueSourceIndicator issues={issues} prs={prs} variant="item" />
     </div>
   )
 }
@@ -1897,18 +2430,40 @@ function GHCommentComposer({
 export default function GitHubItemDialog({
   workItem,
   repoPath,
+  projectOrigin,
   onUse,
   onClose
 }: GitHubItemDialogProps): React.JSX.Element {
   const [tab, setTab] = useState<ItemDialogTab>('conversation')
-  const [details, setDetails] = useState<GitHubWorkItemDetails | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [localState, setLocalState] = useState<GitHubWorkItem['state']>(workItem?.state ?? 'open')
   const [localLabels, setLocalLabels] = useState<string[]>(workItem?.labels ?? [])
+  const [diffViewMode, setDiffViewMode] = useState<DiffViewMode>('flat')
   const workItemId = workItem?.id
   const workItemState = workItem?.state
   const workItemLabels = workItem?.labels
+
+  // Why: the cache key has to include the issue source preference so a user
+  // toggling between origin/upstream for the same issue number doesn't read
+  // back the wrong repo's details. We pull it from the repos slice rather
+  // than threading it as a prop because every existing call site already has
+  // the repo registered in the store.
+  const issueSourcePreference = useAppStore((s) => {
+    if (!repoPath) {
+      return undefined
+    }
+    return s.repos.find((r) => r.path === repoPath)?.issueSourcePreference
+  })
+  const detailsCacheKey = useMemo(() => {
+    if (!workItem || !repoPath) {
+      return null
+    }
+    return getWorkItemDetailsCacheKey({
+      repoPath,
+      issueSourcePreference,
+      type: workItem.type,
+      number: workItem.number
+    })
+  }, [repoPath, workItem, issueSourcePreference])
 
   // Why: reset lifted edit state when the dialog switches items or when the
   // same item receives an optimistic cache patch from the surrounding table.
@@ -1919,7 +2474,6 @@ export default function GitHubItemDialog({
     }
   }, [workItemId, workItemState, workItemLabels])
 
-  const requestIdRef = useRef(0)
   // Why: track comments added optimistically before the detail fetch resolves
   // so they can be merged into the fetch result instead of being overwritten.
   const optimisticCommentsRef = useRef<PRComment[]>([])
@@ -1957,62 +2511,163 @@ export default function GitHubItemDialog({
     }
   }, [workItem])
 
+  // Why: subscribe to the module-level cache so reopening a cached item
+  // paints synchronously on first render. getSnapshot returns the entry
+  // object directly — touchWorkItemDetailsCache writes always replace entry
+  // identity (delete+set), so Map.get is referentially stable between writes.
+  const cachedEntry = useSyncExternalStore(
+    subscribeWorkItemDetailsCache,
+    useCallback(
+      () => (detailsCacheKey ? workItemDetailsCache.get(detailsCacheKey) : undefined),
+      [detailsCacheKey]
+    )
+  )
+
+  // Why: bumped by appendOptimisticComment on cold open (no cached details
+  // yet) so the details memo re-runs and surfaces the optimistic comment via
+  // the loading-shell fallback. Without this, the comment would sit in the
+  // ref alone and not render until the in-flight fetch lands. The cache
+  // notify path handles the warm case.
+  const [optimisticTick, setOptimisticTick] = useState(0)
+
+  // Why: merge optimistic comments into the cached details. Keyed off
+  // cachedEntry identity (stable) rather than the optimistic ref array (a
+  // fresh array each render) to avoid unnecessary recomputation. Cache
+  // notifications after optimistic writes will re-render this anyway.
+  const details = useMemo<GitHubWorkItemDetails | null>(() => {
+    const cachedDetails = cachedEntry?.details ?? null
+    const opt = optimisticCommentsRef.current
+    if (!cachedDetails) {
+      // Why: details may still be loading on a cold open — surface optimistic
+      // comments via a minimal shell so a comment posted before the fetch
+      // resolves isn't held invisibly in ref-land.
+      if (opt.length > 0 && workItem) {
+        return { item: workItem, body: '', comments: [...opt] }
+      }
+      return null
+    }
+    if (opt.length === 0) {
+      return cachedDetails
+    }
+    const ids = new Set(cachedDetails.comments.map((c) => c.id))
+    const missing = opt.filter((c) => !ids.has(c.id))
+    if (missing.length === 0) {
+      return cachedDetails
+    }
+    return { ...cachedDetails, comments: [...cachedDetails.comments, ...missing] }
+    // Why: optimisticTick is the rerender signal for cold-open writes — the
+    // memo reads optimisticCommentsRef.current (a ref, no subscription), so
+    // bumping the tick is what forces this memo to re-run. The lint flags it
+    // as "unnecessary" because it's not referenced in the body, but removing
+    // it would silently break the cold-open optimistic-shell path.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cachedEntry, workItem, optimisticTick])
+
+  const loading = !!cachedEntry?.pending && !cachedEntry?.details
+  const error = cachedEntry?.error && !cachedEntry?.details ? cachedEntry.error : null
+
+  // Why: if a cross-window mutation invalidates the open drawer's entry
+  // (cachedEntry becomes undefined while workItem is still set), the main
+  // fetch effect won't re-run because its deps haven't changed. Bump a local
+  // tick so the fetch effect fires a refetch in that case.
+  const [refetchTick, setRefetchTick] = useState(0)
   useEffect(() => {
-    if (!workItem || !repoPath) {
-      setDetails(null)
-      setError(null)
+    if (workItem && detailsCacheKey && !cachedEntry) {
+      setRefetchTick((n) => n + 1)
+    }
+  }, [workItem, detailsCacheKey, cachedEntry])
+
+  useEffect(() => {
+    if (!workItem || !repoPath || !detailsCacheKey) {
       return
     }
-    // Why: if the user clicks through several rows quickly, discard stale
-    // responses by tagging each request with a monotonic id and only applying
-    // results whose id matches the latest one.
-    requestIdRef.current += 1
-    const requestId = requestIdRef.current
     // Why: only clear optimistic comments when switching to a genuinely
     // different item. When reopening the same item (close → reopen), the
     // gh API's 60s response cache will return stale data that omits the
     // just-posted comment — preserving the optimistic ref lets the merge
-    // logic below re-attach it to the stale response.
+    // logic above re-attach it to the stale response.
     if (workItem.id !== prevItemIdRef.current) {
       optimisticCommentsRef.current = []
     }
     prevItemIdRef.current = workItem.id
-    setLoading(true)
-    setError(null)
-    setDetails(null)
     setTab('conversation')
 
-    window.api.gh
-      .workItemDetails({ repoPath, number: workItem.number, type: workItem.type })
+    const cached = workItemDetailsCache.get(detailsCacheKey)
+    const now = Date.now()
+    const hasFreshData = cached?.details && now - cached.fetchedAt <= WORK_ITEM_DETAILS_FRESH_MS
+
+    if (hasFreshData) {
+      return
+    }
+
+    // Why: dedupe concurrent opens for the same key — concurrent dialogs or
+    // a rapid close→reopen must share one in-flight promise instead of
+    // racing two `gh` subprocesses against each other.
+    const inflight: Promise<GitHubWorkItemDetails | null> =
+      cached?.pending ??
+      window.api.gh.workItemDetails({
+        repoPath,
+        number: workItem.number,
+        type: workItem.type
+      })
+
+    // Why: snapshot the invalidation generation at fetch start; if the
+    // generation advances before we resolve, a mutation invalidated the
+    // entry mid-flight and we must not write a stale result back.
+    const launchedAtGeneration = workItemDetailsCacheGeneration
+
+    if (!cached?.pending) {
+      touchWorkItemDetailsCache(detailsCacheKey, {
+        details: cached?.details ?? null,
+        fetchedAt: cached?.fetchedAt ?? 0,
+        pending: inflight,
+        error: cached?.error
+      })
+    }
+
+    inflight
       .then((result) => {
-        if (requestId !== requestIdRef.current) {
+        const invalidatedMidFlight = workItemDetailsCacheGeneration !== launchedAtGeneration
+        const prev = workItemDetailsCache.get(detailsCacheKey)
+        if (invalidatedMidFlight) {
+          // Why: entry was deliberately dropped; do not recreate it. If the
+          // entry still exists (later open repopulated it) leave it alone too.
           return
         }
-        // Why: merge any comments the user posted optimistically while the
-        // detail fetch was in-flight, using id to avoid duplicates.
-        const opt = optimisticCommentsRef.current
-        if (opt.length > 0 && result) {
-          const fetchedIds = new Set(result.comments.map((c: PRComment) => c.id))
-          const missing = opt.filter((c) => !fetchedIds.has(c.id))
-          if (missing.length > 0) {
-            result = { ...result, comments: [...result.comments, ...missing] }
-          }
+        // Why: 404/unauthorized must not overwrite valid cached data. When the
+        // IPC resolves to null and we already have cached details, keep the
+        // stale data — only blank entries get the null payload.
+        if (result === null && prev?.details) {
+          touchWorkItemDetailsCache(detailsCacheKey, {
+            details: prev.details,
+            fetchedAt: prev.fetchedAt,
+            error: undefined
+          })
+        } else {
+          touchWorkItemDetailsCache(detailsCacheKey, {
+            details: result,
+            fetchedAt: Date.now(),
+            error: undefined
+          })
         }
-        setDetails(result)
       })
       .catch((err) => {
-        if (requestId !== requestIdRef.current) {
+        const message = err instanceof Error ? err.message : 'Failed to load details'
+        const invalidatedMidFlight = workItemDetailsCacheGeneration !== launchedAtGeneration
+        if (invalidatedMidFlight) {
           return
         }
-        setError(err instanceof Error ? err.message : 'Failed to load details')
+        const prev = workItemDetailsCache.get(detailsCacheKey)
+        // Why: stale-on-error — keep cached data if we have it, drop the
+        // pending promise so the next open can retry. Only surface the
+        // blocking error when nothing is cached.
+        touchWorkItemDetailsCache(detailsCacheKey, {
+          details: prev?.details ?? null,
+          fetchedAt: prev?.fetchedAt ?? 0,
+          error: message
+        })
       })
-      .finally(() => {
-        if (requestId !== requestIdRef.current) {
-          return
-        }
-        setLoading(false)
-      })
-  }, [repoPath, workItem])
+  }, [repoPath, workItem, detailsCacheKey, refetchTick])
 
   const Icon = workItem?.type === 'pr' ? GitPullRequest : CircleDot
   const body = details?.body ?? ''
@@ -2026,23 +2681,32 @@ export default function GitHubItemDialog({
       // that overwrites the optimistic comment. The next dialog open (after
       // cache expiry) will pick up the server-confirmed version.
       optimisticCommentsRef.current.push(comment)
-      setDetails((prev) => {
-        if (prev) {
-          return { ...prev, comments: [...prev.comments, comment] }
+      // Why: write through the module-level cache so subscribers (this
+      // drawer plus any concurrent ones on the same item) re-render with the
+      // optimistic comment. Mark fetchedAt as stale (0) so the next open
+      // still triggers a background refresh to pick up server-side fields
+      // like reaction groups or thread bindings.
+      if (detailsCacheKey) {
+        const prev = workItemDetailsCache.get(detailsCacheKey)
+        if (prev?.details) {
+          const ids = new Set(prev.details.comments.map((c) => c.id))
+          if (!ids.has(comment.id)) {
+            touchWorkItemDetailsCache(detailsCacheKey, {
+              details: { ...prev.details, comments: [...prev.details.comments, comment] },
+              fetchedAt: 0,
+              error: undefined
+            })
+            return
+          }
         }
-        if (!workItem) {
-          return prev
-        }
-        // Why: details may still be loading — create a minimal shell
-        // so the optimistic comment isn't silently dropped.
-        return {
-          item: workItem,
-          body: '',
-          comments: [comment]
-        }
-      })
+      }
+      // Why: when the cache has no details yet (still loading), no cache
+      // write/notify fires above. Bump local state so the details memo
+      // re-runs and surfaces the optimistic comment via the loading-shell
+      // fallback instead of holding it invisibly in the ref.
+      setOptimisticTick((n) => n + 1)
     },
-    [workItem]
+    [detailsCacheKey]
   )
 
   return (
@@ -2050,7 +2714,7 @@ export default function GitHubItemDialog({
       <SheetContent
         side="right"
         showCloseButton={false}
-        className="flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-[960px] lg:max-w-[1100px] xl:max-w-[1280px]"
+        className="flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-[640px] lg:max-w-[760px] xl:max-w-[900px]"
         onOpenAutoFocus={(event) => {
           // Why: focusing the first actionable element inside the drawer
           // causes the "Start workspace" action to receive focus and
@@ -2075,15 +2739,15 @@ export default function GitHubItemDialog({
           <div className="flex h-full min-h-0 flex-col">
             <div className="flex-none border-b border-border/60 px-4 py-3">
               <div className="flex items-start gap-2">
-                <Icon className="mt-1 size-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <span className="font-mono text-[12px] text-muted-foreground">
                     #{workItem.number}
                   </span>
-                  <h2 className="mt-1 text-[15px] font-semibold leading-tight text-foreground">
-                    {workItem.title}
+                  <h2 className="mt-1 flex items-start gap-2 text-[15px] font-semibold leading-tight text-foreground">
+                    <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0">{workItem.title}</span>
                   </h2>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-6 text-[11px] text-muted-foreground">
                     <span>{workItem.author ?? 'unknown'}</span>
                     <span>· {formatRelativeTime(workItem.updatedAt)}</span>
                     {workItem.branchName && (
@@ -2092,6 +2756,9 @@ export default function GitHubItemDialog({
                       </span>
                     )}
                   </div>
+                  {workItem.type === 'issue' && (
+                    <WorkItemIssueSourceIndicator url={workItem.url} repoPath={repoPath} />
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <Tooltip>
@@ -2130,15 +2797,31 @@ export default function GitHubItemDialog({
               </div>
             </div>
 
-            {repoPath && (
+            {(repoPath || projectOrigin) && (
               <GHEditSection
                 item={workItem}
                 repoPath={repoPath}
+                projectOrigin={projectOrigin}
                 localState={localState}
                 localLabels={localLabels}
                 onStateChange={setLocalState}
                 onLabelsChange={setLocalLabels}
+                onMutated={() => {
+                  // Why: drop the cached details for this item so the next
+                  // open issues a fresh fetch instead of painting pre-edit
+                  // state. We invalidate by (repoPath, type, number) match
+                  // because a single mutation can affect entries across all
+                  // issueSourcePreference values for the same number.
+                  if (repoPath) {
+                    invalidateWorkItemDetailsCacheByMatch({
+                      repoPath,
+                      type: workItem.type,
+                      number: workItem.number
+                    })
+                  }
+                }}
                 assignees={details?.assignees ?? []}
+                onUse={onUse}
               />
             )}
 
@@ -2202,17 +2885,75 @@ export default function GitHubItemDialog({
                           </div>
                         ) : (
                           <div>
-                            {files.map((file) => (
-                              <PRFileRow
-                                key={file.path}
-                                file={file}
+                            {/* Files-tab toolbar: view-mode toggle */}
+                            <div className="flex items-center justify-end gap-1 border-b border-border/40 px-3 py-1.5">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    id="pr-files-flat-view"
+                                    type="button"
+                                    onClick={() => setDiffViewMode('flat')}
+                                    aria-label="Flat view"
+                                    aria-pressed={diffViewMode === 'flat'}
+                                    className={cn(
+                                      'flex size-6 items-center justify-center rounded transition hover:bg-muted',
+                                      diffViewMode === 'flat'
+                                        ? 'bg-muted text-foreground'
+                                        : 'text-muted-foreground'
+                                    )}
+                                  >
+                                    <AlignJustify className="size-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom" sideOffset={4}>
+                                  Flat view
+                                </TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    id="pr-files-tree-view"
+                                    type="button"
+                                    onClick={() => setDiffViewMode('tree')}
+                                    aria-label="Tree view"
+                                    aria-pressed={diffViewMode === 'tree'}
+                                    className={cn(
+                                      'flex size-6 items-center justify-center rounded transition hover:bg-muted',
+                                      diffViewMode === 'tree'
+                                        ? 'bg-muted text-foreground'
+                                        : 'text-muted-foreground'
+                                    )}
+                                  >
+                                    <LayoutList className="size-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom" sideOffset={4}>
+                                  Tree view
+                                </TooltipContent>
+                              </Tooltip>
+                            </div>
+                            {diffViewMode === 'flat' ? (
+                              files.map((file) => (
+                                <PRFileRow
+                                  key={file.path}
+                                  file={file}
+                                  repoPath={repoPath ?? ''}
+                                  prNumber={workItem.number}
+                                  headSha={details?.headSha}
+                                  baseSha={details?.baseSha}
+                                  onCommentAdded={appendOptimisticComment}
+                                />
+                              ))
+                            ) : (
+                              <PRDiffTreeView
+                                files={files}
                                 repoPath={repoPath ?? ''}
                                 prNumber={workItem.number}
                                 headSha={details?.headSha}
                                 baseSha={details?.baseSha}
                                 onCommentAdded={appendOptimisticComment}
                               />
-                            ))}
+                            )}
                           </div>
                         )}
                       </TabsContent>

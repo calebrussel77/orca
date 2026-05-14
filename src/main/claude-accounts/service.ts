@@ -115,6 +115,7 @@ export class ClaudeAccountService {
         claudeManagedAccounts: [...previousSettings.claudeManagedAccounts, account],
         activeClaudeManagedAccountId: account.id
       })
+      this.runtimeAuth.clearLastWrittenCredentialsJson(accountId)
       await this.syncRuntimeAuthWithLivePtyGate()
       await this.rateLimits.refreshForClaudeAccountChange(outgoingAccountId)
       return this.getSnapshot()
@@ -153,6 +154,7 @@ export class ClaudeAccountService {
       )
     })
     try {
+      this.runtimeAuth.clearLastWrittenCredentialsJson(accountId)
       await this.syncRuntimeAuthWithLivePtyGate()
       await this.rateLimits.refreshForClaudeAccountChange()
       return this.getSnapshot()

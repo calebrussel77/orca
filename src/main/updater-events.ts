@@ -11,46 +11,61 @@ import {
 } from './updater-mac-install'
 import { compareVersions } from './updater-fallback'
 import { fetchChangelog } from './updater-changelog'
-import { buildReleaseTagUrl, type GitHubReleaseInfo } from '../shared/github-release'
+
+const AUTO_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+const AUTO_UPDATE_RETRY_INTERVAL_MS = 60 * 60 * 1000
 
 type UpdaterHandlerContext = {
   clearBackgroundCheckLaunchPending: () => void
   clearAvailableUpdateContext: () => void
+  consumeMissingManifestPrereleaseFallbackResult: () => { userInitiated: boolean } | null
+  getMissingManifestPrereleaseFallbackUserInitiated: () => boolean | null
   getCurrentStatus: () => UpdateStatus
   getKnownReleaseUrl: () => string | undefined
   getPendingInstallVersion: () => string
   getUserInitiatedCheck: () => boolean
   hasNewerDownloadedVersion: () => boolean
+  markMissingManifestPrereleaseFallbackChecking: () => void
   performQuitAndInstall: () => void
   recordCompletedUpdateCheck: () => void
-  sendCheckFailureStatus: (message: string, userInitiated?: boolean) => Promise<void>
+  sendCheckFailureStatus: (
+    message: string,
+    userInitiated?: boolean,
+    source?: 'event' | 'promise' | 'fallback-promise',
+    sourceError?: unknown
+  ) => Promise<void>
   sendErrorStatus: (message: string, userInitiated?: boolean) => void
   sendStatus: (status: UpdateStatus) => void
   scheduleAutomaticUpdateCheck: (delayMs: number) => void
+  shouldSuppressMissingManifestPrereleaseFallbackEvent: (message: string, error: unknown) => boolean
+  suppressMissingManifestPrereleaseFallbackPromiseFailure: (message: string) => void
   setAvailableReleaseUrl: (releaseUrl: string | null) => void
   setAvailableVersion: (version: string | null) => void
   setUserInitiatedCheck: (value: boolean) => void
-  getReleaseInfo: () => GitHubReleaseInfo
 }
 
 export function registerAutoUpdaterHandlers({
   clearBackgroundCheckLaunchPending,
   clearAvailableUpdateContext,
+  consumeMissingManifestPrereleaseFallbackResult,
+  getMissingManifestPrereleaseFallbackUserInitiated,
   getCurrentStatus,
   getKnownReleaseUrl,
   getPendingInstallVersion,
   getUserInitiatedCheck,
   hasNewerDownloadedVersion,
+  markMissingManifestPrereleaseFallbackChecking,
   performQuitAndInstall,
   recordCompletedUpdateCheck,
   sendCheckFailureStatus,
   sendErrorStatus,
   sendStatus,
   scheduleAutomaticUpdateCheck,
+  shouldSuppressMissingManifestPrereleaseFallbackEvent,
+  suppressMissingManifestPrereleaseFallbackPromiseFailure,
   setAvailableReleaseUrl,
   setAvailableVersion,
-  setUserInitiatedCheck,
-  getReleaseInfo
+  setUserInitiatedCheck
 }: UpdaterHandlerContext): void {
   // On macOS, electron-updater's MacUpdater downloads the ZIP from GitHub,
   // then serves it to Squirrel.Mac via a localhost proxy. The electron-updater
@@ -96,21 +111,31 @@ export function registerAutoUpdaterHandlers({
     clearBackgroundCheckLaunchPending()
     resetMacInstallState()
     clearAvailableUpdateContext()
-    sendStatus({ state: 'checking', userInitiated: getUserInitiatedCheck() || undefined })
+    markMissingManifestPrereleaseFallbackChecking()
+    const fallbackUserInitiated = getMissingManifestPrereleaseFallbackUserInitiated()
+    const wasUserInitiated = fallbackUserInitiated ?? getUserInitiatedCheck()
+    sendStatus({ state: 'checking', userInitiated: wasUserInitiated || undefined })
   })
 
   autoUpdater.on('update-available', (info) => {
     clearBackgroundCheckLaunchPending()
     // --- synchronous preamble (runs before any await) ---
-    const wasUserInitiated = getUserInitiatedCheck()
+    const missingManifestFallback = consumeMissingManifestPrereleaseFallbackResult()
+    const wasUserInitiated = missingManifestFallback?.userInitiated ?? getUserInitiatedCheck()
     setUserInitiatedCheck(false)
 
     // Guard: don't show an update that isn't actually newer than what's running.
     if (compareVersions(info.version, app.getVersion()) <= 0) {
       clearAvailableUpdateContext()
-      recordCompletedUpdateCheck()
-      if (!wasUserInitiated) {
-        scheduleAutomaticUpdateCheck(24 * 60 * 60 * 1000)
+      if (missingManifestFallback) {
+        // Why: a fallback manifest at the current version is still the result of
+        // a transient missing primary manifest, so keep the short retry cadence.
+        scheduleAutomaticUpdateCheck(AUTO_UPDATE_RETRY_INTERVAL_MS)
+      } else {
+        recordCompletedUpdateCheck()
+        if (!wasUserInitiated) {
+          scheduleAutomaticUpdateCheck(AUTO_UPDATE_CHECK_INTERVAL_MS)
+        }
       }
       sendStatus({ state: 'not-available', userInitiated: wasUserInitiated || undefined })
       return
@@ -138,30 +163,39 @@ export function registerAutoUpdaterHandlers({
       // set without a matching 'available' broadcast, or a completed-check
       // timestamp persisted for a check that never showed a result.
       setAvailableVersion(info.version)
-      setAvailableReleaseUrl(buildReleaseTagUrl(info.version, getReleaseInfo()))
-      recordCompletedUpdateCheck()
-      if (!wasUserInitiated) {
-        scheduleAutomaticUpdateCheck(24 * 60 * 60 * 1000)
+      setAvailableReleaseUrl(null)
+      if (missingManifestFallback) {
+        // Why: offering the previous good release is only a temporary fallback;
+        // keep probing soon so users can move to the newest tag once its
+        // platform manifest finishes publishing.
+        scheduleAutomaticUpdateCheck(AUTO_UPDATE_RETRY_INTERVAL_MS)
+      } else {
+        recordCompletedUpdateCheck()
+        if (!wasUserInitiated) {
+          scheduleAutomaticUpdateCheck(AUTO_UPDATE_CHECK_INTERVAL_MS)
+        }
       }
 
-      sendStatus({
-        state: 'available',
-        version: info.version,
-        releaseUrl: buildReleaseTagUrl(info.version, getReleaseInfo()),
-        changelog
-      })
+      sendStatus({ state: 'available', version: info.version, changelog })
     })()
   })
 
   autoUpdater.on('update-not-available', () => {
     clearBackgroundCheckLaunchPending()
     resetMacInstallState()
-    const wasUserInitiated = getUserInitiatedCheck()
+    const missingManifestFallback = consumeMissingManifestPrereleaseFallbackResult()
+    const wasUserInitiated = missingManifestFallback?.userInitiated ?? getUserInitiatedCheck()
     setUserInitiatedCheck(false)
     clearAvailableUpdateContext()
-    recordCompletedUpdateCheck()
-    if (!wasUserInitiated) {
-      scheduleAutomaticUpdateCheck(24 * 60 * 60 * 1000)
+    if (missingManifestFallback) {
+      // Why: the primary/newest release manifest was missing, so fallback
+      // not-available is still a transient release-transition outcome.
+      scheduleAutomaticUpdateCheck(AUTO_UPDATE_RETRY_INTERVAL_MS)
+    } else {
+      recordCompletedUpdateCheck()
+      if (!wasUserInitiated) {
+        scheduleAutomaticUpdateCheck(AUTO_UPDATE_CHECK_INTERVAL_MS)
+      }
     }
     sendStatus({ state: 'not-available', userInitiated: wasUserInitiated || undefined })
   })
@@ -198,13 +232,20 @@ export function registerAutoUpdaterHandlers({
   })
 
   autoUpdater.on('error', (err) => {
+    const message = err?.message ?? 'Unknown error'
+    // Why: primary/fallback promise handlers may already own this failure; do
+    // not let their delayed paired error event consume fallback context.
+    if (shouldSuppressMissingManifestPrereleaseFallbackEvent(message, err)) {
+      return
+    }
     clearBackgroundCheckLaunchPending()
     resetMacInstallState()
-    const wasUserInitiated = getUserInitiatedCheck()
+    suppressMissingManifestPrereleaseFallbackPromiseFailure(message)
+    const missingManifestFallback = consumeMissingManifestPrereleaseFallbackResult()
+    const wasUserInitiated = missingManifestFallback?.userInitiated ?? getUserInitiatedCheck()
     setUserInitiatedCheck(false)
-    const message = err?.message ?? 'Unknown error'
     if (getCurrentStatus().state === 'checking') {
-      void sendCheckFailureStatus(message, wasUserInitiated || undefined)
+      void sendCheckFailureStatus(message, wasUserInitiated || undefined, 'event', err)
       return
     }
     sendErrorStatus(message, wasUserInitiated || undefined)

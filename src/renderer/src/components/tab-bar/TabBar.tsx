@@ -24,11 +24,13 @@ import type { HoveredTabInsertion, TabDragItemData } from '../tab-group/useTabDr
 import { resolveTabIndicatorEdges } from '../tab-group/tab-insertion'
 import { getEditorDisplayLabel } from '@/components/editor/editor-labels'
 import { ShellIcon } from './shell-icons'
+import { resolveWindowsShellLaunchTarget } from './windows-shell-launch'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
@@ -53,6 +55,8 @@ type TabBarProps = {
   /** On Windows, opens a new terminal with a specific shell instead of the default. */
   onNewTerminalWithShell?: (shell: string) => void
   onNewBrowserTab: () => void
+  terminalOnly?: boolean
+  showAgentLaunchItems?: boolean
   onNewFileTab?: () => void
   /** Whether WSL is installed on this Windows machine. When true, the "+"
    *  dropdown shows a WSL option under the terminal submenu. */
@@ -118,6 +122,8 @@ function TabBarInner({
   onNewTerminalTab,
   onNewTerminalWithShell,
   onNewBrowserTab,
+  terminalOnly = false,
+  showAgentLaunchItems = true,
   onNewFileTab,
   onSetCustomTitle,
   onSetTabColor,
@@ -140,10 +146,21 @@ function TabBarInner({
   wslAvailable
 }: TabBarProps): React.JSX.Element {
   const gitStatusByWorktree = useAppStore((s) => s.gitStatusByWorktree)
-  const defaultWindowsShell = useAppStore((s) => {
-    const shell = s.settings?.terminalWindowsShell ?? 'pwsh.exe'
-    return shell === 'powershell.exe' ? 'pwsh.exe' : shell
-  })
+  const defaultWindowsShell = useAppStore(
+    (s) => s.settings?.terminalWindowsShell ?? 'powershell.exe'
+  )
+  const defaultWindowsPowerShellImplementation = useAppStore(
+    (s) => s.settings?.terminalWindowsPowerShellImplementation ?? 'auto'
+  )
+  const [pwshAvailable, setPwshAvailable] = useState(false)
+  useEffect(() => {
+    if (!isWindows) {
+      setPwshAvailable(false)
+      return
+    }
+
+    void window.api.pwsh.isAvailable().then(setPwshAvailable)
+  }, [])
   const resolvedGroupId = groupId ?? worktreeId
   const statusByRelativePath = useMemo(
     () => buildStatusMap(gitStatusByWorktree[worktreeId] ?? []),
@@ -371,7 +388,7 @@ function TabBarInner({
                 <SortableTab
                   key={item.id}
                   tab={item.data}
-                  tabCount={tabs.length}
+                  tabCount={orderedItems.length}
                   hasTabsToRight={index < orderedItems.length - 1}
                   isActive={activeTabType === 'terminal' && item.id === activeTabId}
                   isExpanded={expandedPaneByTabId[item.id] === true}
@@ -471,10 +488,13 @@ function TabBarInner({
             // each row narrow enough that the shortcut hint fits without
             // wrapping.
             (() => {
-              const allShells = [
-                { label: 'PowerShell 7', shell: 'pwsh.exe' },
+              const allShells: {
+                label: string
+                shell: 'powershell.exe' | 'cmd.exe' | 'wsl.exe'
+              }[] = [
+                { label: 'PowerShell', shell: 'powershell.exe' },
                 { label: 'CMD Prompt', shell: 'cmd.exe' },
-                ...(wslAvailable ? [{ label: 'WSL', shell: 'wsl.exe' }] : [])
+                ...(wslAvailable ? ([{ label: 'WSL', shell: 'wsl.exe' }] as const) : [])
               ]
               const defaultEntry =
                 allShells.find((s) => s.shell === defaultWindowsShell) ?? allShells[0]
@@ -488,7 +508,18 @@ function TabBarInner({
                   <DropdownMenuItem
                     key={entry.shell}
                     onSelect={() => {
-                      onNewTerminalWithShell(entry.shell)
+                      // Why: the top-level Windows shell menu models shell
+                      // categories, not concrete executables. When the user
+                      // picked PowerShell 7+ in advanced settings, launching the
+                      // "PowerShell" menu item must preserve that implementation
+                      // instead of forcing inbox powershell.exe.
+                      onNewTerminalWithShell(
+                        resolveWindowsShellLaunchTarget(
+                          entry.shell,
+                          defaultWindowsPowerShellImplementation,
+                          pwshAvailable
+                        )
+                      )
                     }}
                     className="gap-2 rounded-[7px] px-2 py-1.5 text-[12px] leading-5 font-medium"
                   >
@@ -513,15 +544,17 @@ function TabBarInner({
               <DropdownMenuShortcut>{NEW_TERMINAL_SHORTCUT}</DropdownMenuShortcut>
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem
-            onSelect={onNewBrowserTab}
-            className="gap-2 rounded-[7px] px-2 py-1.5 text-[12px] leading-5 font-medium"
-          >
-            <Globe className="size-4 text-muted-foreground" />
-            New Browser Tab
-            <DropdownMenuShortcut>{NEW_BROWSER_SHORTCUT}</DropdownMenuShortcut>
-          </DropdownMenuItem>
-          {onNewFileTab && (
+          {!terminalOnly && (
+            <DropdownMenuItem
+              onSelect={onNewBrowserTab}
+              className="gap-2 rounded-[7px] px-2 py-1.5 text-[12px] leading-5 font-medium"
+            >
+              <Globe className="size-4 text-muted-foreground" />
+              New Browser Tab
+              <DropdownMenuShortcut>{NEW_BROWSER_SHORTCUT}</DropdownMenuShortcut>
+            </DropdownMenuItem>
+          )}
+          {!terminalOnly && onNewFileTab && (
             <DropdownMenuItem
               onSelect={onNewFileTab}
               className="gap-2 rounded-[7px] px-2 py-1.5 text-[12px] leading-5 font-medium"
@@ -531,11 +564,16 @@ function TabBarInner({
               <DropdownMenuShortcut>{NEW_FILE_SHORTCUT}</DropdownMenuShortcut>
             </DropdownMenuItem>
           )}
-          <QuickLaunchAgentMenuItems
-            worktreeId={worktreeId}
-            groupId={resolvedGroupId}
-            onFocusTerminal={focusTerminalTabSurface}
-          />
+          {showAgentLaunchItems ? (
+            <>
+              <DropdownMenuSeparator />
+              <QuickLaunchAgentMenuItems
+                worktreeId={worktreeId}
+                groupId={resolvedGroupId}
+                onFocusTerminal={focusTerminalTabSurface}
+              />
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

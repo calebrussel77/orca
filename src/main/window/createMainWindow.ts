@@ -1,5 +1,5 @@
 /* oxlint-disable max-lines */
-import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, screen, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import icon from '../../../resources/icon.png?asset'
@@ -13,6 +13,7 @@ import {
 } from '../../shared/browser-url'
 import { resolveWindowShortcutAction } from '../../shared/window-shortcut-policy'
 import { getMainE2EConfig } from '../e2e-config'
+import { buildEditableContextMenuTemplate } from './editable-context-menu'
 
 function forceRepaint(window: BrowserWindow): void {
   if (window.isDestroyed()) {
@@ -31,11 +32,11 @@ function forceRepaint(window: BrowserWindow): void {
   }, 32)
 }
 
-// Why: the titlebar is 42px (border-box, 1px border-bottom).  The visual
-// center of the CSS-centered content sits at ~20 CSS px from the top.
-// At zoom factor z that becomes 20·z window px.  Traffic lights are
+// Why: the titlebar is 36px (border-box, 1px border-bottom).  The visual
+// center of the CSS-centered content sits at ~18 CSS px from the top.
+// At zoom factor z that becomes 18·z window px.  Traffic lights are
 // ~12px tall, so we position their top edge at (center − 6).
-const TITLEBAR_CSS_CENTER = 20
+const TITLEBAR_CSS_CENTER = 18
 const TRAFFIC_LIGHT_RADIUS = 6
 const TRAFFIC_LIGHT_X = 16
 const MIN_WIDTH = 600
@@ -69,11 +70,50 @@ export function createMainWindow(
   // Why: defense in depth — if a previous quit/update path persisted
   // shrink-to-min bounds (see freezeBoundsOnQuit), discard them on restore
   // rather than resurrecting a tiny window. Anything at or below the min
-  // dimensions is treated as corrupt and falls back to defaultBounds.
+  // dimensions is treated as corrupt and falls back to defaultBounds. The
+  // position must also land on a currently-attached display with a
+  // *meaningful* visible area — not just any >0 overlap, since a 1-pixel
+  // sliver (or a sub-pixel shaving after DPI scaling) would still leave
+  // the titlebar unreachable. Require at least MIN_WIDTH/2 of horizontal
+  // and MIN_HEIGHT/2 of vertical overlap with some display's workArea
+  // (workArea excludes menu bar / dock, so a rect entirely hidden under
+  // the dock is also correctly discarded). A rect saved while an external
+  // monitor was connected would otherwise be restored off-screen and
+  // macOS would silently shrink/reposition the window.
+  const rectHasVisibleAreaOnAnyDisplay = (b: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }): boolean => {
+    try {
+      return screen.getAllDisplays().some((d) => {
+        const wa = d.workArea
+        const overlapX = Math.max(0, Math.min(b.x + b.width, wa.x + wa.width) - Math.max(b.x, wa.x))
+        const overlapY = Math.max(
+          0,
+          Math.min(b.y + b.height, wa.y + wa.height) - Math.max(b.y, wa.y)
+        )
+        return overlapX >= MIN_WIDTH / 2 && overlapY >= MIN_HEIGHT / 2
+      })
+    } catch (err) {
+      console.warn('[window] screen.getAllDisplays() threw; treating bounds as off-screen', err)
+      return false
+    }
+  }
   const savedBounds =
-    rawSavedBounds && rawSavedBounds.width > MIN_WIDTH && rawSavedBounds.height > MIN_HEIGHT
+    rawSavedBounds &&
+    rawSavedBounds.width > MIN_WIDTH &&
+    rawSavedBounds.height > MIN_HEIGHT &&
+    rectHasVisibleAreaOnAnyDisplay(rawSavedBounds)
       ? rawSavedBounds
       : undefined
+  if (rawSavedBounds && !savedBounds) {
+    console.warn(
+      '[window] Discarding persisted windowBounds and falling back to defaultBounds:',
+      rawSavedBounds
+    )
+  }
   const savedMaximized = store?.getUI().windowMaximized ?? false
   // Why: on first launch (no saved bounds), fill the primary display work area
   // so the window feels spacious without calling maximize(). Saved bounds still
@@ -115,11 +155,12 @@ export function createMainWindow(
     // Window/Help menus by pressing Alt, matching native Windows/Linux
     // conventions (File Explorer, Firefox, etc.).
     autoHideMenuBar: true,
-    // Why: Windows otherwise shows both the native caption bar and Orca's
-    // renderer titlebar. Frameless Windows windows let the black app chrome own
-    // the titlebar while custom controls provide minimize/maximize/close.
-    frame: process.platform === 'win32' ? false : undefined,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#ffffff',
+    // Why: on macOS 'hiddenInset' keeps the native traffic lights positioned
+    // inside our custom 42px titlebar. On Windows 'hidden' removes the default
+    // OS title bar (which would otherwise stack on top of our renderer titlebar
+    // and waste vertical space) while still allowing our renderer to draw its
+    // own drag region and window controls.
     titleBarStyle:
       process.platform === 'darwin'
         ? 'hiddenInset'
@@ -216,11 +257,31 @@ export function createMainWindow(
       if (windowClosing || mainWindow.isDestroyed() || mainWindow.isFullScreen()) {
         return
       }
+      // Why: windowMaximized and windowBounds must be sampled and persisted
+      // atomically — writing windowMaximized first and then deciding whether
+      // to write bounds can leave the store with `windowMaximized: false`
+      // paired with stale/absent windowBounds if the near-min guard trips,
+      // which violates the pairing invariant subsequent launches rely on.
       const isMaximized = mainWindow.isMaximized()
-      store?.updateUI({ windowMaximized: isMaximized })
-      if (!isMaximized) {
-        store?.updateUI({ windowBounds: mainWindow.getBounds() })
+      if (isMaximized) {
+        store?.updateUI({ windowMaximized: true })
+        return
       }
+      const bounds = mainWindow.getBounds()
+      // Why: never persist shrink-to-min bounds. The user cannot want these
+      // saved — the window hit the enforced minimum, so either the teardown
+      // race from PR #1269 slipped past the freeze (e.g. dev-mode Ctrl+C
+      // where will-prevent-unload re-opens the freeze), or a transient
+      // OS resize fired. Dropping the bounds write here makes the next
+      // launch fall back to defaultBounds instead of resurrecting a tiny
+      // window. We still record windowMaximized: false so subsequent
+      // launches don't incorrectly restore maximized state.
+      if (bounds.width <= MIN_WIDTH || bounds.height <= MIN_HEIGHT) {
+        console.warn('[window] Skipping persist of near-minimum windowBounds:', bounds)
+        store?.updateUI({ windowMaximized: false })
+        return
+      }
+      store?.updateUI({ windowMaximized: false, windowBounds: bounds })
     }, 500)
   }
   mainWindow.on('resize', saveBounds)
@@ -246,35 +307,32 @@ export function createMainWindow(
       return
     }
     store?.updateUI({ windowMaximized: true })
-    emitWindowState()
+    mainWindow.webContents.send('window:maximize-changed', true)
   })
   mainWindow.on('unmaximize', () => {
     if (windowClosing) {
       return
     }
-    store?.updateUI({ windowMaximized: false, windowBounds: mainWindow.getBounds() })
-    emitWindowState()
+    mainWindow.webContents.send('window:maximize-changed', false)
+    const bounds = mainWindow.getBounds()
+    // Why: mirror the saveBounds guard — unmaximize during teardown can land
+    // at MIN_WIDTH × MIN_HEIGHT and we must not persist those as the user's
+    // remembered size.
+    if (bounds.width <= MIN_WIDTH || bounds.height <= MIN_HEIGHT) {
+      console.warn('[window] Skipping unmaximize-time persist of near-min bounds:', bounds)
+      store?.updateUI({ windowMaximized: false })
+      return
+    }
+    store?.updateUI({ windowMaximized: false, windowBounds: bounds })
   })
 
   mainWindow.on('enter-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen-changed', true)
-    emitWindowState()
   })
 
   mainWindow.on('leave-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen-changed', false)
-    emitWindowState()
   })
-
-  function emitWindowState(): void {
-    if (mainWindow.isDestroyed()) {
-      return
-    }
-    mainWindow.webContents.send('window:state-changed', {
-      isFullScreen: mainWindow.isFullScreen(),
-      isMaximized: mainWindow.isMaximized()
-    })
-  }
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     const externalUrl = normalizeExternalBrowserUrl(details.url)
@@ -377,6 +435,18 @@ export function createMainWindow(
   }
   ipcMain.on(markdownFocusChannel, onMarkdownEditorFocused)
 
+  const onMainContextMenu = (_event: Electron.Event, params: Electron.ContextMenuParams): void => {
+    const template = buildEditableContextMenuTemplate(params, mainWindow.webContents)
+    if (template.length === 0) {
+      return
+    }
+    // Why: right-click can produce a Chromium context-menu event before our
+    // renderer focus mirror updates, so trust Electron's editable/spellcheck
+    // params here instead of gating on markdownEditorFocused.
+    Menu.buildFromTemplate(template).popup({ window: mainWindow, x: params.x, y: params.y })
+  }
+  mainWindow.webContents.on('context-menu', onMainContextMenu)
+
   // Why: renderer can't mirror focus state across a crash/reload/close.
   // Default-deny the carve-out so Cmd+B falls back to sidebar-toggle, which is
   // the safe behavior when focus context is unknown. Preserves the
@@ -459,6 +529,11 @@ export function createMainWindow(
       return
     }
 
+    if (action.type === 'toggleFloatingTerminal') {
+      mainWindow.webContents.send('ui:toggleFloatingTerminal')
+      return
+    }
+
     if (action.type === 'openQuickOpen') {
       // Forward Cmd/Ctrl+P to trigger Quick Open
       mainWindow.webContents.send('ui:openQuickOpen')
@@ -469,9 +544,7 @@ export function createMainWindow(
       // Why: routed through the main process so focus contexts that bypass
       // the renderer's window-level keydown (contentEditable markdown editor,
       // browser-guest webContents) still reach the new-workspace composer.
-      // Forward the target tab so Cmd/Ctrl+Shift+N lands on the
-      // "Create from…" tab instead of the default quick-create form.
-      mainWindow.webContents.send('ui:openNewWorkspace', action.tab)
+      mainWindow.webContents.send('ui:openNewWorkspace')
       return
     }
 
@@ -542,42 +615,65 @@ export function createMainWindow(
     }
   }
   const trafficLightChannel = 'ui:sync-traffic-lights'
-  const minimizeWindowChannel = 'window:minimize'
-  const toggleMaximizeWindowChannel = 'window:toggle-maximize'
-  const closeWindowChannel = 'window:close'
-  const getWindowStateChannel = 'window:get-state'
   const onSyncTrafficLights = (_event: Electron.IpcMainEvent, zoomFactor: number): void => {
     syncTrafficLightPosition(mainWindow, zoomFactor)
   }
-  const onMinimizeWindow = (): void => {
+  ipcMain.on(trafficLightChannel, onSyncTrafficLights)
+
+  // Why: renderer-drawn window controls on Windows send these to replicate the
+  // native title bar buttons that 'hidden' titleBarStyle removes.
+  const minimizeChannel = 'window:minimize'
+  const onMinimize = (): void => {
     if (!mainWindow.isDestroyed()) {
       mainWindow.minimize()
     }
   }
-  const onToggleMaximizeWindow = (): void => {
+  const maximizeChannel = 'window:maximize'
+  const onMaximize = (): void => {
     if (mainWindow.isDestroyed()) {
       return
     }
     if (mainWindow.isMaximized()) {
       mainWindow.unmaximize()
-      return
+    } else {
+      mainWindow.maximize()
     }
-    mainWindow.maximize()
   }
-  const onCloseWindow = (): void => {
+  // Why: send window:close-requested directly rather than calling
+  // mainWindow.close() and letting the 'close' event re-send it. Calling
+  // mainWindow.close() from within an IPC message handler on Windows can cause
+  // the 'close' event to misfire (e.preventDefault() doesn't suppress the OS
+  // close in all Windows configurations). Going straight to the renderer's
+  // close guard (Terminal.tsx onWindowCloseRequested) keeps the flow identical
+  // to what happens when confirmWindowClose() ultimately calls mainWindow.close()
+  // with windowCloseConfirmed = true.
+  const requestCloseChannel = 'window:request-close'
+  const onRequestClose = (): void => {
     if (!mainWindow.isDestroyed()) {
-      mainWindow.close()
+      mainWindow.webContents.send('window:close-requested', { isQuitting: false })
     }
   }
-  ipcMain.on(trafficLightChannel, onSyncTrafficLights)
-  ipcMain.on(minimizeWindowChannel, onMinimizeWindow)
-  ipcMain.on(toggleMaximizeWindowChannel, onToggleMaximizeWindow)
-  ipcMain.on(closeWindowChannel, onCloseWindow)
-  ipcMain.removeHandler(getWindowStateChannel)
-  ipcMain.handle(getWindowStateChannel, () => ({
-    isFullScreen: mainWindow.isFullScreen(),
-    isMaximized: mainWindow.isMaximized()
-  }))
+  // Why: the ··· button in the renderer-drawn title bar on Windows pops up
+  // the application menu at the cursor position, replicating the Alt-key
+  // reveal that autoHideMenuBar normally provides.
+  const popupMenuChannel = 'menu:popup'
+  const onPopupMenu = (): void => {
+    Menu.getApplicationMenu()?.popup({ window: mainWindow })
+  }
+  // Why: the renderer's WindowControls mounts after ready-to-show, which is
+  // also when savedMaximized is restored — so window:maximize-changed has
+  // already fired (or not fired, if maximize() was called pre-mount) before
+  // the listener attaches. Expose a synchronous getter so the button can
+  // initialize its icon to match the current state on mount.
+  const isMaximizedChannel = 'window:isMaximized'
+  const onIsMaximized = (): boolean => {
+    return !mainWindow.isDestroyed() && mainWindow.isMaximized()
+  }
+  ipcMain.on(minimizeChannel, onMinimize)
+  ipcMain.on(maximizeChannel, onMaximize)
+  ipcMain.on(requestCloseChannel, onRequestClose)
+  ipcMain.on(popupMenuChannel, onPopupMenu)
+  ipcMain.handle(isMaximizedChannel, onIsMaximized)
 
   ipcMain.on(confirmCloseChannel, onConfirmClose)
   mainWindow.on('closed', () => {
@@ -586,12 +682,17 @@ export function createMainWindow(
     // with the webContents lifecycle resets above.
     markdownEditorFocused = false
     ipcMain.removeListener(trafficLightChannel, onSyncTrafficLights)
-    ipcMain.removeListener(minimizeWindowChannel, onMinimizeWindow)
-    ipcMain.removeListener(toggleMaximizeWindowChannel, onToggleMaximizeWindow)
-    ipcMain.removeListener(closeWindowChannel, onCloseWindow)
+    ipcMain.removeListener(minimizeChannel, onMinimize)
+    ipcMain.removeListener(maximizeChannel, onMaximize)
+    ipcMain.removeListener(requestCloseChannel, onRequestClose)
+    ipcMain.removeListener(popupMenuChannel, onPopupMenu)
+    ipcMain.removeHandler(isMaximizedChannel)
     ipcMain.removeListener(confirmCloseChannel, onConfirmClose)
     ipcMain.removeListener(markdownFocusChannel, onMarkdownEditorFocused)
-    ipcMain.removeHandler(getWindowStateChannel)
+    // Why: on updater-triggered shutdown, BrowserWindow can emit `closed`
+    // after its webContents has already been destroyed. The destroyed
+    // webContents owns its listeners, so do not touch `mainWindow.webContents`
+    // here or the quit path can crash before Squirrel.Mac relaunches Orca.
     app.removeListener('before-quit', freezeBoundsOnQuit)
   })
 

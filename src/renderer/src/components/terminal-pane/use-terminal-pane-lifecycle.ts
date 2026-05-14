@@ -15,6 +15,7 @@ import type {
   SetupSplitDirection,
   TerminalLayoutSnapshot
 } from '../../../../shared/types'
+import type { EventProps } from '../../../../shared/telemetry-events'
 import { resolveTerminalFontWeights } from '../../../../shared/terminal-fonts'
 import {
   buildFontFamily,
@@ -30,6 +31,7 @@ import {
 } from './terminal-appearance'
 import { parseOsc52 } from './osc52-clipboard'
 import { parseOsc7 } from './parse-osc7'
+import { shouldBypassXtermKeydown } from './xterm-bypass-policy'
 import type { PaneCwdMap } from './resolve-split-cwd'
 import { installMouseHideWhileTyping } from './mouse-hide-while-typing'
 import type { EffectiveMacOptionAsAlt } from '@/lib/keyboard-layout/detect-option-as-alt'
@@ -51,7 +53,13 @@ type UseTerminalPaneLifecycleDeps = {
   tabId: string
   worktreeId: string
   cwd?: string
-  startup?: { command: string; env?: Record<string, string> } | null
+  startup?: {
+    command: string
+    env?: Record<string, string>
+    /** Telemetry payload for `agent_started`. Forwarded to `pty:spawn`
+     *  so main fires the event only after the spawn succeeds. */
+    telemetry?: EventProps<'agent_started'>
+  } | null
   /** When present, the initial pane boots clean and a split pane is created
    *  (vertical or horizontal per the user setting) to run the setup command —
    *  keeping the main terminal interactive. */
@@ -87,7 +95,6 @@ type UseTerminalPaneLifecycleDeps = {
   paneMode2031Ref: React.RefObject<Map<number, boolean>>
   paneLastThemeModeRef: React.RefObject<Map<number, 'dark' | 'light'>>
   panePtyBindingsRef: React.RefObject<Map<number, IDisposable>>
-  pendingWritesRef: React.RefObject<Map<number, string>>
   replayingPanesRef: ReplayingPanesRef
   isActiveRef: React.RefObject<boolean>
   isVisibleRef: React.RefObject<boolean>
@@ -175,7 +182,6 @@ export function useTerminalPaneLifecycle({
   paneMode2031Ref,
   paneLastThemeModeRef,
   panePtyBindingsRef,
-  pendingWritesRef,
   replayingPanesRef,
   isActiveRef,
   isVisibleRef,
@@ -233,21 +239,34 @@ export function useTerminalPaneLifecycle({
   }
 
   const pushMode2031ForPane = (paneId: number): void => {
-    const transport = paneTransportsRef.current.get(paneId)
-    if (!transport?.isConnected()) {
-      return
+    let attempts = 0
+    const send = (): void => {
+      if (!managerRef.current?.getPanes().some((pane) => pane.id === paneId)) {
+        return
+      }
+      const transport = paneTransportsRef.current.get(paneId)
+      if (!transport?.isConnected()) {
+        // Why: TUIs can subscribe before pty:spawn resolves. Retry briefly so
+        // the recorded subscription still receives the initial dark/light seed.
+        attempts += 1
+        if (attempts < 8) {
+          window.setTimeout(send, 25)
+        }
+        return
+      }
+      const currentSettings = settingsRef.current
+      if (!currentSettings) {
+        return
+      }
+      const { mode } = resolveEffectiveTerminalAppearance(
+        currentSettings,
+        systemPrefersDarkRef.current
+      )
+      if (transport.sendInput(mode2031SequenceFor(mode))) {
+        paneLastThemeModeRef.current.set(paneId, mode)
+      }
     }
-    const currentSettings = settingsRef.current
-    if (!currentSettings) {
-      return
-    }
-    const { mode } = resolveEffectiveTerminalAppearance(
-      currentSettings,
-      systemPrefersDarkRef.current
-    )
-    if (transport.sendInput(mode2031SequenceFor(mode))) {
-      paneLastThemeModeRef.current.set(paneId, mode)
-    }
+    send()
   }
 
   // Initialize PaneManager instance once
@@ -259,7 +278,6 @@ export function useTerminalPaneLifecycle({
     const expandedStyleSnapshots = expandedStyleSnapshotRef.current
     const paneTransports = paneTransportsRef.current
     const panePtyBindings = panePtyBindingsRef.current
-    const pendingWrites = pendingWritesRef.current
     const linkDisposables = linkProviderDisposablesRef.current
     const selectionDisposables = selectionDisposablesRef.current
     const mouseHideDisposables = mouseHideDisposablesRef.current
@@ -323,7 +341,6 @@ export function useTerminalPaneLifecycle({
       cwd,
       startup,
       paneTransportsRef,
-      pendingWritesRef,
       replayingPanesRef,
       isActiveRef,
       isVisibleRef,
@@ -423,6 +440,25 @@ export function useTerminalPaneLifecycle({
           return true
         })
         osc7DisposablesRef.current.set(pane.id, osc7Disposable)
+
+        // Why: let clipboard chords bypass xterm's kitty CSI-u encoder.
+        // With vtExtensions.kittyKeyboard on, a CLI that activates progressive
+        // enhancement (Codex does, Claude Code does not) makes xterm encode
+        // Cmd+C as a CSI-u sequence with cancel=true, which preventDefaults
+        // the keydown and suppresses Chromium's native copy event — so the
+        // selection never reaches the clipboard. Returning false here short-
+        // circuits xterm's _keyDown before the encoder runs, letting the
+        // browser copy pipeline and Electron menu accelerators fire normally.
+        // See xterm-bypass-policy.ts for the rule derivation (Ghostty/VS Code).
+        pane.terminal.attachCustomKeyEventHandler((e) => {
+          if (e.type !== 'keydown') {
+            return true
+          }
+          return !shouldBypassXtermKeydown(e, {
+            isMac: navigator.userAgent.includes('Mac'),
+            hasSelection: pane.terminal.hasSelection()
+          })
+        })
 
         const linkProviderDisposable = pane.terminal.registerLinkProvider(
           createFilePathLinkProvider(pane.id, linkDeps, pane.linkTooltip, fileOpenLinkHint)
@@ -562,7 +598,6 @@ export function useTerminalPaneLifecycle({
         }
         clearRuntimePaneTitle(tabId, paneId)
         paneFontSizesRef.current.delete(paneId)
-        pendingWritesRef.current.delete(paneId)
         replayingPanesRef.current.delete(paneId)
         // Clean up pane title state so closed panes don't leave stale entries.
         setPaneTitles((prev) => {
@@ -663,7 +698,9 @@ export function useTerminalPaneLifecycle({
       // Why: TerminalPane instances stay mounted for hidden visited worktrees
       // so PTYs survive navigation. Creating WebGL for those offscreen panes
       // still consumes Chromium's context budget and can blank visible panes.
-      initialRenderingSuspended: !isVisibleRef.current
+      initialRenderingSuspended: !isVisibleRef.current,
+      terminalGpuAcceleration: settingsRef.current?.terminalGpuAcceleration ?? 'auto',
+      debugLabel: `tab:${tabId}/wt:${worktreeId}`
     })
 
     managerRef.current = manager
@@ -880,7 +917,6 @@ export function useTerminalPaneLifecycle({
       }
       panePtyBindings.clear()
       paneTransports.clear()
-      pendingWrites.clear()
       manager.destroy()
       managerRef.current = null
       if (e2eConfig.exposeStore) {
@@ -905,6 +941,10 @@ export function useTerminalPaneLifecycle({
     // immediately.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, systemPrefersDark, effectiveMacOptionAsAlt])
+
+  useEffect(() => {
+    managerRef.current?.setTerminalGpuAcceleration(settings?.terminalGpuAcceleration ?? 'auto')
+  }, [settings?.terminalGpuAcceleration, managerRef])
 
   useEffect(() => {
     const manager = managerRef.current

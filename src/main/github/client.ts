@@ -1,6 +1,10 @@
 /* eslint-disable max-lines -- Why: co-locating all GitHub client functions keeps the
 concurrency acquire/release pattern and error handling consistent across operations. */
 import type {
+  ClassifiedError,
+  GitPushTarget,
+  IssueSourcePreference,
+  ListWorkItemsResult,
   PRInfo,
   PRMergeableState,
   PRCheckDetail,
@@ -16,11 +20,15 @@ import { getPRConflictSummary } from './conflict-summary'
 import {
   execFileAsync,
   ghExecFileAsync,
+  gitExecFileAsync,
   acquire,
   release,
   getOwnerRepo,
   getIssueOwnerRepo,
+  getOwnerRepoForRemote,
+  resolveIssueSource,
   classifyGhError,
+  classifyListIssuesError,
   type OwnerRepo
 } from './gh-utils'
 export { _resetOwnerRepoCache } from './gh-utils'
@@ -62,6 +70,90 @@ export async function checkOrcaStarred(): Promise<boolean | null> {
     }
     // Anything else (gh not installed, not authenticated, network issue)
     return null
+  } finally {
+    release()
+  }
+}
+
+function pickPushRemoteUrl(args: {
+  originUrl: string | null
+  cloneUrl: string
+  sshUrl: string
+}): string {
+  const { originUrl, cloneUrl, sshUrl } = args
+  if (originUrl && (/^(git@|ssh:)/.test(originUrl) || originUrl.includes('ssh.github.com'))) {
+    return sshUrl
+  }
+  return cloneUrl
+}
+
+function sanitizeRemoteName(owner: string, repo: string): string {
+  const slug = `${owner}-${repo}`
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[.-]+|[.-]+$/g, '')
+  return slug ? `pr-${slug}` : 'pr-head'
+}
+
+export async function getPullRequestPushTarget(
+  repoPath: string,
+  prNumber: number
+): Promise<GitPushTarget | null> {
+  const ownerRepo = await getOwnerRepo(repoPath)
+  if (!ownerRepo) {
+    return null
+  }
+
+  await acquire()
+  try {
+    const [{ stdout: prStdout }, origin] = await Promise.all([
+      ghExecFileAsync(['api', `repos/${ownerRepo.owner}/${ownerRepo.repo}/pulls/${prNumber}`], {
+        cwd: repoPath
+      }),
+      getOwnerRepoForRemote(repoPath, 'origin')
+    ])
+    const pr = JSON.parse(prStdout) as {
+      head?: {
+        ref?: string
+        repo?: {
+          full_name?: string
+          clone_url?: string
+          ssh_url?: string
+          owner?: { login?: string }
+          name?: string
+        } | null
+      }
+    }
+    const headRepo = pr.head?.repo
+    const branchName = pr.head?.ref?.trim()
+    const owner = headRepo?.owner?.login?.trim()
+    const repo = headRepo?.name?.trim() ?? headRepo?.full_name?.split('/')[1]?.trim()
+    const cloneUrl = headRepo?.clone_url?.trim()
+    const sshUrl = headRepo?.ssh_url?.trim()
+    if (!owner || !repo || !branchName || !cloneUrl || !sshUrl) {
+      return null
+    }
+    if (
+      origin &&
+      origin.owner.toLowerCase() === owner.toLowerCase() &&
+      origin.repo.toLowerCase() === repo.toLowerCase()
+    ) {
+      return { remoteName: 'origin', branchName }
+    }
+
+    let originUrl: string | null = null
+    try {
+      const { stdout } = await gitExecFileAsync(['remote', 'get-url', 'origin'], { cwd: repoPath })
+      originUrl = stdout.trim() || null
+    } catch {
+      originUrl = null
+    }
+    return {
+      remoteName: sanitizeRemoteName(owner, repo),
+      branchName,
+      remoteUrl: pickPushRemoteUrl({ originUrl, cloneUrl, sshUrl })
+    }
   } finally {
     release()
   }
@@ -341,14 +433,27 @@ function buildWorkItemListArgs(args: {
   return out
 }
 
+// Why: internal shape shared by listRecentWorkItems / listQueriedWorkItems so
+// listWorkItems can lift per-side errors into the IPC envelope. The issue-side
+// error is the specific new class of silent wrongness introduced by #1076 —
+// PR-side errors existed before and are explicitly out of scope for this
+// feature per the parent design doc §6.
+type PartialWorkItemsResult = {
+  items: MainWorkItem[]
+  issuesError?: ClassifiedError
+}
+
 async function listRecentWorkItems(
   repoPath: string,
   issueOwnerRepo: OwnerRepo | null,
   prOwnerRepo: OwnerRepo | null,
   limit: number
-): Promise<MainWorkItem[]> {
+): Promise<PartialWorkItemsResult> {
   if (issueOwnerRepo || prOwnerRepo) {
-    const [issuesResult, prsResult] = await Promise.all([
+    // Why: allSettled so a 403 on upstream issues doesn't zero out the origin
+    // PR half — the UI renders partial results plus a banner for the failing
+    // side, matching the parent design doc's partial-failure rule (§2).
+    const [issuesSettled, prsSettled] = await Promise.allSettled([
       issueOwnerRepo
         ? ghExecFileAsync(
             [
@@ -397,20 +502,61 @@ async function listRecentWorkItems(
           )
     ])
 
-    const issues = (JSON.parse(issuesResult.stdout) as Record<string, unknown>[])
-      // Why: the GitHub issues REST endpoint also returns pull requests with a
-      // `pull_request` marker. The new-workspace task picker needs distinct
-      // issue vs PR buckets, so drop PR-shaped issue rows here before merging.
-      .filter((item) => !('pull_request' in item))
-      .map(mapIssueWorkItem)
+    let issues: MainWorkItem[] = []
+    let issuesError: ClassifiedError | undefined
+    if (issuesSettled.status === 'fulfilled') {
+      issues = (JSON.parse(issuesSettled.value.stdout) as Record<string, unknown>[])
+        // Why: the GitHub issues REST endpoint also returns pull requests with a
+        // `pull_request` marker. The new-workspace task picker needs distinct
+        // issue vs PR buckets, so drop PR-shaped issue rows here before merging.
+        .filter((item) => !('pull_request' in item))
+        .map(mapIssueWorkItem)
+    } else {
+      const stderr =
+        issuesSettled.reason instanceof Error
+          ? issuesSettled.reason.message
+          : String(issuesSettled.reason)
+      issuesError = classifyListIssuesError(stderr)
+    }
 
-    const prs = (JSON.parse(prsResult.stdout) as Record<string, unknown>[]).map((item) =>
-      mapPullRequestWorkItem(item, prOwnerRepo?.owner ?? null)
-    )
+    let prs: MainWorkItem[] = []
+    if (prsSettled.status === 'fulfilled') {
+      prs = (JSON.parse(prsSettled.value.stdout) as Record<string, unknown>[]).map((item) =>
+        mapPullRequestWorkItem(item, prOwnerRepo?.owner ?? null)
+      )
+    } else {
+      // Why: PR-side failures must preserve the pre-diff behavior of
+      // Promise.all by re-throwing so the rejection propagates up through
+      // listWorkItems to the renderer's cross-repo aggregator (which counts
+      // the repo as failed). This feature is scoped to the issue-side silent
+      // wrongness from #1076; PR errors must not be silently swallowed here.
+      // Why: if the issue side ALSO failed, the classified issuesError would
+      // otherwise be silently dropped when we throw the PR reason. Log it so
+      // debugging both-sides-failed scenarios (e.g. 403 on both endpoints)
+      // isn't blind to the issue-side classification.
+      if (issuesError) {
+        console.warn(
+          'listRecentWorkItems: both issue and PR sides failed; issuesError was classified:',
+          issuesError.type,
+          issuesError.message
+        )
+      }
+      throw prsSettled.reason
+    }
 
-    return sortWorkItemsByUpdatedAt([...issues, ...prs]).slice(0, limit)
+    return {
+      items: sortWorkItemsByUpdatedAt([...issues, ...prs]).slice(0, limit),
+      issuesError
+    }
   }
 
+  // Why: the fallback path (non-GitHub remote — neither issueOwnerRepo nor
+  // prOwnerRepo resolved) intentionally stays on Promise.all rather than the
+  // Promise.allSettled + per-side classification used above. There are no
+  // `sources` to surface on this branch and nothing for the partial-failure
+  // banner to render, so a single-side failure here means the whole call is
+  // effectively unusable for the feature — reject-all matches reality. If
+  // non-GitHub remotes ever grow source metadata, revisit this symmetry.
   const [issuesResult, prsResult] = await Promise.all([
     ghExecFileAsync(
       [
@@ -447,7 +593,9 @@ async function listRecentWorkItems(
     mapPullRequestWorkItem(item, null)
   )
 
-  return sortWorkItemsByUpdatedAt([...issues, ...prs]).slice(0, limit)
+  return {
+    items: sortWorkItemsByUpdatedAt([...issues, ...prs]).slice(0, limit)
+  }
 }
 
 async function listQueriedWorkItems(
@@ -457,67 +605,82 @@ async function listQueriedWorkItems(
   query: ParsedTaskQuery,
   limit: number,
   before?: string
-): Promise<MainWorkItem[]> {
-  const fetchers: Promise<MainWorkItem[]>[] = []
+): Promise<PartialWorkItemsResult> {
   const issueScope = query.scope !== 'pr'
   const prScope = query.scope !== 'issue'
 
-  if (issueScope) {
-    fetchers.push(
-      (async () => {
-        const args = buildWorkItemListArgs({
-          kind: 'issue',
-          ownerRepo: issueOwnerRepo,
-          limit,
-          query,
-          before
-        })
-        try {
-          const { stdout } = await ghExecFileAsync(args, { cwd: repoPath })
-          return (JSON.parse(stdout) as Record<string, unknown>[]).map(mapIssueWorkItem)
-        } catch {
-          return []
-        }
-      })()
-    )
-  }
+  // Why: run the issue and PR fetches in parallel but surface the
+  // issue-side error separately so the IPC envelope can carry it up. PR-side
+  // failures retain the prior swallow-and-log behavior per parent doc §6.
+  const issueFetch = (async (): Promise<PartialWorkItemsResult> => {
+    if (!issueScope) {
+      return { items: [] }
+    }
+    const args = buildWorkItemListArgs({
+      kind: 'issue',
+      ownerRepo: issueOwnerRepo,
+      limit,
+      query,
+      before
+    })
+    try {
+      const { stdout } = await ghExecFileAsync(args, { cwd: repoPath })
+      return {
+        items: (JSON.parse(stdout) as Record<string, unknown>[]).map(mapIssueWorkItem)
+      }
+    } catch (err) {
+      const stderr = err instanceof Error ? err.message : String(err)
+      return { items: [], issuesError: classifyListIssuesError(stderr) }
+    }
+  })()
 
-  if (prScope) {
-    fetchers.push(
-      (async () => {
-        const args = buildWorkItemListArgs({
-          kind: 'pr',
-          ownerRepo: prOwnerRepo,
-          limit,
-          query,
-          before
-        })
-        try {
-          const { stdout } = await ghExecFileAsync(args, { cwd: repoPath })
-          return (JSON.parse(stdout) as Record<string, unknown>[]).map((item) =>
-            mapPullRequestWorkItem(item, prOwnerRepo?.owner ?? null)
-          )
-        } catch {
-          return []
-        }
-      })()
-    )
-  }
+  const prFetch = (async (): Promise<MainWorkItem[]> => {
+    if (!prScope) {
+      return []
+    }
+    const args = buildWorkItemListArgs({
+      kind: 'pr',
+      ownerRepo: prOwnerRepo,
+      limit,
+      query,
+      before
+    })
+    try {
+      const { stdout } = await ghExecFileAsync(args, { cwd: repoPath })
+      return (JSON.parse(stdout) as Record<string, unknown>[]).map((item) =>
+        mapPullRequestWorkItem(item, prOwnerRepo?.owner ?? null)
+      )
+    } catch (err) {
+      console.warn('listQueriedWorkItems PRs partial failure:', err)
+      return []
+    }
+  })()
 
-  const results = await Promise.all(fetchers)
-  return sortWorkItemsByUpdatedAt(results.flat()).slice(0, limit)
+  const [issueResult, prItems] = await Promise.all([issueFetch, prFetch])
+  return {
+    items: sortWorkItemsByUpdatedAt([...issueResult.items, ...prItems]).slice(0, limit),
+    issuesError: issueResult.issuesError
+  }
 }
 
 export async function listWorkItems(
   repoPath: string,
   limit = 24,
   query?: string,
-  before?: string
-): Promise<MainWorkItem[]> {
-  const [issueOwnerRepo, prOwnerRepo] = await Promise.all([
-    getIssueOwnerRepo(repoPath),
-    getOwnerRepo(repoPath)
+  before?: string,
+  preference?: IssueSourcePreference
+): Promise<ListWorkItemsResult<MainWorkItem>> {
+  // Why: resolve the raw upstream candidate alongside the preference-aware
+  // issue source. The selector needs to know whether an upstream remote
+  // *exists* to decide whether to render — independent of whether the user
+  // has picked 'origin' (which would otherwise make `sources.issues` equal
+  // origin and hide the selector permanently).
+  const [issueResolved, prOwnerRepo, upstreamCandidate] = await Promise.all([
+    resolveIssueSource(repoPath, preference),
+    getOwnerRepo(repoPath),
+    getOwnerRepoForRemote(repoPath, 'upstream')
   ])
+  const issueOwnerRepo = issueResolved.source
   const trimmedQuery = query?.trim() ?? ''
   await acquire()
   try {
@@ -525,19 +688,28 @@ export async function listWorkItems(
     // count this repo as failed and surface the partial-failure banner. A
     // catch-all here would make an auth/network failure indistinguishable from
     // an empty result and silently under-report per-repo failures.
-    if (!trimmedQuery) {
-      return await listRecentWorkItems(repoPath, issueOwnerRepo, prOwnerRepo, limit)
-    }
+    const partial = !trimmedQuery
+      ? await listRecentWorkItems(repoPath, issueOwnerRepo, prOwnerRepo, limit)
+      : await listQueriedWorkItems(
+          repoPath,
+          issueOwnerRepo,
+          prOwnerRepo,
+          parseTaskQuery(trimmedQuery),
+          limit,
+          before
+        )
 
-    const parsedQuery = parseTaskQuery(trimmedQuery)
-    return await listQueriedWorkItems(
-      repoPath,
-      issueOwnerRepo,
-      prOwnerRepo,
-      parsedQuery,
-      limit,
-      before
-    )
+    const errors = partial.issuesError ? { issues: partial.issuesError } : undefined
+    return {
+      items: partial.items,
+      sources: {
+        issues: issueOwnerRepo,
+        prs: prOwnerRepo,
+        upstreamCandidate: upstreamCandidate ?? null
+      },
+      ...(errors ? { errors } : {}),
+      ...(issueResolved.fellBack ? { issueSourceFellBack: true } : {})
+    }
   } finally {
     release()
   }
@@ -631,11 +803,16 @@ function defaultOpenWorkItemQuery(): ParsedTaskQuery {
 // Why: uses GitHub's search API to get total_count without fetching items.
 // This powers the pagination bar so the user sees total pages upfront.
 // Cached for 120s to avoid burning the search rate limit (30 req/min).
-export async function countWorkItems(repoPath: string, query?: string): Promise<number> {
-  const [issueOwnerRepo, prOwnerRepo] = await Promise.all([
-    getIssueOwnerRepo(repoPath),
+export async function countWorkItems(
+  repoPath: string,
+  query?: string,
+  preference?: IssueSourcePreference
+): Promise<number> {
+  const [issueResolved, prOwnerRepo] = await Promise.all([
+    resolveIssueSource(repoPath, preference),
     getOwnerRepo(repoPath)
   ])
+  const issueOwnerRepo = issueResolved.source
   const ownerRepo = prOwnerRepo ?? issueOwnerRepo
   if (!ownerRepo) {
     return 0
@@ -738,19 +915,42 @@ export async function getWorkItem(
   }
 }
 
+export async function getWorkItemByOwnerRepo(
+  repoPath: string,
+  ownerRepo: OwnerRepo,
+  number: number,
+  type: 'issue' | 'pr'
+): Promise<MainWorkItem | null> {
+  await acquire()
+  try {
+    if (type === 'issue') {
+      return await fetchIssueWorkItem(repoPath, ownerRepo, number)
+    }
+    return await fetchPullRequestWorkItem(repoPath, ownerRepo, number)
+  } catch {
+    return null
+  } finally {
+    release()
+  }
+}
+
 /**
  * Get PR info for a given branch using gh CLI.
  * Returns null if gh is not installed, or no PR exists for the branch.
+ *
+ * When `linkedPRNumber` is provided and the branch lookup yields nothing,
+ * falls back to looking up the PR by number. This handles "create from PR"
+ * worktrees, whose branch is a fresh local branch (not the PR's head ref) —
+ * the branch-keyed lookup misses, but the user still expects the linked PR
+ * to surface on the worktree card.
  */
-export async function getPRForBranch(repoPath: string, branch: string): Promise<PRInfo | null> {
+export async function getPRForBranch(
+  repoPath: string,
+  branch: string,
+  linkedPRNumber?: number | null
+): Promise<PRInfo | null> {
   // Strip refs/heads/ prefix if present
   const branchName = branch.replace(/^refs\/heads\//, '')
-
-  // During a rebase the worktree is in detached HEAD and branch is empty.
-  // An empty --head filter causes gh to return an arbitrary PR — bail early.
-  if (!branchName) {
-    return null
-  }
 
   await acquire()
   try {
@@ -770,38 +970,73 @@ export async function getPRForBranch(repoPath: string, branch: string): Promise<
       headRefOid?: string
     } | null = null
 
-    if (ownerRepo) {
-      const { stdout } = await ghExecFileAsync(
-        [
-          'pr',
-          'list',
-          '--repo',
-          `${ownerRepo.owner}/${ownerRepo.repo}`,
-          '--head',
-          branchName,
-          '--state',
-          'all',
-          '--limit',
-          '1',
-          '--json',
-          'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,baseRefName,headRefName,baseRefOid,headRefOid'
-        ],
-        { cwd: repoPath }
-      )
-      const list = JSON.parse(stdout) as NonNullable<typeof data>[]
-      data = list[0] ?? null
-    } else {
-      const { stdout } = await ghExecFileAsync(
-        [
-          'pr',
-          'view',
-          branchName,
-          '--json',
-          'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,baseRefName,headRefName,baseRefOid,headRefOid'
-        ],
-        { cwd: repoPath }
-      )
-      data = JSON.parse(stdout)
+    // During a rebase the worktree is in detached HEAD and branch is empty.
+    // An empty --head filter causes gh to return an arbitrary PR — skip the
+    // branch lookup and rely on the linkedPR fallback below if available.
+    if (branchName) {
+      if (ownerRepo) {
+        const { stdout } = await ghExecFileAsync(
+          [
+            'pr',
+            'list',
+            '--repo',
+            `${ownerRepo.owner}/${ownerRepo.repo}`,
+            '--head',
+            branchName,
+            '--state',
+            'all',
+            '--limit',
+            '1',
+            '--json',
+            'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,baseRefName,headRefName,baseRefOid,headRefOid'
+          ],
+          { cwd: repoPath }
+        )
+        const list = JSON.parse(stdout) as NonNullable<typeof data>[]
+        data = list[0] ?? null
+      } else {
+        const { stdout } = await ghExecFileAsync(
+          [
+            'pr',
+            'view',
+            branchName,
+            '--json',
+            'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,baseRefName,headRefName,baseRefOid,headRefOid'
+          ],
+          { cwd: repoPath }
+        )
+        data = JSON.parse(stdout)
+      }
+    }
+
+    if (!data && typeof linkedPRNumber === 'number') {
+      const args = ownerRepo
+        ? [
+            'pr',
+            'view',
+            String(linkedPRNumber),
+            '--repo',
+            `${ownerRepo.owner}/${ownerRepo.repo}`,
+            '--json',
+            'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,baseRefName,headRefName,baseRefOid,headRefOid'
+          ]
+        : [
+            'pr',
+            'view',
+            String(linkedPRNumber),
+            '--json',
+            'number,title,state,url,statusCheckRollup,updatedAt,isDraft,mergeable,baseRefName,headRefName,baseRefOid,headRefOid'
+          ]
+      try {
+        const { stdout } = await ghExecFileAsync(args, { cwd: repoPath })
+        data = JSON.parse(stdout)
+      } catch {
+        // Why: a stale linkedPRNumber (PR deleted, wrong repo, …) makes
+        // `gh pr view <number>` reject. Treat that as the no-PR case so
+        // callers see the historical `null` semantics instead of a thrown
+        // error every poll cycle.
+        data = null
+      }
     }
 
     if (!data) {

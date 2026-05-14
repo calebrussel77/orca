@@ -23,6 +23,10 @@ export async function ensureHooksConfirmed(
   scriptKind: HookScriptKind
 ): Promise<'run' | 'skip'> {
   return enqueueTrustPrompt(async () => {
+    if (state.trustedOrcaHooks[repoId]?.all) {
+      return 'run'
+    }
+
     let scriptContent = ''
     try {
       if (scriptKind === 'issueCommand') {
@@ -54,6 +58,9 @@ export async function ensureHooksConfirmed(
 
     const repo = state.repos.find((r) => r.id === repoId)
     const repoName = repo?.displayName ?? 'this repository'
+    // A non-empty existingHash that didn't match means the user approved a previous
+    // version of this script; the prompt is reappearing because orca.yaml changed.
+    const previouslyApproved = Boolean(existingHash)
 
     return new Promise<'run' | 'skip'>((resolve) => {
       state.openModal('confirm-orca-yaml-hooks', {
@@ -62,6 +69,7 @@ export async function ensureHooksConfirmed(
         scriptKind,
         scriptContent,
         contentHash,
+        previouslyApproved,
         onResolve: (decision: 'run' | 'skip') => resolve(decision)
       })
     })

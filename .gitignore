@@ -13,6 +13,7 @@ src/**/*.d.ts
 !src/preload/index.d.ts
 !src/renderer/src/env.d.ts
 !src/renderer/src/mermaid.d.ts
+!src/types/build-constants.d.ts
 
 # Dependencies
 node_modules/
@@ -23,6 +24,7 @@ dist-electron/
 out/
 /build/
 release/
+native/**/.build/
 
 # pnpm
 .pnpm-store/
@@ -66,15 +68,15 @@ design-docs/
 .atl/
 
 # Local-only design/planning docs (not checked in)
-docs/*-design.md
-docs/*-plan.md
-docs/design-*.md
+docs/*.md
+!docs/README*.md
 
 # Stably CLI (only docs/ are tracked)
 .stably/*
 !.stably/docs/
 .playwright-cli
 .validate-ui-screenshots/
+validation-screenshots/
 .stably-browser
 
 # Playwright

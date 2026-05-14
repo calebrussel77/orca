@@ -7,13 +7,15 @@ import { hashOrcaHookScript } from './orca-hook-trust'
 const hooksCheckMock = vi.fn()
 const readIssueCommandMock = vi.fn()
 
-;(globalThis as { window: unknown }).window = {
-  api: {
-    hooks: {
-      check: hooksCheckMock,
-      readIssueCommand: readIssueCommandMock
+function installHooksApiMock(): void {
+  vi.stubGlobal('window', {
+    api: {
+      hooks: {
+        check: hooksCheckMock,
+        readIssueCommand: readIssueCommandMock
+      }
     }
-  }
+  })
 }
 
 type PendingPrompt = {
@@ -48,6 +50,7 @@ describe('ensureHooksConfirmed', () => {
   beforeEach(() => {
     hooksCheckMock.mockReset()
     readIssueCommandMock.mockReset()
+    installHooksApiMock()
     __resetTrustPromptChainForTests()
   })
 
@@ -87,9 +90,26 @@ describe('ensureHooksConfirmed', () => {
 
     expect(pending).toHaveLength(1)
     expect(pending[0].data.scriptContent).toBe('new script')
+    // The dialog uses this flag to tell the user we're re-prompting *because*
+    // orca.yaml changed, not because they've never approved this hook.
+    expect(pending[0].data.previouslyApproved).toBe(true)
 
     pending[0].resolve('run')
     await expect(promise).resolves.toBe('run')
+  })
+
+  it('returns run without inspecting hooks when the repo is always trusted', async () => {
+    const { state, pending } = createTestState()
+    state.trustedOrcaHooks['repo-1'] = {
+      all: { approvedAt: 1 }
+    }
+    hooksCheckMock.mockRejectedValue(new Error('boom'))
+
+    const decision = await ensureHooksConfirmed(state, 'repo-1', 'setup')
+
+    expect(decision).toBe('run')
+    expect(hooksCheckMock).not.toHaveBeenCalled()
+    expect(pending).toHaveLength(0)
   })
 
   it('returns run without prompting when no script of that kind is configured', async () => {
@@ -139,7 +159,8 @@ describe('ensureHooksConfirmed', () => {
       repoName: 'Repo One',
       scriptKind: 'setup',
       scriptContent: 'pnpm install',
-      contentHash: await hashOrcaHookScript('pnpm install')
+      contentHash: await hashOrcaHookScript('pnpm install'),
+      previouslyApproved: false
     })
 
     pending[0].resolve('run')
@@ -157,17 +178,13 @@ describe('ensureHooksConfirmed', () => {
     const first = ensureHooksConfirmed(state, 'repo-1', 'setup')
     const second = ensureHooksConfirmed(state, 'repo-1', 'archive')
 
-    await flush()
-
-    expect(pending).toHaveLength(1)
+    await vi.waitFor(() => expect(pending).toHaveLength(1))
     expect(pending[0].data.scriptKind).toBe('setup')
 
     pending[0].resolve('skip')
     await expect(first).resolves.toBe('skip')
 
-    await flush()
-
-    expect(pending).toHaveLength(2)
+    await vi.waitFor(() => expect(pending).toHaveLength(2))
     expect(pending[1].data.scriptKind).toBe('archive')
 
     pending[1].resolve('run')
